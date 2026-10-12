@@ -1,6 +1,6 @@
 # 开发路线 / Roadmap
 
-先把大陆推理引擎做扎实，再接上游戏内观测和方向提示。 / Build the mainland inference engine, then connect in-game observations and direction hints.
+先让外部工具陪玩家完成一轮又一轮的手动探索，积累实战记录，再决定哪些游戏内辅助最有用。 / Make the external tool useful across repeated rounds of manual exploration, gather real play records, then decide which in-game helpers would help most.
 
 ## 已完成 / Completed
 
@@ -9,33 +9,39 @@
 - [x] 每次从 10 个可选 task 中选 5 个，支持随机种子复现。 / Select five of ten optional tasks per sample, with reproducible seeds.
 - [x] 按 `LinkNodesByKeys` 构建 task 连接图，保留强制连接，再按最短连接跳数计算目标接近度。 / Build task graphs using `LinkNodesByKeys`, retain forced connections, and score target proximity by shortest connection hops.
 - [x] `--seed` 复现方向建议，`--sample-graph` 输出图结构 JSON。 / Repeat recommendations with `--seed` and inspect graph JSON with `--sample-graph`.
+- [x] 用本机 Python 标准库提供浏览器界面；可用 `python route_planner.py --ui` 或 Windows 的 `start_planner.bat` 启动。 / Provide a browser interface with the local Python standard library; start it with `python route_planner.py --ui` or, on Windows, `start_planner.bat`.
+- [x] 提供 schema version 1 和输入校验，同时兼容无版本的旧观测 JSON。 / Define schema version 1 and validate input while keeping compatibility with older observation JSON without a version.
+- [x] 网页支持载入示例、导入和导出观测 JSON，并显示方向排名与判断理由。 / Let the page load a demo, import and export observation JSON, and show ranked directions with reasons.
+- [x] 核对 53 个 room 的地皮、20 个 task 的字段与数量，修正关键房间内容，并记录源文件 SHA256。 / Check tiles for 53 rooms, fields and counts for 20 tasks, correct selected room contents, and record source-file SHA256 hashes.
+- [x] 把随机数量的表达式、范围和模型使用的平均值写入 [来源清单](dst_route_planner/knowledge/source_audit.json)。 / Record random-count expressions, ranges, and modeled averages in the [source manifest](dst_route_planner/knowledge/source_audit.json).
 
 ## 1. 生成数据校对 / Generation data
 
-- [x] 核对 53 个 room 的地皮、20 个 task 的字段与数量，修正关键房间内容，并记录源文件 SHA256。 / Check tiles for 53 rooms, fields and counts for 20 tasks, correct selected room contents, and record source-file SHA256 hashes.
-- [x] 把随机数量的表达式、范围和模型使用的平均值写入 [来源清单](dst_route_planner/knowledge/source_audit.json)。 / Record random-count expressions, ranges, and modeled averages in the [source manifest](dst_route_planner/knowledge/source_audit.json).
-- [ ] 继续补充房间内容、成组 prefab 选择和节日布局。 / Expand room contents, grouped prefab choices, and event layouts.
+- [ ] 继续核对房间内容、成组 prefab 选择和节日布局。 / Continue checking room contents, grouped prefab choices, and event layouts.
 
-## 2. 游戏内观测 / In-game observations
+## 2. 连续手动探索 / Ongoing manual exploration
 
-- [ ] 定义带版本的 JSON 观测协议，检查输入格式。 / Define a versioned JSON observation format and validate inputs.
-- [ ] 做 DST mod 采集层，导出玩家附近的地皮、prefab 数量和方向。 / Build a DST mod collector for nearby tiles, prefab counts, and directions.
-- [ ] 接通采集文件与 Python 引擎。 / Connect captured observations to the Python engine.
-- [ ] 做 HUD 目标选择器，显示推荐方向、理由和观测状态。 / Add a HUD target picker with directions, reasons, and observation status.
+- [ ] 保存并恢复一局探索记录，让玩家能在下次启动时接着补充观测。 / Save and reopen an exploration record so players can continue adding observations after restarting the tool.
+- [ ] 在记录中关联目标、世界备注、各次观测和已发现地点，方便回看同一张地图。 / Keep the target, world notes, observations over time, and discovered locations together for later review of the same map.
+- [ ] 试用几种简单的记录方式，找出手动探索时最省事的保存与更新流程。 / Try a few simple record formats and settle on an easy way to save and update notes during manual exploration.
 
-## 3. 连续探索与地图导航 / Exploration and map navigation
+## 3. 实战使用与评估 / Play-world evaluation
 
-- [ ] 保存已探索区域、目标位置和重复观测。 / Save explored areas, target locations, and repeated observations.
+- [ ] 在多个世界中记录手动观测、推荐方向、实际选择、目标发现位置和探索距离。 / In multiple worlds, record manual observations, suggested directions, actual choices, target locations, and exploration distance.
+- [ ] 留出独立世界记录，比较方向建议是否有帮助，并留意操作负担与运行开销。 / Set aside records from separate worlds to check whether recommendations help, along with input effort and runtime.
+- [ ] 根据实战记录校准方向分值。 / Calibrate direction scores using play-world records.
+
+## 4. 路线与地图推理 / Route and map reasoning
+
 - [ ] 加入 task 的起终点环路、房间内连接、道路和岛屿连接。 / Add task start/end loops, room connections, roads, and island links.
 - [ ] 加入坐标、视野范围、移动代价和路线重规划。 / Add coordinates, view range, movement costs, and route replanning.
 
-## 4. 游戏地图评估 / Evaluation in game worlds
+## 5. 可选游戏内辅助 / Optional in-game helpers
 
-- [ ] 在多个世界种子中记录观测、推荐方向、目标发现位置和探索距离。 / Record observations, directions, target discoveries, and exploration distances across multiple world seeds.
-- [ ] 留出独立验证数据，比较不同评分规则的效果和运行开销。 / Keep held-out data and compare scoring rules and runtime.
-- [ ] 用评估结果校准方向分值。 / Calibrate direction scores using evaluation results.
+- [ ] 手动流程稳定后，再做 DST mod 采集层，把附近地皮、prefab 数量和方向写成同一种观测 JSON。 / Once the manual workflow is working well, consider a DST mod collector that writes nearby tiles, prefab counts, and directions in the same observation JSON format.
+- [ ] 视需要加入 HUD 目标选择器，显示推荐方向、理由和观测状态。 / If useful, add a HUD target picker that shows suggested directions, reasons, and observation status.
 
-## 5. 更多世界内容 / More world content
+## 6. 更多世界内容 / More world content
 
 - [ ] 加入海洋、月岛和洞穴知识模块。 / Add ocean, lunar-island, and cave knowledge modules.
 - [ ] 加入 boons、世界设置和 retrofit 规则。 / Add boons, world settings, and retrofit rules.

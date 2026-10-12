@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from dst_route_planner.inference import initial_belief, top_items, update_belief
@@ -229,6 +230,16 @@ def demo_observations(target: str = "panflute") -> list[DirectionObservation]:
     return demo_data.get(target, demo_data["panflute"])
 
 
+def _port_number(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("port must be an integer") from error
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 0 and 65535")
+    return port
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DST mainland route planner.")
     parser.add_argument("--target", default="panflute", help="Target prefab (default: panflute).")
@@ -238,11 +249,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--demo", action="store_true", help="Run a built-in example.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for repeatable task graph sampling (default: 0).")
     parser.add_argument("--sample-graph", action="store_true", help="Print a sampled mainland task connection graph as JSON and exit.")
+    parser.add_argument("--ui", action="store_true", help="Start the local browser interface.")
+    parser.add_argument("--port", type=_port_number, default=8765, help="Local interface port (default: 8765).")
+    parser.add_argument("--no-browser", action="store_true", help="Start the interface without opening a browser.")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.ui:
+        from dst_route_planner.app import run_app
+
+        try:
+            run_app(port=args.port, open_browser=not args.no_browser)
+        except OSError as error:
+            print(f"Unable to start the local interface: {error}", file=sys.stderr)
+            return 2
+        return 0
     kb = build_forest_default_kb()
     if args.sample_graph:
         graph = build_random_task_graph(kb, seed=args.seed)
@@ -274,14 +297,18 @@ def main() -> int:
         return 2
 
     belief = initial_belief(kb)
-    if args.current_json:
-        current = observation_from_dict(json.loads(args.current_json.read_text(encoding="utf-8")))
-        belief = update_belief(kb, belief, current)
+    try:
+        if args.current_json:
+            current = observation_from_dict(json.loads(args.current_json.read_text(encoding="utf-8")))
+            belief = update_belief(kb, belief, current)
 
-    if args.observe_json:
-        observations = load_direction_observations(args.observe_json)
-    else:
-        observations = demo_observations(args.target)
+        if args.observe_json:
+            observations = load_direction_observations(args.observe_json)
+        else:
+            observations = demo_observations(args.target)
+    except (OSError, ValueError) as error:
+        print(f"Unable to read observations: {error}", file=sys.stderr)
+        return 2
 
     scores = rank_directions(kb, args.target, belief, observations, seed=args.seed)
     probs = probabilities_by_direction(scores)

@@ -2,50 +2,42 @@
 
 [English](README.en.md)
 
-把《饥荒联机版》中各个方向看到的地皮和地标写成 JSON，这个工具会结合默认大陆的 task、room 生成线索，为寻找排箫、猪王或月台给出方向建议。
+想在《饥荒联机版》里找排箫、猪王或月台？打开本地网页，选好目标，填入各方向看到的地皮和地标，工具就会给出接下来值得探索的方向和判断理由。
 
 ## 开始使用
 
-需要 Python 3.10 或更新版本。在 PowerShell 里克隆仓库并运行内置示例：
+需要 Python 3.10 或更新版本。克隆仓库后，在仓库目录启动本地网页：
 
 ```powershell
 git clone https://github.com/hydrangeia/dst-route-planner.git
 cd dst-route-planner
-python route_planner.py --demo
+python route_planner.py --ui
 ```
 
-列出目标，或用自己的方向观测运行：
+Windows 用户也可以双击 `start_planner.bat` 启动。页面在本机浏览器打开。
 
-```powershell
-python route_planner.py --list-targets
-python route_planner.py --target moonbase --observe-json examples/moonbase_observation.json
-```
+## 使用步骤
 
-默认目标是 `panflute`。你也可以同时提供当前位置线索和各方向观测：
+1. 选择要找的目标。
+2. 在各个方向填写看到的地皮、prefab 和数量。
+3. 点击“计算方向”，查看方向排名及对应线索。
+4. 回到游戏探索，再更新观测并重新计算。
 
-```powershell
-python route_planner.py --target panflute `
-  --current-json examples/current_observation.json `
-  --observe-json examples/panflute_observation.json
-```
-
-想运行开发测试时，先安装开发依赖：
-
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-## 如何读方向建议
-
-结果会列出每个方向的分数，以及与目标相关的线索：
+界面提供示例数据，也可以导入或导出 JSON 观测。
 
 ```text
-north  score=... p_dir=... p_task=... p_room=...
-       looks like target task Speak to the king; looks like target room MagicalDeciduous
+选择目标并填写各方向看到的地皮与地标
+  ↓
+Python 根据知识库匹配 room 和 task 线索
+  ↓
+结合 task 连接图和可见证据排列方向
+  ↓
+查看推荐方向与判断理由
+  ↓
+回到 DST 探索，更新观测后再次计算
 ```
 
-`score` 用于排列方向；`p_dir` 是各候选方向分数归一化后的相对份额。`p_task` 和 `p_room` 显示观测与目标相关 task、room 的匹配程度。解释文字会指出哪些地皮、prefab 或连接线索影响了排序。看到目标 prefab 会显著提高该方向的优先级。
+目前观测由玩家在网页中填写；后续的游戏内采集器可以把同一种 JSON 观测交给 Python 引擎。
 
 ## 可以寻找什么
 
@@ -76,33 +68,10 @@ north  score=... p_dir=... p_task=... p_room=...
 
 各目标对应的 task、room 和 setpiece 线索见 [`dst_route_planner/README.md`](dst_route_planner/README.md#目标与世界生成线索)。
 
-## 输入观察
-
-`--observe-json` 文件以 `directions` 为顶层对象，方向名使用八方位。下面是一个简化例子：
-
-```json
-{
-  "directions": {
-    "north": {
-      "tile_types": ["DECIDUOUS"],
-      "prefabs_seen": ["deciduoustree", "fireflies", "flower", "flower"],
-      "prefab_counts": {"flower": 2, "fireflies": 1},
-      "room_hints": [],
-      "task_hints": [],
-      "connection_like": true,
-      "background_like": false,
-      "note": "落叶林边缘"
-    }
-  }
-}
-```
-
-`tile_types` 和 `prefabs_seen` 使用游戏里的标识符，大小写要与知识库一致。重复填写 prefab 会计入数量；也可以用 `prefab_counts` 直接提供数量。`room_hints` 和 `task_hints` 可以填写你判断出的房间或地形块，`connection_like` 和 `background_like` 是可选布尔值。`note` 用来记录备注。
-
-`--current-json` 接受一个观测对象，字段与方向对象相同，但不需要外层 `directions`。可以从仓库的 [`examples/`](examples/) 样例开始改。
+JSON 字段说明和 CLI 示例见 [`dst_route_planner/README.md`](dst_route_planner/README.md)。
 
 ## 当前进度
 
-Python 引擎可从 JSON 观测给出方向排序，知识库覆盖默认大陆的 20 个 task、53 个 room、13 个静态布局和这 20 种目标。task 图按世界生成规则抽样，帮助比较地形块在图上的远近；下一步是接入游戏内采集，并在 HUD 中选择目标、查看方向建议。
+本地 Python 引擎结合默认大陆的 20 个 task、53 个 room、13 个静态布局和 20 种目标线索来排列方向。任务连接图描述世界生成中的拓扑关系，网页里填写的地皮与地标提供眼前的线索。
 
 后续工作按阶段列在 [`TODO.md`](TODO.md)。早期开发记录见 [`DST_ROUTE_PLANNER_WORK.md`](DST_ROUTE_PLANNER_WORK.md) 和 [`PHASE_5A_COMPLETION_REPORT.md`](PHASE_5A_COMPLETION_REPORT.md)。

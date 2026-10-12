@@ -1,0 +1,828 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>默认大陆路线规划</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #26372d;
+      --muted: #68786d;
+      --line: #d9e1d8;
+      --paper: #f5f6ef;
+      --surface: #fffefa;
+      --green: #466b4d;
+      --green-dark: #31563b;
+      --green-soft: #e9f0e6;
+      --sand: #f2e8d2;
+      --amber: #a36b22;
+      --red: #9b4638;
+      --red-soft: #f8e9e5;
+      --shadow: 0 8px 24px rgb(38 55 45 / 6%);
+      font-family: "Microsoft YaHei UI", "Noto Sans CJK SC", "PingFang SC", system-ui, sans-serif;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-width: 320px;
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse at 7% 0%, rgb(221 231 211 / 55%), transparent 31rem),
+        var(--paper);
+    }
+    button, input, select, textarea { font: inherit; }
+    button, select, input[type="checkbox"] { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible,
+    summary:focus-visible { outline: 3px solid #98b78d; outline-offset: 2px; }
+    .page { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 30px 0 58px; }
+    .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+    .identity { display: flex; align-items: flex-start; gap: 14px; }
+    .mark {
+      display: grid; flex: 0 0 42px; width: 42px; height: 42px; place-items: center;
+      color: var(--green-dark); background: var(--green-soft); border: 1px solid #d3dfcf;
+      border-radius: 14px; font-size: 22px; line-height: 1;
+    }
+    h1 { margin: 1px 0 4px; font-size: clamp(23px, 4vw, 30px); letter-spacing: -.035em; }
+    .subtitle { max-width: 650px; margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .api-state {
+      display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; margin-top: 5px;
+      padding: 8px 11px; border: 1px solid var(--line); border-radius: 999px;
+      color: var(--muted); background: rgb(255 254 250 / 75%); font-size: 12px;
+    }
+    .api-dot { width: 8px; height: 8px; border-radius: 50%; background: #b78e48; }
+    .api-state.ready .api-dot { background: #5d8c5f; }
+    .api-state.error .api-dot { background: #b95a48; }
+    .panel {
+      border: 1px solid var(--line); border-radius: 17px; background: var(--surface); box-shadow: var(--shadow);
+    }
+    .toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; padding: 17px; }
+    .control { display: grid; gap: 6px; min-width: 190px; }
+    .control.seed-control { min-width: 116px; width: 130px; }
+    .control > span, .field-label { color: #53665a; font-size: 12px; font-weight: 700; }
+    select, input[type="number"], input[type="text"], textarea {
+      width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #ccd6cc;
+      border-radius: 9px; color: var(--ink); background: #fff;
+    }
+    select:hover, input:hover, textarea:hover { border-color: #aebfae; }
+    .toolbar-spacer { flex: 1 1 auto; }
+    .action-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .button {
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      min-height: 40px; padding: 8px 13px; border: 1px solid #cbd5ca; border-radius: 9px;
+      color: #405447; background: #fff; font-weight: 650; font-size: 13px;
+      transition: background .15s ease, border-color .15s ease, transform .15s ease;
+    }
+    .button:hover:not(:disabled) { border-color: #98ad98; background: #f3f7f1; }
+    .button:active:not(:disabled) { transform: translateY(1px); }
+    .button:disabled { cursor: wait; opacity: .7; }
+    .button.primary { border-color: var(--green); color: #fff; background: var(--green); }
+    .button.primary:hover:not(:disabled) { border-color: var(--green-dark); background: var(--green-dark); }
+    .button.Quiet { background: transparent; }
+    .button-icon { font-size: 16px; line-height: 1; }
+    .message {
+      display: none; margin-top: 11px; padding: 10px 13px; border-radius: 10px;
+      font-size: 13px; line-height: 1.55;
+    }
+    .message.visible { display: block; }
+    .message.info { color: #4d644f; background: #edf3e9; }
+    .message.error { color: #823c31; background: var(--red-soft); }
+    .current-badge { display: none; align-items: center; justify-content: space-between; gap: 12px; margin-top: 11px; padding: 9px 12px; border: 1px solid #d8e2d4; border-radius: 10px; color: #52675a; background: #f0f5ed; font-size: 12px; }
+    .current-badge.visible { display: flex; }
+    .current-clear { padding: 4px 7px; border: 0; border-radius: 7px; color: #687a6d; background: transparent; font-size: 11px; }
+    .current-clear:hover { background: #e4ecdf; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 27px 2px 12px; }
+    .section-head h2 { margin: 0 0 3px; font-size: 19px; letter-spacing: -.02em; }
+    .section-head p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .toggle-label { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; color: #53665a; background: #fffefa; font-size: 12px; white-space: nowrap; }
+    .toggle-label input { accent-color: var(--green); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+    .direction-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); box-shadow: 0 4px 14px rgb(38 55 45 / 3%); }
+    .card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+    .direction-title { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 15px; }
+    .arrow {
+      display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px;
+      color: var(--green-dark); background: var(--green-soft); font-size: 17px; line-height: 1;
+    }
+    .direction-id { color: #88958b; font-size: 10px; font-weight: 600; letter-spacing: .05em; }
+    .card-section + .card-section { margin-top: 14px; }
+    .card-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+    .subtle { color: #879389; font-size: 11px; }
+    .tile-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tile-chip {
+      position: relative; display: inline-flex; align-items: center; min-height: 29px; padding: 4px 8px;
+      border: 1px solid #d9e1d8; border-radius: 8px; color: #526258; background: #fff;
+      font-size: 11px; line-height: 1.3; cursor: pointer;
+    }
+    .tile-chip:has(input:checked) { border-color: #86a286; color: var(--green-dark); background: #edf4e9; }
+    .tile-chip:has(input:disabled) { border-style: dashed; }
+    .tile-chip input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .tile-chip input:focus-visible + span { outline: 3px solid #98b78d; outline-offset: 2px; border-radius: 2px; }
+    .prefab-list { display: grid; gap: 7px; }
+    .prefab-row { display: grid; grid-template-columns: minmax(0, 1fr) 82px 31px; gap: 7px; align-items: center; }
+    .prefab-row input { min-width: 0; min-height: 35px; padding: 6px 8px; font-size: 12px; }
+    .prefab-row input[type="number"] { text-align: center; }
+    .remove-row { width: 31px; height: 31px; border: 1px solid transparent; border-radius: 8px; color: #8b655d; background: transparent; font-size: 17px; }
+    .remove-row:hover { border-color: #edd8d2; background: #fbf0ec; }
+    .add-row { min-height: 30px; margin-top: 7px; padding: 4px 7px; border: 0; border-radius: 7px; color: var(--green); background: transparent; font-size: 12px; font-weight: 700; }
+    .add-row:hover { background: #edf3e9; }
+    details.extra { margin-top: 13px; border-top: 1px solid #edf0e9; padding-top: 9px; }
+    details.extra summary { width: fit-content; color: #6f7e73; font-size: 11px; cursor: pointer; }
+    .extra-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 10px; }
+    .extra-grid label { display: grid; gap: 5px; color: #64746a; font-size: 11px; }
+    .extra-grid input, .extra-grid select { min-height: 34px; padding: 6px 8px; font-size: 11px; }
+    .full { grid-column: 1 / -1; }
+    .results-head { align-items: center; }
+    .stale-note { display: none; margin-top: 4px; color: var(--amber); font-size: 11px; }
+    .stale-note.visible { display: block; }
+    .empty-results { padding: 24px 17px; border: 1px dashed #cdd7cb; border-radius: 14px; color: #708075; background: rgb(255 254 250 / 55%); text-align: center; font-size: 13px; line-height: 1.6; }
+    .results-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .result-card { padding: 15px; border: 1px solid #d5dfd3; border-radius: 14px; background: var(--surface); box-shadow: 0 4px 16px rgb(38 55 45 / 4%); }
+    .result-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .result-direction { display: flex; align-items: center; gap: 9px; }
+    .rank { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; color: #70501e; background: var(--sand); font-size: 12px; font-weight: 800; }
+    .result-direction h3 { margin: 0; font-size: 15px; }
+    .result-share { color: var(--green-dark); font-size: 17px; font-weight: 800; white-space: nowrap; }
+    .bar-track { overflow: hidden; height: 8px; margin: 11px 0 12px; border-radius: 999px; background: #e8ede5; }
+    .bar-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8aa67c, #496e4e); transition: width .25s ease; }
+    .explanations { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+    .explanations li { display: flex; gap: 8px; color: #526258; font-size: 12px; line-height: 1.55; }
+    .explanations li::before { content: "·"; color: #78936f; font-weight: 900; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+    .metric { padding: 4px 7px; border-radius: 7px; color: #69776d; background: #f0f3ed; font-size: 10px; }
+    .tasks-box { margin-top: 13px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 13px; background: #fbfcf7; }
+    .tasks-box h3 { margin: 0 0 8px; color: #5a6b5e; font-size: 12px; }
+    .task-list { display: flex; flex-wrap: wrap; gap: 7px; }
+    .task-chip { padding: 5px 8px; border: 1px solid #e0e6dc; border-radius: 8px; color: #66756b; background: #fff; font-size: 11px; }
+    .task-chip b { color: #415448; }
+    .spinner { width: 14px; height: 14px; border: 2px solid rgb(255 255 255 / 45%); border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    @media (max-width: 760px) {
+      .page { width: min(100% - 22px, 600px); padding-top: 20px; }
+      .topline { flex-direction: column; gap: 10px; }
+      .api-state { margin: 0 0 0 56px; }
+      .toolbar { align-items: stretch; }
+      .control { flex: 1 1 100%; min-width: 0; }
+      .control.seed-control { flex: 1 1 100%; width: auto; }
+      .toolbar-spacer { display: none; }
+      .action-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .action-row .primary { grid-column: 1 / -1; grid-row: 1; }
+      .grid, .results-grid { grid-template-columns: 1fr; }
+      .section-head { align-items: flex-start; }
+      .section-head .toggle-label { align-self: center; }
+    }
+    @media (max-width: 430px) {
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .section-head .toggle-label { align-self: flex-start; }
+      .extra-grid { grid-template-columns: 1fr; }
+      .full { grid-column: auto; }
+      .result-share { font-size: 15px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topline">
+      <div class="identity">
+        <div class="mark" aria-hidden="true">⌖</div>
+        <div>
+          <h1>默认大陆路线规划</h1>
+          <p class="subtitle">记下四周看到的地皮和地标，查看更值得先探索的方向。</p>
+        </div>
+      </div>
+      <div class="api-state" id="apiState" role="status"><span class="api-dot"></span><span id="apiStateText">正在连接本地引擎</span></div>
+    </header>
+
+    <section class="panel" aria-label="目标和操作">
+      <div class="toolbar">
+        <label class="control" for="targetSelect"><span>想找什么</span><select id="targetSelect" aria-label="选择目标"></select></label>
+        <label class="control seed-control" for="seedInput"><span>随机种子</span><input id="seedInput" type="number" min="0" step="1" value="0" inputmode="numeric"></label>
+        <div class="toolbar-spacer"></div>
+        <div class="action-row">
+          <button class="button primary" id="calculateButton" type="button"><span class="button-icon" aria-hidden="true">⌁</span><span>计算方向</span></button>
+          <button class="button" id="demoButton" type="button">载入排箫示例</button>
+          <button class="button" id="loadButton" type="button">载入 JSON</button>
+          <button class="button" id="downloadButton" type="button">下载观测 JSON</button>
+          <button class="button Quiet" id="resetButton" type="button">重置</button>
+          <input class="sr-only" id="fileInput" type="file" accept=".json,application/json" aria-label="选择观测 JSON 文件">
+        </div>
+      </div>
+    </section>
+    <div class="message" id="message" role="status" aria-live="polite"></div>
+    <div class="current-badge" id="currentBadge"><span id="currentSummary"></span><button class="current-clear" id="clearCurrent" type="button">移除</button></div>
+
+    <section aria-labelledby="observationTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="observationTitle">周围观测</h2>
+          <p>只填写有看到的线索；空白方向不会参与计算。prefab 数量可填 0 或更大的整数。</p>
+        </div>
+        <label class="toggle-label"><input id="diagonalToggle" type="checkbox"><span>显示八方位</span></label>
+      </div>
+      <div class="grid" id="directionGrid" aria-live="off"></div>
+    </section>
+
+    <section aria-labelledby="resultsTitle">
+      <div class="section-head results-head">
+        <div>
+          <h2 id="resultsTitle">方向建议</h2>
+          <p>百分比表示本次候选方向之间的相对优先度。</p>
+          <div class="stale-note" id="staleNote">观测已修改；下方结果仍对应上一份输入。</div>
+        </div>
+      </div>
+      <div id="resultsArea"><div class="empty-results">填入至少一个方向的有效线索，再点“计算方向”。</div></div>
+    </section>
+    <datalist id="prefabOptions"></datalist>
+  </main>
+
+  <script>
+    "use strict";
+
+    const TARGETS = {
+      antlion_spawner: "蚁狮地形点", beequeenhive: "蜂后蜂巢", cave_entrance: "洞穴入口",
+      dragonfly_spawner: "龙蝇竞技场", lightninggoat: "电羊", mandrake_planted: "曼德拉草",
+      mermhouse: "鱼人房", molehill: "鼹鼠丘", moonbase: "月台", moose_nesting_ground: "麋鹿鹅巢",
+      oasislake: "绿洲湖", panflute: "排箫", pigking: "猪王", resurrectionstone: "复活石",
+      spiderden: "蜘蛛巢", statueglommer: "格罗姆雕像", tentacle: "触手", walrus_camp: "海象营地",
+      wasphive: "杀人蜂巢", wormhole: "虫洞"
+    };
+    const TARGET_ORDER = Object.keys(TARGETS);
+    const DIRS = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"];
+    const CARDINALS = ["north", "east", "south", "west"];
+    const DIR_LABELS = {
+      north: ["北", "↑"], northeast: ["东北", "↗"], east: ["东", "→"], southeast: ["东南", "↘"],
+      south: ["南", "↓"], southwest: ["西南", "↙"], west: ["西", "←"], northwest: ["西北", "↖"]
+    };
+    const TILE_LABELS = {
+      GRASS: "草地", FOREST: "森林", DECIDUOUS: "落叶林", SAVANNA: "草原", MARSH: "沼泽",
+      ROCKY: "岩石地", DIRT: "泥地", DIRT_NOISE: "泥地边缘", GROUND_NOISE: "混合地形",
+      LIGHTNINGBLUFF: "雷电高地", METEOR: "陨石地", CAVE: "洞穴"
+    };
+    const PREFAB_LABELS = {
+      evergreen: "常青树", deciduoustree: "落叶树", grass: "草", flower: "花", pighouse: "猪屋",
+      pigking: "猪王", spiderden: "蜘蛛巢", beehive: "蜂箱", beequeenhive: "蜂后蜂巢",
+      rocks: "石头", rock1: "岩石", rock2: "岩石堆", rabbithole: "兔子洞", molehill: "鼹鼠丘",
+      sapling: "树苗", twiggytree: "树枝树", berrybush: "浆果丛", berrybush_juicy: "多汁浆果丛",
+      fireflies: "萤火虫", tentacle: "触手", mermhouse: "鱼人房", walrus_camp: "海象营地",
+      moonbase: "月台", panflute: "排箫", mandrake_planted: "曼德拉草", statueglommer: "格罗姆雕像",
+      cave_entrance: "洞穴入口", resurrectionstone: "复活石", wormhole: "虫洞", oasislake: "绿洲湖",
+      wasphive: "杀人蜂巢", lightninggoat: "电羊", moose_nesting_ground: "麋鹿鹅巢",
+      dragonfly_spawner: "龙蝇巢", antlion_spawner: "蚁狮", goldnugget: "金块", flint: "燧石",
+      carrot: "胡萝卜", reeds: "芦苇", pond: "池塘", pond_mos: "沼泽池塘", marsh_tree: "沼泽树"
+    };
+    const TASK_LABELS = {
+      "Make a pick": "制作镐子", "Dig that rock": "挖开岩石", "Great Plains": "大草原", Squeltch: "沼泽与蜘蛛",
+      "Beeeees!": "蜜蜂！", "Speak to the king": "觐见猪王", "Forest hunters": "森林猎手",
+      "For a nice walk": "散步路线", Dragonfly: "龙蝇", "Lightning Bluff": "雷电高地",
+      "Befriend the pigs": "结交猪人", "Kill the spiders": "消灭蜘蛛", "Killer bees!": "杀人蜂！",
+      "Make a Beehat": "制作蜂帽", MooseBreedingTask: "麋鹿鹅繁殖区", "Mole Colony Rocks": "岩地鼹鼠群",
+      "Mole Colony Deciduous": "落叶林鼹鼠群", "Frogs and bugs": "青蛙与虫子"
+    };
+    const ROOM_LABELS = {
+      MagicalDeciduous: "神秘落叶林", PigKingdom: "猪王村", PigVillage: "猪人村", BeeQueenBee: "蜂后蜂巢地形",
+      LightningBluffAntlion: "蚁狮地形点", LightningBluffLightning: "电羊地形", DragonflyArena: "龙蝇竞技场",
+      MandrakeHome: "曼德拉草地形", SlightlyMermySwamp: "鱼人沼泽", MolesvilleRocky: "岩地鼹鼠群",
+      DeciduousMole: "落叶林鼹鼠群", SpiderVillage: "蜘蛛村", WalrusHut_Grassy: "海象营地地形",
+      MoonbaseOne: "月台树林", Pondopolis: "池塘区", Graveyard: "墓地", Rocky: "岩石地形"
+    };
+    const EXPLANATIONS = {
+      "target prefab visible; go directly there": "已经看到目标地标，可以优先前往确认。",
+      "target landmark prefab visible": "看到了目标路线上的地标。",
+      "direction appears to cross into a connected room/task": "这个方向看起来通向可继续探索的房间或地形块。",
+      "background-like area, discounted": "这里更像外围背景区域，入口线索更值得优先查看。",
+      "weak evidence; score mainly from task progression priors": "目前线索较少，建议结合周围方向继续观察。"
+    };
+
+    const state = {
+      options: { targets: [], tile_types: [], prefabs: [], directions: [] },
+      target: "panflute", seed: "0", showDiagonals: false, current: null,
+      dirs: Object.fromEntries(DIRS.map(direction => [direction, emptyDirection()])),
+      result: null, revision: 0, requestId: 0, controller: null, loading: false
+    };
+    const el = {
+      target: document.getElementById("targetSelect"), seed: document.getElementById("seedInput"),
+      grid: document.getElementById("directionGrid"), diagonal: document.getElementById("diagonalToggle"),
+      apiState: document.getElementById("apiState"), apiStateText: document.getElementById("apiStateText"),
+      message: document.getElementById("message"), calculate: document.getElementById("calculateButton"),
+      demo: document.getElementById("demoButton"), load: document.getElementById("loadButton"),
+      download: document.getElementById("downloadButton"), reset: document.getElementById("resetButton"),
+      file: document.getElementById("fileInput"), results: document.getElementById("resultsArea"),
+      stale: document.getElementById("staleNote"), prefabOptions: document.getElementById("prefabOptions"),
+      currentBadge: document.getElementById("currentBadge"), currentSummary: document.getElementById("currentSummary"),
+      clearCurrent: document.getElementById("clearCurrent")
+    };
+
+    function emptyDirection() {
+      return { tiles: [], prefabRows: [{ id: "", count: "1" }], connection: "", background: "", note: "", roomHints: "", taskHints: "" };
+    }
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    }
+    function displayTile(id) { return TILE_LABELS[id] ? `${TILE_LABELS[id]} · ${id}` : id; }
+    function setMessage(text, kind = "info") {
+      el.message.textContent = text;
+      el.message.className = `message visible ${kind}`;
+    }
+    function clearMessage() { el.message.textContent = ""; el.message.className = "message"; }
+    function setApiStatus(kind, text) {
+      el.apiState.className = `api-state ${kind || ""}`;
+      el.apiStateText.textContent = text;
+    }
+    function optionList(value) {
+      return Array.isArray(value) ? value.map(item => typeof item === "string" ? item : item?.id ?? item?.name).filter(item => typeof item === "string") : [];
+    }
+    function renderTargetOptions() {
+      const known = state.options.targets.length ? state.options.targets : TARGET_ORDER;
+      const ids = [...new Set(known)];
+      if (state.target && !ids.includes(state.target)) ids.unshift(state.target);
+      el.target.innerHTML = ids.map(id => {
+        const missing = !known.includes(id);
+        const label = missing ? `未识别目标：${id}（${id}）` : `${TARGETS[id] || id}（${id}）`;
+        return `<option value="${esc(id)}">${esc(label)}</option>`;
+      }).join("");
+      el.target.value = state.target;
+    }
+    function renderPrefabOptions() {
+      const values = new Set([...state.options.prefabs, ...Object.keys(PREFAB_LABELS)]);
+      el.prefabOptions.innerHTML = [...values].sort((a, b) => a.localeCompare(b)).map(id => {
+        const alias = PREFAB_LABELS[id];
+        return `<option value="${esc(id)}" label="${esc(alias ? `${alias} · ${id}` : id)}"></option>`;
+      }).join("");
+    }
+    function activeDirections() {
+      return state.showDiagonals ? DIRS : CARDINALS;
+    }
+    function renderCards() {
+      const tileOptions = [...new Set(state.options.tile_types)];
+      el.grid.innerHTML = activeDirections().map(direction => {
+        const [label, arrow] = DIR_LABELS[direction] || [direction, "·"];
+        const data = state.dirs[direction];
+        const tiles = [...new Set([...tileOptions, ...data.tiles])];
+        const tileHtml = tiles.length ? tiles.map(tile => {
+          const checked = data.tiles.includes(tile) ? "checked" : "";
+          const unknown = !tileOptions.includes(tile);
+          return `<label class="tile-chip" title="${esc(tile)}"><input class="tile-check" type="checkbox" data-direction="${direction}" value="${esc(tile)}" ${checked}><span>${unknown ? `未识别 · ${esc(tile)}` : esc(displayTile(tile))}</span></label>`;
+        }).join("") : `<span class="subtle">正在读取地皮列表…</span>`;
+        const rows = data.prefabRows.map((row, index) => `
+          <div class="prefab-row" data-row="${index}">
+            <input class="prefab-id" type="text" list="prefabOptions" autocomplete="off" spellcheck="false" placeholder="选择或输入 prefab ID" aria-label="${label}方向地标 ID，第 ${index + 1} 行" data-direction="${direction}" data-index="${index}" value="${esc(row.id)}">
+            <input class="prefab-count" type="number" min="0" step="1" inputmode="numeric" aria-label="${label}方向此地标数量" data-direction="${direction}" data-index="${index}" value="${esc(row.count)}">
+            <button class="remove-row" type="button" data-action="remove-row" data-direction="${direction}" data-index="${index}" aria-label="移除这一行">×</button>
+          </div>`).join("");
+        const connection = data.connection === "" ? "" : data.connection;
+        const background = data.background === "" ? "" : data.background;
+        return `
+          <article class="direction-card" aria-labelledby="title-${direction}">
+            <div class="card-top"><h3 class="direction-title" id="title-${direction}"><span class="arrow" aria-hidden="true">${arrow}</span>${label} <span class="direction-id">${direction.toUpperCase()}</span></h3><span class="subtle">可留空</span></div>
+            <div class="card-section"><div class="card-section-head"><span class="field-label">地皮</span><span class="subtle">可多选</span></div><div class="tile-list">${tileHtml}</div></div>
+            <div class="card-section"><div class="card-section-head"><span class="field-label">看到的地标</span><span class="subtle">输入 ID，重复行会合并数量</span></div><div class="prefab-list">${rows}</div><button class="add-row" type="button" data-action="add-row" data-direction="${direction}">＋ 添加地标</button></div>
+            <details class="extra" ${hasExtraValues(data) ? "open" : ""}>
+              <summary>更多线索（可选）</summary>
+              <div class="extra-grid">
+                <label>像可进入的连接口
+                  <select class="connection-like" data-direction="${direction}"><option value="" ${connection === "" ? "selected" : ""}>不判断</option><option value="true" ${connection === "true" ? "selected" : ""}>是</option><option value="false" ${connection === "false" ? "selected" : ""}>否</option></select>
+                </label>
+                <label>像外围背景
+                  <select class="background-like" data-direction="${direction}"><option value="" ${background === "" ? "selected" : ""}>不判断</option><option value="true" ${background === "true" ? "selected" : ""}>是</option><option value="false" ${background === "false" ? "selected" : ""}>否</option></select>
+                </label>
+                <label class="full">房间线索 ID（逗号分隔）<input class="room-hints" type="text" data-direction="${direction}" value="${esc(data.roomHints)}" placeholder="可选"></label>
+                <label class="full">Task 名称（逗号分隔）<input class="task-hints" type="text" data-direction="${direction}" value="${esc(data.taskHints)}" placeholder="可选"></label>
+                <label class="full">备注<input class="direction-note" type="text" data-direction="${direction}" value="${esc(data.note)}" placeholder="只供自己辨认，不参与计算"></label>
+              </div>
+            </details>
+          </article>`;
+      }).join("");
+    }
+    function hasExtraValues(data) {
+      return data.connection !== "" || data.background !== "" || data.roomHints || data.taskHints || data.note;
+    }
+    function setFromApiOptions(payload) {
+      state.options = {
+        targets: optionList(payload.targets), tile_types: optionList(payload.tile_types),
+        prefabs: optionList(payload.prefabs), directions: optionList(payload.directions)
+      };
+      const suppliedDirections = new Set(state.options.directions);
+      const missing = DIRS.filter(direction => !suppliedDirections.has(direction));
+      if (missing.length) throw new Error(`本地选项缺少方向：${missing.join("、")}`);
+      if (!state.options.targets.length || !state.options.tile_types.length || !state.options.prefabs.length) {
+        throw new Error("本地选项列表不完整，请重启路线规划服务。");
+      }
+      if (!state.options.targets.includes(state.target)) state.target = state.options.targets.includes("panflute") ? "panflute" : state.options.targets[0];
+      renderTargetOptions(); renderPrefabOptions(); renderCards();
+    }
+    async function readJsonResponse(response) {
+      let data;
+      try { data = await response.json(); } catch (_) { data = {}; }
+      if (!response.ok) throw new Error(data && typeof data.error === "string" ? data.error : `本地引擎返回错误（${response.status}）。`);
+      return data;
+    }
+    async function initialize() {
+      renderTargetOptions(); renderCards(); renderPrefabOptions();
+      setApiStatus("", "正在连接本地引擎");
+      try {
+        const response = await fetch("/api/options", { headers: { "Accept": "application/json" } });
+        setFromApiOptions(await readJsonResponse(response));
+        setApiStatus("ready", "本地引擎已连接");
+      } catch (error) {
+        setApiStatus("error", "本地引擎未连接");
+        setMessage(`暂时无法读取本地选项：${error.message}。请确认服务已启动后重试。`, "error");
+      }
+    }
+    function toObservation(direction, errors, prefix = "", includeNoteOnly = false) {
+      const data = state.dirs[direction];
+      const tiles = [...new Set(data.tiles)];
+      const counts = {};
+      const seen = new Set();
+      data.prefabRows.forEach((row, index) => {
+        const id = String(row.id || "").trim();
+        const countText = String(row.count ?? "").trim();
+        if (!id) {
+          if (countText !== "" && countText !== "1") errors.push(`${prefix}${DIR_LABELS[direction][0]}方向第 ${index + 1} 行有数量但没有 prefab ID。`);
+          return;
+        }
+        if (!state.options.prefabs.includes(id)) errors.push(`${prefix}${DIR_LABELS[direction][0]}方向的 prefab ID 未知：${id}`);
+        if (countText === "" || !/^\d+$/.test(countText)) {
+          errors.push(`${prefix}${DIR_LABELS[direction][0]}方向 ${id} 的数量需要是非负整数。`);
+          return;
+        }
+        const count = Number(countText);
+        if (!Number.isSafeInteger(count) || count < 0) {
+          errors.push(`${prefix}${DIR_LABELS[direction][0]}方向 ${id} 的数量超出有效范围。`);
+          return;
+        }
+        counts[id] = (counts[id] || 0) + count;
+        if (count > 0) seen.add(id);
+      });
+      for (const tile of tiles) {
+        if (!state.options.tile_types.includes(tile)) errors.push(`${prefix}${DIR_LABELS[direction][0]}方向的地皮 ID 未知：${tile}`);
+      }
+      const observation = { tile_types: tiles, prefabs_seen: [...seen], prefab_counts: counts };
+      if (data.connection !== "") observation.connection_like = data.connection === "true";
+      if (data.background !== "") observation.background_like = data.background === "true";
+      const roomHints = splitHints(data.roomHints);
+      const taskHints = splitHints(data.taskHints);
+      if (roomHints.length) observation.room_hints = roomHints;
+      if (taskHints.length) observation.task_hints = taskHints;
+      if (data.note.trim()) observation.note = data.note.trim();
+      const nonempty = tiles.length > 0 || seen.size > 0 || observation.connection_like !== undefined ||
+        observation.background_like !== undefined || roomHints.length > 0 || taskHints.length > 0 ||
+        (includeNoteOnly && Boolean(observation.note));
+      return nonempty ? observation : null;
+    }
+    function splitHints(text) {
+      return String(text || "").split(/[,，]/).map(value => value.trim()).filter(Boolean);
+    }
+    function validateRequest(includeDiagonals = state.showDiagonals, includeNoteOnly = false) {
+      const errors = [];
+      if (!state.options.targets.includes(state.target)) errors.push(`未识别目标 ID：${state.target}`);
+      if (!/^\d+$/.test(String(state.seed).trim()) || !Number.isSafeInteger(Number(state.seed)) || Number(state.seed) < 0) errors.push("随机种子需要是 0 或更大的整数。");
+      const directions = {};
+      for (const direction of includeDiagonals ? DIRS : CARDINALS) {
+        const observation = toObservation(direction, errors, "", includeNoteOnly);
+        if (observation) directions[direction] = observation;
+      }
+      if (!Object.keys(directions).length) errors.push("至少填写一个方向的有效线索。");
+      return { errors, payload: { schema_version: 1, target: state.target, seed: Number(state.seed), directions, ...(state.current ? { current: state.current } : {}) } };
+    }
+    function cancelStaleRequest() {
+      state.revision += 1;
+      if (state.controller) state.controller.abort();
+      state.controller = null;
+      if (state.loading) {
+        state.loading = false;
+        setCalculating(false);
+      }
+      if (state.result) el.stale.classList.add("visible");
+      if (el.message.classList.contains("error")) clearMessage();
+    }
+    function setCalculating(active) {
+      state.loading = active;
+      el.calculate.disabled = active;
+      el.calculate.innerHTML = active
+        ? '<span class="spinner" aria-hidden="true"></span><span>正在计算…</span>'
+        : '<span class="button-icon" aria-hidden="true">⌁</span><span>计算方向</span>';
+    }
+    async function calculate() {
+      clearMessage();
+      const { errors, payload } = validateRequest();
+      if (errors.length) {
+        setMessage(errors.join(" "), "error");
+        return;
+      }
+      if (state.controller) state.controller.abort();
+      const requestId = ++state.requestId;
+      const revision = state.revision;
+      const controller = new AbortController();
+      state.controller = controller;
+      setCalculating(true);
+      setMessage("正在整理周围线索…", "info");
+      try {
+        const response = await fetch("/api/plan", {
+          method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify(payload), signal: controller.signal
+        });
+        const result = await readJsonResponse(response);
+        if (requestId !== state.requestId || revision !== state.revision) return;
+        if (!result || !Array.isArray(result.directions)) throw new Error("本地引擎返回的数据格式无法识别。");
+        state.result = result;
+        el.stale.classList.remove("visible");
+        renderResults(result);
+        if (result.directions.length) setMessage("方向建议已更新。", "info");
+        else setMessage("当前没有可比较的方向。再补充一些地皮或地标试试。", "info");
+      } catch (error) {
+        if (error.name !== "AbortError" && requestId === state.requestId && revision === state.revision) setMessage(error.message || "计算失败，请稍后重试。", "error");
+      } finally {
+        if (requestId === state.requestId) {
+          state.controller = null;
+          setCalculating(false);
+        }
+      }
+    }
+    function formatShare(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return `${(Math.max(0, Math.min(1, number)) * 100).toFixed(number > 0 && number < 0.01 ? 1 : 0)}%`;
+    }
+    function formatMetric(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(2) : "—";
+    }
+    function translateExplanation(message) {
+      if (EXPLANATIONS[message]) return EXPLANATIONS[message];
+      let match = /^looks like target task (.+)$/.exec(message);
+      if (match) return `线索更像目标相关地形块：${TASK_LABELS[match[1]] || match[1]}（${match[1]}）。`;
+      match = /^looks like target room (.+)$/.exec(message);
+      if (match) return `线索更像目标相关房间：${ROOM_LABELS[match[1]] || match[1]}（${match[1]}）。`;
+      return "还有一条引擎线索，可结合地皮和地标一起判断。";
+    }
+    function renderResults(result) {
+      const entries = [...result.directions].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+      if (!entries.length) {
+        el.results.innerHTML = '<div class="empty-results">没有足够的有效线索形成方向建议。补充地皮或已知地标后再试。</div>';
+        return;
+      }
+      const cards = entries.map((item, index) => {
+        const direction = DIR_LABELS[item.direction] || [item.direction || "未知方向", "·"];
+        const share = Number(item.p_dir);
+        const width = Number.isFinite(share) ? Math.max(0, Math.min(100, share * 100)) : 0;
+        const explanations = Array.isArray(item.explanation) ? item.explanation : [];
+        return `<article class="result-card">
+          <div class="result-top"><div class="result-direction"><span class="rank">${index + 1}</span><h3>${direction[0]} <span class="direction-id">${esc(item.direction || "")}</span></h3></div><div class="result-share">${formatShare(item.p_dir)}</div></div>
+          <div class="bar-track" aria-label="相对优先度 ${formatShare(item.p_dir)}"><div class="bar-fill" style="width:${width}%"></div></div>
+          <ul class="explanations">${explanations.length ? explanations.map(text => `<li>${esc(translateExplanation(String(text)))}</li>`).join("") : "<li>暂无补充说明。</li>"}</ul>
+          <div class="metrics"><span class="metric">综合分 ${formatMetric(item.score)}</span><span class="metric">任务线索 ${formatMetric(item.p_task)}</span><span class="metric">房间线索 ${formatMetric(item.p_room)}</span></div>
+        </article>`;
+      }).join("");
+      let currentTasks = "";
+      if (state.current && Array.isArray(result.current_tasks) && result.current_tasks.length) {
+        const chips = result.current_tasks.map(task => {
+          const name = String(task.name || "");
+          const label = TASK_LABELS[name] ? `${TASK_LABELS[name]} · ${name}` : name;
+          return `<span class="task-chip">${esc(label)} <b>${formatShare(task.probability)}</b></span>`;
+        }).join("");
+        currentTasks = `<section class="tasks-box"><h3>当前位置线索</h3><div class="task-list">${chips}</div></section>`;
+      }
+      el.results.innerHTML = `<div class="results-grid">${cards}</div>${currentTasks}`;
+    }
+    function normalizeObservation(value, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}需要是一个观测对象。`);
+      if (value.schema_version !== undefined && value.schema_version !== 1) throw new Error(`${label}的 schema_version 只支持 1。`);
+      const tiles = value.tile_types === undefined ? [] : value.tile_types;
+      const seen = value.prefabs_seen === undefined ? [] : value.prefabs_seen;
+      const hasCounts = Object.prototype.hasOwnProperty.call(value, "prefab_counts");
+      const counts = value.prefab_counts;
+      const isStringList = items => Array.isArray(items) && items.every(item => typeof item === "string" && item.trim().length > 0);
+      if (!isStringList(tiles)) throw new Error(`${label}的 tile_types 格式不正确。`);
+      if (!isStringList(seen)) throw new Error(`${label}的 prefabs_seen 格式不正确。`);
+      if (hasCounts && (!counts || typeof counts !== "object" || Array.isArray(counts))) throw new Error(`${label}的 prefab_counts 格式不正确。`);
+      const merged = new Map();
+      if (hasCounts) {
+        for (const [id, count] of Object.entries(counts)) {
+          if (!id.trim()) throw new Error(`${label}的 prefab_counts 包含空 prefab ID。`);
+          if (!Number.isSafeInteger(count) || count < 0) throw new Error(`${label}中 ${id} 的数量必须是非负整数。`);
+          if (count > 0) merged.set(id, count);
+        }
+        // A listed prefab is evidence even when its explicit count is zero.
+        for (const id of seen) if (!merged.has(id) || merged.get(id) < 1) merged.set(id, 1);
+      } else {
+        for (const id of seen) merged.set(id, (merged.get(id) || 0) + 1);
+      }
+      const extra = {};
+      for (const key of ["connection_like", "background_like", "note"]) if (key in value) extra[key] = value[key];
+      for (const key of ["room_hints", "task_hints"]) if (key in value) extra[key] = value[key];
+      if (extra.connection_like !== undefined && extra.connection_like !== null && typeof extra.connection_like !== "boolean") throw new Error(`${label}的 connection_like 必须是布尔值或 null。`);
+      if (extra.background_like !== undefined && extra.background_like !== null && typeof extra.background_like !== "boolean") throw new Error(`${label}的 background_like 必须是布尔值或 null。`);
+      if (extra.note !== undefined && typeof extra.note !== "string") throw new Error(`${label}的 note 必须是文本。`);
+      if (extra.room_hints !== undefined && !isStringList(extra.room_hints)) throw new Error(`${label}的 room_hints 必须是非空文本数组。`);
+      if (extra.task_hints !== undefined && !isStringList(extra.task_hints)) throw new Error(`${label}的 task_hints 必须是非空文本数组。`);
+      return {
+        tiles: [...new Set(tiles)], prefabRows: [...merged.entries()].map(([id, count]) => ({ id, count: String(count) })),
+        connection: extra.connection_like === undefined || extra.connection_like === null ? "" : String(extra.connection_like),
+        background: extra.background_like === undefined || extra.background_like === null ? "" : String(extra.background_like),
+        note: extra.note || "", roomHints: Array.isArray(extra.room_hints) ? extra.room_hints.join(", ") : "",
+        taskHints: Array.isArray(extra.task_hints) ? extra.task_hints.join(", ") : ""
+      };
+    }
+    function normalizedObservationToJson(data) {
+      const counts = {};
+      const seen = new Set();
+      for (const row of data.prefabRows) {
+        const id = String(row.id || "").trim();
+        const countText = String(row.count ?? "").trim();
+        if (!id || !/^\d+$/.test(countText)) continue;
+        const count = Number(countText);
+        if (!Number.isSafeInteger(count)) continue;
+        counts[id] = (counts[id] || 0) + count;
+        if (count > 0) seen.add(id);
+      }
+      const observation = { tile_types: [...new Set(data.tiles)], prefabs_seen: [...seen], prefab_counts: counts };
+      if (data.connection !== "") observation.connection_like = data.connection === "true";
+      if (data.background !== "") observation.background_like = data.background === "true";
+      const roomHints = splitHints(data.roomHints);
+      const taskHints = splitHints(data.taskHints);
+      if (roomHints.length) observation.room_hints = roomHints;
+      if (taskHints.length) observation.task_hints = taskHints;
+      if (data.note.trim()) observation.note = data.note.trim();
+      return observation;
+    }
+    function updateCurrentBadge() {
+      if (!state.current) {
+        el.currentBadge.classList.remove("visible");
+        el.currentSummary.textContent = "";
+        return;
+      }
+      const tileCount = Array.isArray(state.current.tile_types) ? state.current.tile_types.length : 0;
+      const counts = state.current.prefab_counts && typeof state.current.prefab_counts === "object" ? state.current.prefab_counts : {};
+      const prefabCount = Object.values(counts).filter(count => Number(count) > 0).length;
+      el.currentSummary.textContent = `已载入当前位置线索：${tileCount} 种地皮、${prefabCount} 种地标；计算时会一并使用。`;
+      el.currentBadge.classList.add("visible");
+    }
+    function applyPayload(payload, label) {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("JSON 顶层需要是对象。");
+      if (payload.schema_version !== undefined && payload.schema_version !== 1) throw new Error(`暂不支持 schema_version ${payload.schema_version}。`);
+      const observationFields = ["tile_types", "prefabs_seen", "prefab_counts", "room_hints", "task_hints", "connection_like", "background_like", "note"];
+      const isObservationOnly = payload.directions === undefined && (payload.current !== undefined || observationFields.some(key => key in payload));
+      if (!isObservationOnly && (!payload.directions || typeof payload.directions !== "object" || Array.isArray(payload.directions))) throw new Error("JSON 需要包含 directions，或是一份当前位置观测对象。");
+      const imported = isObservationOnly ? state.dirs : Object.fromEntries(DIRS.map(direction => [direction, emptyDirection()]));
+      for (const [direction, observation] of Object.entries(payload.directions || {})) {
+        if (!DIRS.includes(direction) || !state.options.directions.includes(direction)) throw new Error(`不认识方向“${direction}”，没有导入文件。`);
+        imported[direction] = normalizeObservation(observation, `${DIR_LABELS[direction][0]}方向`);
+      }
+      if (!isObservationOnly && payload.target !== undefined && typeof payload.target !== "string") throw new Error("target 需要是 prefab ID 文本。");
+      if (!isObservationOnly && payload.seed !== undefined && (!Number.isSafeInteger(payload.seed) || payload.seed < 0)) throw new Error("seed 需要是 0 或更大的整数。");
+      if (payload.current !== undefined && (!payload.current || typeof payload.current !== "object" || Array.isArray(payload.current))) throw new Error("current 需要是一个观测对象。");
+      const currentSource = isObservationOnly && payload.current === undefined ? payload : payload.current;
+      const nextCurrent = currentSource ? normalizedObservationToJson(normalizeObservation(currentSource, "当前位置")) : null;
+      cancelStaleRequest();
+      state.dirs = imported;
+      if (!isObservationOnly && payload.target !== undefined) state.target = payload.target;
+      if (!isObservationOnly && payload.seed !== undefined) state.seed = String(payload.seed);
+      state.current = nextCurrent;
+      const hasDiagonal = DIRS.some(direction => {
+        if (CARDINALS.includes(direction)) return false;
+        const data = imported[direction];
+        return data.tiles.length || data.prefabRows.some(row => row.id) || data.connection !== "" || data.background !== "" || data.roomHints.trim() || data.taskHints.trim() || data.note.trim();
+      });
+      if (hasDiagonal) state.showDiagonals = true;
+      el.diagonal.checked = state.showDiagonals;
+      el.seed.value = state.seed;
+      renderTargetOptions(); renderCards();
+      updateCurrentBadge();
+      el.stale.classList.toggle("visible", !!state.result);
+      if (isObservationOnly) {
+        setMessage(`${label}已载入当前位置观测。`, "info");
+      } else {
+        const importedCount = Object.values(imported).filter(data => data.tiles.length || data.prefabRows.some(row => row.id) || data.connection !== "" || data.background !== "" || data.roomHints || data.taskHints || data.note.trim()).length;
+        setMessage(`${label}已载入，包含 ${importedCount} 个有内容的方向。`, "info");
+      }
+    }
+    async function loadDemo() {
+      clearMessage();
+      cancelStaleRequest();
+      const requestId = ++state.requestId;
+      const revision = state.revision;
+      const controller = new AbortController();
+      state.controller = controller;
+      el.demo.disabled = true;
+      el.demo.textContent = "正在载入…";
+      try {
+        const response = await fetch("/api/demo", { headers: { "Accept": "application/json" }, signal: controller.signal });
+        const payload = await readJsonResponse(response);
+        if (requestId !== state.requestId || revision !== state.revision) return;
+        applyPayload(payload, "排箫示例");
+      } catch (error) {
+        if (error.name !== "AbortError" && requestId === state.requestId && revision === state.revision) setMessage(`示例载入失败：${error.message}`, "error");
+      } finally {
+        if (requestId === state.requestId) state.controller = null;
+        el.demo.disabled = false;
+        el.demo.textContent = "载入排箫示例";
+      }
+    }
+    function createExportPayload() {
+      const { errors, payload } = validateRequest(true, true);
+      if (errors.length) throw new Error(errors.join(" "));
+      const allDirections = {};
+      for (const direction of DIRS) {
+        const observation = toObservation(direction, [], "", true);
+        if (observation) allDirections[direction] = observation;
+      }
+      payload.directions = allDirections;
+      return payload;
+    }
+    function downloadJson() {
+      clearMessage();
+      try {
+        const payload = createExportPayload();
+        const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], { type: "application/json;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url; link.download = `dst-observation-${state.target || "map"}.json`;
+        document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+        setMessage("观测 JSON 已下载。", "info");
+      } catch (error) { setMessage(error.message, "error"); }
+    }
+    async function readFile(file) {
+      if (!file) return;
+      clearMessage();
+      const revision = state.revision;
+      try {
+        const payload = JSON.parse(await file.text());
+        if (revision !== state.revision) throw new Error("读取文件时观测已有变化；文件未载入，请再选一次。" );
+        applyPayload(payload, file.name);
+      } catch (error) {
+        setMessage(`无法载入文件：${error.message}`, "error");
+      } finally { el.file.value = ""; }
+    }
+    function resetForm() {
+      cancelStaleRequest();
+      state.dirs = Object.fromEntries(DIRS.map(direction => [direction, emptyDirection()]));
+      state.target = state.options.targets.includes("panflute") ? "panflute" : (state.options.targets[0] || "panflute");
+      state.seed = "0"; state.showDiagonals = false; state.current = null; state.result = null;
+      el.diagonal.checked = false; el.seed.value = "0"; el.stale.classList.remove("visible");
+      updateCurrentBadge();
+      el.results.innerHTML = '<div class="empty-results">填入至少一个方向的有效线索，再点“计算方向”。</div>';
+      renderTargetOptions(); renderCards(); clearMessage();
+    }
+    function handleGridInput(event) {
+      const target = event.target;
+      const direction = target.dataset.direction;
+      if (!direction || !state.dirs[direction]) return;
+      const data = state.dirs[direction];
+      if (target.classList.contains("tile-check")) {
+        data.tiles = [...el.grid.querySelectorAll(`.tile-check[data-direction="${direction}"]:checked`)].map(input => input.value);
+      } else if (target.classList.contains("prefab-id")) {
+        data.prefabRows[Number(target.dataset.index)].id = target.value;
+      } else if (target.classList.contains("prefab-count")) {
+        data.prefabRows[Number(target.dataset.index)].count = target.value;
+      } else if (target.classList.contains("connection-like")) {
+        data.connection = target.value;
+      } else if (target.classList.contains("background-like")) {
+        data.background = target.value;
+      } else if (target.classList.contains("room-hints")) {
+        data.roomHints = target.value;
+      } else if (target.classList.contains("task-hints")) {
+        data.taskHints = target.value;
+      } else if (target.classList.contains("direction-note")) {
+        data.note = target.value;
+      } else return;
+      cancelStaleRequest();
+    }
+
+    el.target.addEventListener("change", () => { state.target = el.target.value; cancelStaleRequest(); });
+    el.seed.addEventListener("input", () => { state.seed = el.seed.value; cancelStaleRequest(); });
+    el.diagonal.addEventListener("change", () => {
+      state.showDiagonals = el.diagonal.checked; cancelStaleRequest(); renderCards();
+    });
+    el.grid.addEventListener("input", handleGridInput);
+    el.grid.addEventListener("change", handleGridInput);
+    el.grid.addEventListener("click", event => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      const direction = button.dataset.direction;
+      if (!state.dirs[direction]) return;
+      if (button.dataset.action === "add-row") state.dirs[direction].prefabRows.push({ id: "", count: "1" });
+      if (button.dataset.action === "remove-row") {
+        const index = Number(button.dataset.index);
+        state.dirs[direction].prefabRows.splice(index, 1);
+        if (!state.dirs[direction].prefabRows.length) state.dirs[direction].prefabRows.push({ id: "", count: "1" });
+      }
+      cancelStaleRequest(); renderCards();
+    });
+    el.calculate.addEventListener("click", calculate);
+    el.demo.addEventListener("click", loadDemo);
+    el.load.addEventListener("click", () => el.file.click());
+    el.file.addEventListener("change", () => readFile(el.file.files?.[0]));
+    el.download.addEventListener("click", downloadJson);
+    el.reset.addEventListener("click", resetForm);
+    el.clearCurrent.addEventListener("click", () => {
+      state.current = null; cancelStaleRequest(); updateCurrentBadge();
+    });
+
+    initialize();
+  </script>
+</body>
+</html>

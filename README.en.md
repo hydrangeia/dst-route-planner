@@ -2,50 +2,42 @@
 
 [中文](README.md)
 
-Give DST Route Planner the tiles and landmarks you can see in each direction as JSON, and it ranks where to explore next for the Pan Flute, Pig King, Moonbase, and other mainland targets. It uses the default forest world's task and room generation rules.
+Looking for a Pan Flute, Pig King, or Moonbase in *Don't Starve Together*? Open the local web page, choose a target, and enter the tiles and landmarks you see in each direction. The planner ranks where to explore next and shows the clues behind its suggestions.
 
 ## Get started
 
-You need Python 3.10 or newer. In PowerShell, clone the repository and run the built-in demo:
+You need Python 3.10 or newer. Clone the repository, then start the local web page from its folder:
 
 ```powershell
 git clone https://github.com/hydrangeia/dst-route-planner.git
 cd dst-route-planner
-python route_planner.py --demo
+python route_planner.py --ui
 ```
 
-List targets or run with observations for each direction:
+On Windows, you can also double-click `start_planner.bat`. The page opens in your local browser; its current labels are in Chinese.
 
-```powershell
-python route_planner.py --list-targets
-python route_planner.py --target moonbase --observe-json examples/moonbase_observation.json
-```
+## Using the planner
 
-The default target is `panflute`. You can also provide clues from your current position alongside the observations around you:
+1. Choose a target.
+2. Enter the tiles, prefabs, and counts you see in each direction.
+3. Click “计算方向” to see the direction ranking and its clues.
+4. Explore in DST, update the observations, and calculate again.
 
-```powershell
-python route_planner.py --target panflute `
-  --current-json examples/current_observation.json `
-  --observe-json examples/panflute_observation.json
-```
-
-To run the development tests, install the development requirements first:
-
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-## Reading the direction ranking
-
-The output lists each direction, its score, and clues relevant to the target:
+The page includes demo observations and lets you import or export observation JSON.
 
 ```text
-north  score=... p_dir=... p_task=... p_room=...
-       looks like target task Speak to the king; looks like target room MagicalDeciduous
+Choose a target and enter visible tiles and landmarks for each direction
+  ↓
+Python matches the observations to room and task clues in its knowledge base
+  ↓
+Task-graph context and visible evidence rank the directions
+  ↓
+Review the suggested direction and the reasons behind it
+  ↓
+Explore in DST, update the observations, and calculate again
 ```
 
-`score` ranks the directions. `p_dir` is each candidate's share after the scores are normalized. `p_task` and `p_room` show how well the observation matches a task and room related to the target. The explanation says which tile, prefab, or connection clues affected the score. Seeing the target prefab gives that direction a strong boost.
+For now, enter observations in the web page. A future in-game collector can send the same JSON observations to the Python engine.
 
 ## Targets
 
@@ -76,33 +68,10 @@ The knowledge base currently includes 20 target prefabs. These friendly names ma
 
 For each target's task, room, and setpiece clues, see [`dst_route_planner/README.md`](dst_route_planner/README.md#目标与世界生成线索).
 
-## Enter observations
-
-The `--observe-json` file has a top-level `directions` object, with one entry for each compass direction. Here is a short example:
-
-```json
-{
-  "directions": {
-    "north": {
-      "tile_types": ["DECIDUOUS"],
-      "prefabs_seen": ["deciduoustree", "fireflies", "flower", "flower"],
-      "prefab_counts": {"flower": 2, "fireflies": 1},
-      "room_hints": [],
-      "task_hints": [],
-      "connection_like": true,
-      "background_like": false,
-      "note": "Deciduous forest edge"
-    }
-  }
-}
-```
-
-`tile_types` and `prefabs_seen` use the identifiers found in game and must match the knowledge-base spelling. Repeating a prefab records its count; you can also provide counts directly with `prefab_counts`. `room_hints` and `task_hints` are optional manual clues. `connection_like` and `background_like` are optional booleans. The `note` is for people reading the file.
-
-`--current-json` takes one observation with the same fields as a direction entry, without the outer `directions` object. Start with a file in [`examples/`](examples/) and edit it to match what you see.
+JSON fields and CLI examples are documented in [`dst_route_planner/README.md`](dst_route_planner/README.md).
 
 ## Current state
 
-The Python engine ranks directions from JSON observations. Its knowledge base covers 20 tasks, 53 rooms, 13 static layouts, and these 20 targets in the default mainland world. Sampled task graphs use the generation rules to compare how many connections separate task areas. Next, the project will collect visible terrain in game and add a HUD for choosing a target and viewing direction suggestions.
+The local Python engine ranks directions using 20 tasks, 53 rooms, 13 static layouts, and clues for 20 targets in the default mainland world. The task graph captures generation topology; the tiles and landmarks entered in the page add evidence from the area around you.
 
 The staged roadmap is in [`TODO.md`](TODO.md). Earlier development notes are in [`DST_ROUTE_PLANNER_WORK.md`](DST_ROUTE_PLANNER_WORK.md) and [`PHASE_5A_COMPLETION_REPORT.md`](PHASE_5A_COMPLETION_REPORT.md).

@@ -18,6 +18,58 @@ python route_planner.py --sample-graph --seed 17
 
 `--seed` 默认为 `0`，同样的输入会使用同一组抽样连接图。`--sample-graph` 可以把一张连接图输出成 JSON。
 
+启动本地网页的其他选项：
+
+```powershell
+python route_planner.py --ui --port 8766
+python route_planner.py --ui --no-browser
+```
+
+默认地址是 `http://127.0.0.1:8765/`。`--port` 可指定本机端口；`--no-browser` 只启动服务并在终端显示地址。网页可以载入排箫示例、导入或下载 JSON 观测。
+
+也可以载入 `examples/current_observation.json` 补充当前位置线索；已填写的方向会保留。导出的文件会一起保存目标、随机种子、方向观测和当前位置线索。
+
+运行开发测试：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+## 网页输入与 HTTP API
+
+页面由本机 Python 服务提供。方向卡片支持四方位，并可切换到八方位；每个方向可录入地皮、prefab 数量和补充提示。`GET /api/options` 返回目标、地皮、prefab 和方向选项；`GET /api/demo` 返回内置排箫观测；`POST /api/plan` 接收 JSON 并返回排序结果。
+
+`POST /api/plan` 使用 schema version 1，至少要包含 `schema_version`、`target`、`seed` 和 `directions`。`current` 是可选的当前位置观测。方向条目和 `current` 可使用以下字段：
+
+- `tile_types`、`prefabs_seen`：地皮和 prefab 标识符数组。
+- `prefab_counts`：prefab ID 到非负整数数量的对象。
+- `room_hints`、`task_hints`：可选的房间与 task 名称数组。
+- `connection_like`、`background_like`：可选布尔值。
+- `note`：可选备注文本。
+
+请求示例：
+
+```json
+{
+  "schema_version": 1,
+  "target": "panflute",
+  "seed": 0,
+  "directions": {
+    "north": {
+      "tile_types": ["DECIDUOUS"],
+      "prefab_counts": {"deciduoustree": 3, "flower": 2}
+    }
+  },
+  "current": {
+    "tile_types": ["GRASS"],
+    "prefabs_seen": ["evergreen"]
+  }
+}
+```
+
+响应中的 `directions` 按推荐顺序列出 `direction`、`score`、`p_dir`、`p_task`、`p_room` 和 `explanation`。`current_tasks` 返回应用可选当前位置观测后的高分 task 信念。页面导出的 JSON 可以直接重新导入；页面也接受现有的无版本观测文件。
+
 ## 目标与世界生成线索
 
 知识库登记 20 种目标。表格列出相关 task、room、setpiece 与可见地标。taskset 级 setpiece 会随生成 task 出现在不同区域，表中列出对应布局。
@@ -108,6 +160,7 @@ python route_planner.py --sample-graph --seed 17
 - `navigation.py` 汇总目标线索并排列方向。
 - `io.py` 读取方向观测和当前位置 JSON。
 - `cli.py` 提供命令行、演示和目标列表。
+- `app.py` 提供本地网页服务和方向计算 API，`static/app.html` 是观测录入与结果页面。
 - `world_sampler.py` 抽取带锁/钥匙来源记录的 task 连接图，并以 BFS 最短跳数计算图上的 task 接近度。
 
 当前项目进度和下一步计划见根目录的 [`README.md`](../README.md) 与 [`TODO.md`](../TODO.md)。
