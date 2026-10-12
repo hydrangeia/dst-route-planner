@@ -4,6 +4,7 @@
 
 ## 现状 / Current state
 
+- [x] 已发布公开 GitHub 仓库，提供中英文 README、JSON 样例和 Python 3.10/3.13 自动测试工作流。 / Published a public GitHub repository with Chinese and English READMEs, JSON examples, and a Python 3.10/3.13 test workflow.
 - 默认大陆知识库当前记录 20 个 task、53 个 room 和 20 种目标。知识数据仍是手工整理的切片。 / The default mainland knowledge base currently records 20 tasks, 53 rooms, and 20 targets; its data is still a curated slice.
 - [x] 已完成知识完整性核查：覆盖 20 个 task、53 个 room、11 个静态布局和 20 种目标，并为补充的 room 定义记录了源码相对路径。 / Knowledge integrity review is complete: 20 tasks, 53 rooms, 11 static layouts, and 20 targets are covered, with source-relative paths recorded for added room definitions.
 - taskset 选择层可复现地从 10 个 optional task 中选 5 个；严格链只加入按锁/钥匙顺序可解锁的任务，因此某个已选 optional task 可能不在链或距离估算中。`storygen.lua` 的强制连接回退和空间地图还未建模。 / Taskset selection reproducibly chooses 5 of 10 optional tasks; the strict chain only adds tasks reachable through lock/key order, so a selected optional task may be absent from the chain and distance estimates. The `storygen.lua` forced-connection fallback and spatial map are not modeled yet.
