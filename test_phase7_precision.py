@@ -71,7 +71,9 @@ def test_task_context_density_uses_common_prefabs() -> None:
 
 
 def test_known_prefab_absence_can_discriminate_rooms() -> None:
-    obs = make_observation(["FOREST"], ["blue_mushroom", "evergreen", "sapling"])
+    # The local view crosses a grass/forest edge: MandrakeHome itself is GRASS,
+    # while MoonbaseOne is FOREST. Preserve both observed tile types.
+    obs = make_observation(["GRASS", "FOREST"], ["blue_mushroom", "evergreen", "sapling"])
     room_probs = score_rooms(kb, obs)
     task_probs, _ = score_tasks(kb, obs)
 
@@ -101,7 +103,9 @@ def test_hard_exclusions_remove_impossible_room_matches() -> None:
 
 
 def test_strong_exclusions_support_same_tile_negative_reasoning() -> None:
-    obs = make_observation(["FOREST"], ["blue_mushroom", "green_mushroom", "evergreen"])
+    # Both MoonbaseOne and DeepForest use FOREST. The juicy berrybush cue is
+    # directly listed for MoonbaseOne and distinguishes it from DeepForest.
+    obs = make_observation(["FOREST"], ["blue_mushroom", "green_mushroom", "evergreen", "berrybush_juicy"])
     room_probs = score_rooms(kb, obs)
 
     print("\nStrong same-tile exclusion evidence")
@@ -114,7 +118,7 @@ def test_strong_exclusions_support_same_tile_negative_reasoning() -> None:
 
 
 def test_soft_exclusions_do_not_override_direct_target_evidence() -> None:
-    obs = make_observation(["FOREST"], ["mandrake_planted", "flower", "spiderden"])
+    obs = make_observation(["GRASS"], ["mandrake_planted", "flower", "spiderden"])
     room_probs = score_rooms(kb, obs)
 
     print("\nSoft exclusion keeps direct target evidence")

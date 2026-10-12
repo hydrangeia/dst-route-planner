@@ -65,6 +65,27 @@ class TargetChain:
 
 
 @dataclass(frozen=True)
+class TaskGraphEdge:
+    """A task-level parent connection recorded during graph sampling."""
+
+    parent_task: str
+    child_task: str
+    forced: bool = False
+    matched_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SampledTaskGraph:
+    """Sampled task nodes, parent edges, and attachment order."""
+
+    tasks: tuple[str, ...]
+    selected_optional_tasks: tuple[str, ...]
+    edges: tuple[TaskGraphEdge, ...]
+    start_task: str | None
+    order: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class KnowledgeBase:
     tasks: Mapping[str, TaskDef]
     rooms: Mapping[str, RoomDef]

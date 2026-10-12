@@ -1,8 +1,8 @@
 # DST 大陆地形生成规律：tasks 与 rooms
 
-本文记录本地 DST 源码中的生成规则；源码尚未固定到具体游戏版本，手工知识库也尚未全量同步。当前实现范围见 [README.md](README.md)，字段校对与连接图工作见 [TODO.md](TODO.md)。`locks` 和 `keys_given` 描述建图时的连接约束，不是玩家游玩期间解锁地形的条件：默认大陆的固定地形在创建世界时生成。
+本文按 DST 源码梳理默认大陆的生成规则。校对结果、随机数量和源文件指纹记录在 [来源清单](dst_route_planner/knowledge/source_audit.json)，使用说明见 [README.md](README.md)。`locks` 和 `keys_given` 用于生成地形块之间的连接；默认大陆的固定地形在创建世界时生成。
 
-本文暂时不考虑 `boons`、海上内容、后期 retrofit、玩家行为和容器随机 loot。只把 `taskset -> tasks -> rooms -> room contents/static layouts` 作为变量。
+以下沿着 `taskset -> tasks -> rooms -> room contents/static layouts` 这条生成链展开。
 
 ## 基本层级
 
@@ -324,7 +324,7 @@ properties = {
 1. **Task**: `For a nice walk`（默认大陆固定 task，建图连接锁：BASIC_COMBAT + TIER2）
 2. **Room 数量**: `For a nice walk.room_choices` 包含 `1 + math.random(SIZE_VARIATION)` 个 `MandrakeHome`
 3. **房间特征**: `MandrakeHome` 房间必有 1 个 `mandrake_planted` prefab
-4. **地点特征**: 本地源码定义的 room 地皮为 `GRASS`，分布中包含针叶树、花朵和萤火虫；当前知识库仍使用 `FOREST`，待进一步校对
+4. **地点特征**: room 地皮为 `GRASS`，分布中包含针叶树、花朵和萤火虫
 
 ### 实际地图表现
 

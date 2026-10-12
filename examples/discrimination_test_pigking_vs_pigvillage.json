@@ -19,11 +19,11 @@
       "name": "猪村特征：只有pighouse，没有pigking",
       "target": "pigking",
       "observation": {
-        "tile_types": ["FOREST"],
-        "prefabs_seen": ["pighouse", "evergreen", "sapling"],
+        "tile_types": ["GRASS"],
+        "prefabs_seen": ["pighouse", "grass", "berrybush"],
         "connection_like": false,
         "background_like": false,
-        "note": "森林里有猪房子，但没看到猪王"
+        "note": "草地上有猪房子，但没看到猪王"
       },
       "expected_room_winner": "PigVillage",
       "expected_confidence": "high"

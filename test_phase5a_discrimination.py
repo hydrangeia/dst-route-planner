@@ -49,7 +49,7 @@ def assert_greater(name: str, obs: Observation, better: str, worse: str) -> None
 def test_discrimination_cases() -> None:
     assert_greater(
         "Pig village evidence should beat PigKingdom when pigking is absent",
-        make_observation(["FOREST"], ["pighouse", "evergreen", "sapling"]),
+        make_observation(["GRASS"], ["pighouse", "grass", "berrybush"]),
         "PigVillage",
         "PigKingdom",
     )
@@ -77,7 +77,7 @@ def test_discrimination_cases() -> None:
 
     assert_top(
         "MandrakeHome evidence",
-        make_observation(["FOREST"], ["flower", "evergreen", "fireflies"]),
+        make_observation(["GRASS"], ["flower", "evergreen", "fireflies"]),
         "MandrakeHome",
         ["MandrakeHome", "MoonbaseOne", "Forest"],
     )

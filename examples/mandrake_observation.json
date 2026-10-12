@@ -1,11 +1,11 @@
 {
   "directions": {
     "north": {
-      "tile_types": ["FOREST"],
+      "tile_types": ["GRASS", "FOREST"],
       "prefabs_seen": ["evergreen", "fireflies", "flower"],
       "connection_like": true,
       "background_like": false,
-      "note": "森林区域，见萤火虫与花朵，可能是曼德拉草地点"
+      "note": "草地与森林交界，见萤火虫与花朵，可能靠近曼德拉草地点"
     },
     "east": {
       "tile_types": ["SAVANNA"],
@@ -22,11 +22,11 @@
       "note": "深森林背景，蛛网陷阱"
     },
     "west": {
-      "tile_types": ["FOREST"],
+      "tile_types": ["GRASS", "FOREST"],
       "prefabs_seen": ["evergreen", "flower", "fireflies"],
       "connection_like": true,
       "background_like": false,
-      "note": "森林与花朵和萤火虫组合，像曼德拉草任务房间"
+      "note": "草地与森林交界，花朵和萤火虫组合像曼德拉草地点"
     }
   }
 }

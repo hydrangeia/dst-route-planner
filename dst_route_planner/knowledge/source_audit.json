@@ -1,0 +1,1225 @@
+{
+  "audit_scope": "Default mainland task and room knowledge used by the route planner.",
+  "source_snapshot": "Local DST Lua snapshot pinned by SHA-256 hashes.",
+  "source_path_base": "scripts/",
+  "sha256": "SHA-256 of each inspected Lua file as read during this audit.",
+  "coverage": {
+    "rooms": 53,
+    "tasks": 20,
+    "static_layouts": 13,
+    "target_prefabs": 20,
+    "room_fields_exactly_checked": [
+      "source room name",
+      "value/tile token"
+    ],
+    "task_fields_exactly_checked": [
+      "task name",
+      "required/optional section",
+      "locks",
+      "keys_given",
+      "room_bg",
+      "background_room",
+      "literal room choices"
+    ],
+    "dynamic_task_choices": "Expected values are represented in the KB; source expressions and ranges are recorded below.",
+    "room_contents": "Fixed counts and selected direct distribution values are checked where listed below. The rest remains a curated cue subset."
+  },
+  "room_sources": {
+    "map/rooms/forest/bee.lua": [
+      "BeeClearing",
+      "BeeQueenBee"
+    ],
+    "map/rooms/forest/beefalo.lua": [
+      "BeefalowPlain"
+    ],
+    "map/rooms/forest/blockers.lua": [
+      "Waspnests"
+    ],
+    "map/rooms/forest/DLCrooms.lua": [
+      "BGBadlands",
+      "Badlands",
+      "DragonflyArena",
+      "HoundyBadlands",
+      "BuzzardyBadlands",
+      "BGDeciduous",
+      "DeepDeciduous",
+      "MagicalDeciduous",
+      "DeciduousMole",
+      "MolesvilleDeciduous",
+      "DeciduousClearing",
+      "BGLightningBluff",
+      "LightningBluffAntlion",
+      "LightningBluffOasis",
+      "LightningBluffLightning"
+    ],
+    "map/rooms/forest/giants.lua": [
+      "MooseGooseBreedingGrounds"
+    ],
+    "map/rooms/forest/graveyard.lua": [
+      "Graveyard"
+    ],
+    "map/rooms/forest/mandrake.lua": [
+      "MandrakeHome"
+    ],
+    "map/rooms/forest/pigs.lua": [
+      "PigVillage",
+      "PigKingdom",
+      "Pondopolis"
+    ],
+    "map/rooms/forest/spider.lua": [
+      "SpiderVillage"
+    ],
+    "map/rooms/forest/terrain_forest.lua": [
+      "BGForest",
+      "CrappyDeepForest",
+      "DeepForest",
+      "Forest",
+      "CritterDen",
+      "ForestMole",
+      "CrappyForest",
+      "Clearing",
+      "MoonbaseOne"
+    ],
+    "map/rooms/forest/terrain_grass.lua": [
+      "BGGrass",
+      "FlowerPatch",
+      "GrassyMoleColony"
+    ],
+    "map/rooms/forest/terrain_marsh.lua": [
+      "BGMarsh",
+      "Marsh",
+      "SlightlyMermySwamp"
+    ],
+    "map/rooms/forest/terrain_noise.lua": [
+      "BGNoise"
+    ],
+    "map/rooms/forest/terrain_rocky.lua": [
+      "BGRocky",
+      "Rocky",
+      "RockyBuzzards",
+      "GenericRockyNoThreat",
+      "MolesvilleRocky"
+    ],
+    "map/rooms/forest/terrain_savanna.lua": [
+      "BGSavanna",
+      "Plain",
+      "BarePlain"
+    ],
+    "map/rooms/forest/walrus.lua": [
+      "WalrusHut_Grassy",
+      "WalrusHut_Plains",
+      "WalrusHut_Rocky"
+    ]
+  },
+  "room_tiles": {
+    "BGGrass": "GRASS",
+    "BGForest": "FOREST",
+    "BGMarsh": "MARSH",
+    "BGRocky": "ROCKY",
+    "BGSavanna": "SAVANNA",
+    "BGBadlands": "DIRT_NOISE",
+    "BGLightningBluff": "DIRT_NOISE",
+    "BGDeciduous": "DECIDUOUS",
+    "BGNoise": "GROUND_NOISE",
+    "DeepDeciduous": "DECIDUOUS",
+    "DeciduousMole": "DECIDUOUS",
+    "MolesvilleDeciduous": "DECIDUOUS",
+    "DeciduousClearing": "DECIDUOUS",
+    "MagicalDeciduous": "DECIDUOUS",
+    "PigKingdom": "GRASS",
+    "PigVillage": "GRASS",
+    "Marsh": "MARSH",
+    "SlightlyMermySwamp": "MARSH",
+    "Graveyard": "FOREST",
+    "Rocky": "DIRT",
+    "GenericRockyNoThreat": "ROCKY",
+    "RockyBuzzards": "ROCKY",
+    "MolesvilleRocky": "ROCKY",
+    "Plain": "SAVANNA",
+    "BarePlain": "SAVANNA",
+    "BeefalowPlain": "SAVANNA",
+    "Badlands": "DIRT_NOISE",
+    "DragonflyArena": "DIRT_NOISE",
+    "HoundyBadlands": "DIRT_NOISE",
+    "BuzzardyBadlands": "DIRT_NOISE",
+    "LightningBluffAntlion": "DIRT_NOISE",
+    "LightningBluffOasis": "DIRT_NOISE",
+    "LightningBluffLightning": "DIRT_NOISE",
+    "BeeClearing": "GRASS",
+    "BeeQueenBee": "GRASS",
+    "FlowerPatch": "GRASS",
+    "Waspnests": "GRASS",
+    "GrassyMoleColony": "GRASS",
+    "CritterDen": "GROUND_NOISE",
+    "Clearing": "FOREST",
+    "Forest": "FOREST",
+    "DeepForest": "FOREST",
+    "CrappyForest": "FOREST",
+    "CrappyDeepForest": "FOREST",
+    "ForestMole": "FOREST",
+    "SpiderVillage": "ROCKY",
+    "MandrakeHome": "GRASS",
+    "Pondopolis": "GRASS",
+    "WalrusHut_Grassy": "GRASS",
+    "WalrusHut_Plains": "SAVANNA",
+    "WalrusHut_Rocky": "ROCKY",
+    "MoonbaseOne": "FOREST",
+    "MooseGooseBreedingGrounds": "GRASS"
+  },
+  "task_source": "map/tasks/dst_tasks_forestworld.lua",
+  "static_layout_sources": {
+    "DeciduousPond": "scripts/map/static_layouts/deciduous_pond.lua",
+    "DefaultPigking": "scripts/map/static_layouts/default_pigking.lua",
+    "MoonbaseOne": "scripts/map/static_layouts/moonbaseone.lua",
+    "DragonflyArena": "scripts/map/static_layouts/dragonfly_arena.lua",
+    "AntlionSpawningGround": "scripts/map/layouts.lua",
+    "Oasis": "scripts/map/static_layouts/oasis.lua",
+    "CaveEntrance": "scripts/map/static_layouts/cave_entrance.lua",
+    "ResurrectionStone": "scripts/map/static_layouts/resurrectionstone.lua",
+    "WormholeGrass": "scripts/map/static_layouts/wormhole_grass.lua",
+    "MooseNest": "scripts/map/static_layouts/moose_nest.lua",
+    "MooseBreedingNests": "scripts/map/rooms/forest/giants.lua",
+    "Farmplot": "scripts/map/layouts.lua",
+    "VillageSquare": "scripts/map/layouts.lua"
+  },
+  "static_layout_prefabs": {
+    "Farmplot": [
+      "carrot_planted",
+      "flower",
+      "grass",
+      "berrybush2"
+    ],
+    "VillageSquare": [
+      "pighouse"
+    ]
+  },
+  "task_fields": {
+    "Make a pick": {
+      "required": true,
+      "locks": [
+        "NONE"
+      ],
+      "keys_given": [
+        "PICKAXE",
+        "AXE",
+        "GRASS",
+        "WOOD",
+        "TIER1"
+      ],
+      "room_bg": "GRASS",
+      "background_room": "BGGrass",
+      "fixed_room_choices": {
+        "BarePlain": 1,
+        "Clearing": 1
+      },
+      "dynamic_room_choices": [
+        "Forest",
+        "Plain"
+      ]
+    },
+    "Dig that rock": {
+      "required": true,
+      "locks": [
+        "ROCKS"
+      ],
+      "keys_given": [
+        "TRINKETS",
+        "STONE",
+        "WOOD",
+        "TIER1"
+      ],
+      "room_bg": "ROCKY",
+      "background_room": "BGNoise",
+      "fixed_room_choices": {
+        "Graveyard": 1,
+        "CritterDen": 1
+      },
+      "dynamic_room_choices": [
+        "Rocky",
+        "Forest",
+        "Clearing"
+      ]
+    },
+    "Great Plains": {
+      "required": true,
+      "locks": [
+        "ROCKS",
+        "BASIC_COMBAT",
+        "TIER1"
+      ],
+      "keys_given": [
+        "MEAT",
+        "POOP",
+        "WOOL",
+        "GRASS",
+        "TIER2"
+      ],
+      "room_bg": "SAVANNA",
+      "background_room": "BGSavanna",
+      "fixed_room_choices": {
+        "Clearing": 2
+      },
+      "dynamic_room_choices": [
+        "BeefalowPlain",
+        "Plain"
+      ]
+    },
+    "Squeltch": {
+      "required": true,
+      "locks": [
+        "SPIDERDENS",
+        "TIER2"
+      ],
+      "keys_given": [
+        "MEAT",
+        "SILK",
+        "SPIDERS",
+        "TIER3"
+      ],
+      "room_bg": "MARSH",
+      "background_room": "BGMarsh",
+      "fixed_room_choices": {
+        "SlightlyMermySwamp": 1
+      },
+      "dynamic_room_choices": [
+        "Marsh"
+      ]
+    },
+    "Beeeees!": {
+      "required": true,
+      "locks": [
+        "BEEHIVE",
+        "TIER1"
+      ],
+      "keys_given": [
+        "HONEY",
+        "TIER2"
+      ],
+      "room_bg": "GRASS",
+      "background_room": "BGGrass",
+      "fixed_room_choices": {
+        "BeeClearing": 1,
+        "BeeQueenBee": 1
+      },
+      "dynamic_room_choices": [
+        "Forest",
+        "FlowerPatch"
+      ]
+    },
+    "Speak to the king": {
+      "required": true,
+      "locks": [
+        "PIGKING",
+        "TIER2"
+      ],
+      "keys_given": [
+        "PIGS",
+        "GOLD",
+        "TIER3"
+      ],
+      "room_bg": "GRASS",
+      "background_room": "BGDeciduous",
+      "fixed_room_choices": {
+        "PigKingdom": 1,
+        "MagicalDeciduous": 1
+      },
+      "dynamic_room_choices": [
+        "DeepDeciduous"
+      ]
+    },
+    "Forest hunters": {
+      "required": true,
+      "locks": [
+        "ADVANCED_COMBAT",
+        "MONSTERS_DEFEATED",
+        "TIER3"
+      ],
+      "keys_given": [
+        "WALRUS",
+        "TIER4"
+      ],
+      "room_bg": "FOREST",
+      "background_room": "BGForest",
+      "fixed_room_choices": {
+        "WalrusHut_Grassy": 1,
+        "Forest": 1,
+        "ForestMole": 2,
+        "DeepForest": 1,
+        "Clearing": 1,
+        "MoonbaseOne": 1
+      },
+      "dynamic_room_choices": []
+    },
+    "For a nice walk": {
+      "required": true,
+      "locks": [
+        "BASIC_COMBAT",
+        "TIER2"
+      ],
+      "keys_given": [
+        "POOP",
+        "WOOL",
+        "WOOD",
+        "GRASS",
+        "TIER2"
+      ],
+      "room_bg": "FOREST",
+      "background_room": "BGForest",
+      "fixed_room_choices": {
+        "BeefalowPlain": 1
+      },
+      "dynamic_room_choices": [
+        "MandrakeHome",
+        "DeepForest",
+        "Forest"
+      ]
+    },
+    "Badlands": {
+      "required": true,
+      "locks": [
+        "ADVANCED_COMBAT",
+        "MONSTERS_DEFEATED",
+        "TIER4"
+      ],
+      "keys_given": [
+        "HOUNDS",
+        "TIER5",
+        "ROCKS"
+      ],
+      "room_bg": "DIRT",
+      "background_room": "BGBadlands",
+      "fixed_room_choices": {
+        "DragonflyArena": 1,
+        "Badlands": 2,
+        "BarePlain": 1
+      },
+      "dynamic_room_choices": [
+        "HoundyBadlands",
+        "BuzzardyBadlands"
+      ]
+    },
+    "Lightning Bluff": {
+      "required": true,
+      "locks": [
+        "SPIDERS_DEFEATED"
+      ],
+      "keys_given": [
+        "PICKAXE",
+        "TIER2"
+      ],
+      "room_bg": "DIRT",
+      "background_room": "BGLightningBluff",
+      "fixed_room_choices": {
+        "LightningBluffAntlion": 1,
+        "LightningBluffLightning": 1,
+        "LightningBluffOasis": 1,
+        "BGLightningBluff": 2
+      },
+      "dynamic_room_choices": []
+    },
+    "Befriend the pigs": {
+      "required": false,
+      "locks": [
+        "PIGGIFTS",
+        "TIER1"
+      ],
+      "keys_given": [
+        "PIGS",
+        "MEAT",
+        "GRASS",
+        "WOOD",
+        "TIER2"
+      ],
+      "room_bg": "FOREST",
+      "background_room": "BGForest",
+      "fixed_room_choices": {
+        "PigVillage": 1,
+        "Clearing": 1
+      },
+      "dynamic_room_choices": [
+        "Forest",
+        "Marsh",
+        "DeepForest"
+      ]
+    },
+    "Kill the spiders": {
+      "required": false,
+      "locks": [
+        "SPIDERDENS",
+        "MONSTERS_DEFEATED",
+        "TIER3"
+      ],
+      "keys_given": [
+        "SPIDERS",
+        "TIER4"
+      ],
+      "room_bg": "ROCKY",
+      "background_room": "BGRocky",
+      "fixed_room_choices": {
+        "SpiderVillage": 2,
+        "Clearing": 1
+      },
+      "dynamic_room_choices": [
+        "CrappyForest",
+        "CrappyDeepForest"
+      ]
+    },
+    "Killer bees!": {
+      "required": false,
+      "locks": [
+        "KILLERBEES",
+        "TIER3"
+      ],
+      "keys_given": [
+        "HONEY",
+        "TIER3"
+      ],
+      "room_bg": "GRASS",
+      "background_room": "BGGrass",
+      "fixed_room_choices": {},
+      "dynamic_room_choices": [
+        "Waspnests",
+        "Forest",
+        "FlowerPatch"
+      ]
+    },
+    "Make a Beehat": {
+      "required": false,
+      "locks": [
+        "SPIDERS_DEFEATED",
+        "TIER1"
+      ],
+      "keys_given": [
+        "BEEHAT",
+        "GRASS",
+        "TIER1"
+      ],
+      "room_bg": "GRASS",
+      "background_room": "BGGrass",
+      "fixed_room_choices": {},
+      "dynamic_room_choices": [
+        "Rocky",
+        "FlowerPatch"
+      ]
+    },
+    "The hunters": {
+      "required": false,
+      "locks": [
+        "ADVANCED_COMBAT",
+        "MONSTERS_DEFEATED",
+        "TIER4"
+      ],
+      "keys_given": [
+        "WALRUS",
+        "TIER5"
+      ],
+      "room_bg": "SAVANNA",
+      "background_room": "BGSavanna",
+      "fixed_room_choices": {
+        "WalrusHut_Plains": 1,
+        "WalrusHut_Grassy": 1,
+        "WalrusHut_Rocky": 1,
+        "Clearing": 2,
+        "BGGrass": 2,
+        "BGRocky": 2
+      },
+      "dynamic_room_choices": []
+    },
+    "Magic meadow": {
+      "required": false,
+      "locks": [
+        "TIER1"
+      ],
+      "keys_given": [
+        "GRASS",
+        "MEAT",
+        "TIER1"
+      ],
+      "room_bg": "FOREST",
+      "background_room": "Clearing",
+      "fixed_room_choices": {
+        "Pondopolis": 2,
+        "Clearing": 2
+      },
+      "dynamic_room_choices": []
+    },
+    "Frogs and bugs": {
+      "required": false,
+      "locks": [
+        "BASIC_COMBAT",
+        "TIER1"
+      ],
+      "keys_given": [
+        "MEAT",
+        "GRASS",
+        "HONEY",
+        "TIER2"
+      ],
+      "room_bg": "GRASS",
+      "background_room": "BGGrass",
+      "fixed_room_choices": {
+        "Pondopolis": 1,
+        "BeeClearing": 1,
+        "Clearing": 2,
+        "GrassyMoleColony": 1
+      },
+      "dynamic_room_choices": [
+        "FlowerPatch"
+      ]
+    },
+    "Mole Colony Deciduous": {
+      "required": false,
+      "locks": [
+        "TIER1"
+      ],
+      "keys_given": [
+        "TIER2"
+      ],
+      "room_bg": "DECIDUOUS",
+      "background_room": "BGDeciduous",
+      "fixed_room_choices": {
+        "MolesvilleDeciduous": 1,
+        "DeepDeciduous": 2,
+        "DeciduousMole": 2,
+        "DeciduousClearing": 1
+      },
+      "dynamic_room_choices": []
+    },
+    "Mole Colony Rocks": {
+      "required": false,
+      "locks": [
+        "TIER1"
+      ],
+      "keys_given": [
+        "ROCKS",
+        "GOLD",
+        "TIER2"
+      ],
+      "room_bg": "ROCKY",
+      "background_room": "BGRocky",
+      "fixed_room_choices": {
+        "RockyBuzzards": 1,
+        "MolesvilleRocky": 1
+      },
+      "dynamic_room_choices": [
+        "GenericRockyNoThreat"
+      ]
+    },
+    "MooseBreedingTask": {
+      "required": false,
+      "locks": [
+        "TREES",
+        "TIER2"
+      ],
+      "keys_given": [
+        "PIGS",
+        "WOOD",
+        "MEAT",
+        "TIER2"
+      ],
+      "room_bg": "GRASS",
+      "background_room": "BGGrass",
+      "fixed_room_choices": {
+        "MooseGooseBreedingGrounds": 1
+      },
+      "dynamic_room_choices": []
+    }
+  },
+  "size_variation": {
+    "source": "map/tasks.lua",
+    "value": 3
+  },
+  "dynamic_task_choices": {
+    "Make a pick.Forest": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "Make a pick.Plain": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "Dig that rock.Rocky": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "Dig that rock.Forest": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Dig that rock.Clearing": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Great Plains.BeefalowPlain": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "Great Plains.Plain": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "Squeltch.Marsh": {
+      "expression": "5 + math.random(SIZE_VARIATION)",
+      "range": [
+        6,
+        8
+      ],
+      "expected": 7
+    },
+    "Beeeees!.Forest": {
+      "expression": "math.random(SIZE_VARIATION) - 1",
+      "range": [
+        0,
+        2
+      ],
+      "expected": 1
+    },
+    "Beeeees!.FlowerPatch": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Speak to the king.DeepDeciduous": {
+      "expression": "3 + math.random(SIZE_VARIATION)",
+      "range": [
+        4,
+        6
+      ],
+      "expected": 5
+    },
+    "For a nice walk.MandrakeHome": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "For a nice walk.DeepForest": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "For a nice walk.Forest": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Badlands.HoundyBadlands": {
+      "expression": "(math.random() < 0.33) and 2 or 1",
+      "range": [
+        1,
+        2
+      ],
+      "expected": 1.33,
+      "probability_of_two": 0.33
+    },
+    "Badlands.BuzzardyBadlands": {
+      "expression": "(math.random() < 0.5) and 2 or 1",
+      "range": [
+        1,
+        2
+      ],
+      "expected": 1.5,
+      "probability_of_two": 0.5
+    },
+    "Befriend the pigs.Forest": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "Befriend the pigs.Marsh": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Befriend the pigs.DeepForest": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Kill the spiders.CrappyForest": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Kill the spiders.CrappyDeepForest": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Killer bees!.Waspnests": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Killer bees!.Forest": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Killer bees!.FlowerPatch": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Make a Beehat.Rocky": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Make a Beehat.FlowerPatch": {
+      "expression": "math.random(SIZE_VARIATION)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2
+    },
+    "Frogs and bugs.FlowerPatch": {
+      "expression": "1 + math.random(SIZE_VARIATION)",
+      "range": [
+        2,
+        4
+      ],
+      "expected": 3
+    },
+    "Mole Colony Rocks.GenericRockyNoThreat": {
+      "expression": "2 + math.random(SIZE_VARIATION)",
+      "range": [
+        3,
+        5
+      ],
+      "expected": 4
+    }
+  },
+  "dynamic_room_counts": {
+    "BeeQueenBee.wasphive": {
+      "expression": "math.random(2)",
+      "range": [
+        1,
+        2
+      ],
+      "expected": 1.5,
+      "represented_as": "countprefabs"
+    },
+    "SpiderVillage.spiderden": {
+      "expression": "5 + math.random(3)",
+      "range": [
+        6,
+        8
+      ],
+      "expected": 7,
+      "represented_as": "countprefabs"
+    },
+    "SpiderVillage.goldnugget": {
+      "expression": "3 + math.random(3)",
+      "range": [
+        4,
+        6
+      ],
+      "expected": 5,
+      "represented_as": "countprefabs"
+    },
+    "LightningBluffLightning.lightninggoat": {
+      "expression": "2 + math.random(4)",
+      "range": [
+        3,
+        6
+      ],
+      "expected": 4.5,
+      "represented_as": "countprefabs"
+    },
+    "PigVillage.pighouse": {
+      "expression": "3 + math.random(4)",
+      "range": [
+        4,
+        7
+      ],
+      "expected": 5.5,
+      "represented_as": "countprefabs"
+    },
+    "PigVillage.mermhead": {
+      "expression": "math.random(3)",
+      "range": [
+        1,
+        3
+      ],
+      "expected": 2,
+      "represented_as": "countprefabs"
+    },
+    "PigVillage.Farmplot": {
+      "expression": "math.random(2, 5)",
+      "range": [
+        2,
+        5
+      ],
+      "expected": 3.5,
+      "represented_as": "countstaticlayouts"
+    },
+    "PigVillage.VillageSquare": {
+      "expression": "math.random() > 0.97 and 1 or 0",
+      "range": [
+        0,
+        1
+      ],
+      "expected": 0.03,
+      "represented_as": "countstaticlayouts"
+    },
+    "PigKingdom.pighouse": {
+      "expression": "5 + math.random(4)",
+      "range": [
+        6,
+        9
+      ],
+      "expected": 7.5,
+      "represented_as": "countprefabs"
+    },
+    "Graveyard.goldnugget": {
+      "expression": "math.random(5)",
+      "range": [
+        1,
+        5
+      ],
+      "expected": 3,
+      "represented_as": "countprefabs"
+    },
+    "Graveyard.gravestone": {
+      "expression": "4 + math.random(4)",
+      "range": [
+        5,
+        8
+      ],
+      "expected": 6.5,
+      "represented_as": "countprefabs"
+    },
+    "Graveyard.mound": {
+      "expression": "4 + math.random(4)",
+      "range": [
+        5,
+        8
+      ],
+      "expected": 6.5,
+      "represented_as": "countprefabs"
+    },
+    "Rocky.meteorspawner": {
+      "expression": "math.random(1, 2)",
+      "range": [
+        1,
+        2
+      ],
+      "expected": 1.5,
+      "represented_as": "countprefabs"
+    },
+    "Rocky.rock_moon": {
+      "expression": "math.random(1, 2) - 1",
+      "range": [
+        0,
+        1
+      ],
+      "expected": 0.5,
+      "represented_as": "countprefabs"
+    },
+    "Rocky.burntground_faded": {
+      "expression": "math.random(3, 5)",
+      "range": [
+        3,
+        5
+      ],
+      "expected": 4,
+      "represented_as": "countprefabs"
+    }
+  },
+  "weighted_groups_omitted_or_proxied": [
+    {
+      "room": "BGGrass",
+      "source_key": "smallmammal",
+      "alternatives": [
+        "rabbithole",
+        "molehill"
+      ],
+      "handling": "Omitted because RoomDef cannot express a weighted alternative group."
+    },
+    {
+      "room": "BGGrass",
+      "source_key": "tree",
+      "alternatives": [
+        "evergreen",
+        "deciduoustree"
+      ],
+      "handling": "Omitted as a group; direct alternatives are not inferred as guaranteed contents."
+    },
+    {
+      "room": "BGNoise",
+      "source_key": "smallmammal",
+      "alternatives": [
+        "rabbithole",
+        "molehill"
+      ],
+      "handling": "Omitted because RoomDef cannot express a weighted alternative group."
+    },
+    {
+      "room": "Forest",
+      "source_key": "trees",
+      "alternatives": [
+        "evergreen",
+        "evergreen_sparse"
+      ],
+      "handling": "KB uses evergreen as a single-prefab density proxy."
+    },
+    {
+      "room": "CritterDen",
+      "source_key": "trees",
+      "alternatives": [
+        "evergreen",
+        "evergreen_sparse"
+      ],
+      "handling": "KB uses evergreen as a single-prefab density proxy."
+    },
+    {
+      "room": "DeepForest",
+      "source_key": "trees",
+      "alternatives": [
+        "evergreen",
+        "evergreen_sparse"
+      ],
+      "handling": "KB uses evergreen as a single-prefab density proxy."
+    },
+    {
+      "room": "ForestMole",
+      "source_key": "trees",
+      "alternatives": [
+        "evergreen",
+        "evergreen_sparse"
+      ],
+      "handling": "Omitted from this room's compact cue subset."
+    }
+  ],
+  "fixed_room_values": {
+    "BeeClearing": {
+      "countprefabs": {
+        "fireflies": 1,
+        "flower": 6,
+        "beehive": 1
+      }
+    },
+    "BeeQueenBee": {
+      "countprefabs": {
+        "beequeenhive": 1,
+        "beehive": 1
+      },
+      "distributeprefabs": {
+        "flower": 5,
+        "berrybush": 0.5,
+        "berrybush_juicy": 0.25,
+        "sapling": 0.2
+      }
+    },
+    "Clearing": {
+      "distributeprefabs": {
+        "pighouse": 0.015,
+        "fireflies": 1,
+        "evergreen": 1.5,
+        "grass": 0.1,
+        "sapling": 0.8,
+        "twiggytree": 0.8,
+        "ground_twigs": 0.06,
+        "berrybush": 0.1,
+        "berrybush_juicy": 0.05,
+        "beehive": 0.05,
+        "red_mushroom": 0.01,
+        "green_mushroom": 0.02
+      }
+    },
+    "Graveyard": {
+      "countprefabs": {
+        "evergreen": 3
+      }
+    },
+    "PigKingdom": {
+      "required_prefabs": [
+        "pigking"
+      ],
+      "countstaticlayouts": {
+        "DefaultPigking": 1
+      },
+      "tags": [
+        "Town"
+      ]
+    },
+    "PigVillage": {
+      "distributeprefabs": {
+        "grass": 0.05,
+        "berrybush": 0.05,
+        "berrybush_juicy": 0.025
+      },
+      "tags": [
+        "Town"
+      ]
+    },
+    "Pondopolis": {
+      "distributeprefabs": {
+        "grass": 8,
+        "flower": 6,
+        "sapling": 1,
+        "twiggytree": 0.4
+      }
+    },
+    "Rocky": {
+      "countprefabs": {
+        "tallbirdnest": 1
+      },
+      "distributeprefabs": {
+        "rock1": 2,
+        "rock2": 2,
+        "rock_ice": 1,
+        "tallbirdnest": 0.1,
+        "spiderden": 0.01,
+        "blue_mushroom": 0.002,
+        "grassgekko": 0.3
+      }
+    },
+    "SpiderVillage": {
+      "countprefabs": {
+        "goldnugget": 5
+      },
+      "distributeprefabs": {
+        "rock1": 1,
+        "rock2": 1,
+        "rocks": 1
+      }
+    }
+  },
+  "source_backed_corrections": [
+    "MandrakeHome, PigVillage, Graveyard, Rocky, and Clearing tile values now match source room value fields.",
+    "BeeQueenBee flower density is 5; its wasphive count is represented by the expected value 1.5 for a 1-to-2 random count.",
+    "BeeClearing source countprefabs are represented as exact counts instead of distribution weights.",
+    "PigVillage and PigKingdom dynamic counts/layouts use expected values; source ranges remain in dynamic_room_counts.",
+    "PigVillage Farmplot and VillageSquare references now resolve to compact layout definitions embedded in map/layouts.lua.",
+    "Graveyard, Rocky, Pondopolis, Clearing, and SpiderVillage source contents were corrected where the model represents those direct fields.",
+    "LightningBluffLightning lightninggoat count uses the expected value 4.5 for a 3-to-6 random count.",
+    "Task room_bg for Badlands and Lightning Bluff is DIRT, as declared by the task source."
+  ],
+  "remaining_approximations": [
+    "Room distribution densities outside the explicitly corrected source-backed entries remain curated cue weights, not a full source transcription.",
+    "RoomDef does not encode prefabdata, procedural layout placement details, or room/task connectivity.",
+    "Event-conditioned pumpkin prefabs and layouts are omitted; their count can be zero or nonzero depending on Hallowed Nights.",
+    "Clearing's rare MushroomRingLarge layout is omitted from the current room model.",
+    "PigKingdom's random CropCircle/TreeFarm layouts are omitted; the required DefaultPigking layout is retained.",
+    "Negative evidence and prefab exclusions remain curated model inputs; a prefab missing from the compact room cue subset is not treated as source proof of absence."
+  ],
+  "files": {
+    "map/rooms/forest/bee.lua": "46e81aa3ee0534f662a0e6aca4add5169e7443c51c35f3f722decf256917e614",
+    "map/rooms/forest/beefalo.lua": "2ad2025d5d5d09b4842452840ca2cd5a86d0dd7b52c3688cdfc789e84f2201e4",
+    "map/rooms/forest/blockers.lua": "f1420d8f161fb2e18f0f9493f2cef3450799ef23a5f1af3fa0e9b0f045ab7f41",
+    "map/rooms/forest/DLCrooms.lua": "2f37b85c8c4a38fd0ce1f6c0e8874caf680dd4f4dfe66bc191c6d7d2658ebaa3",
+    "map/rooms/forest/giants.lua": "e94f8e452282b4e218601b40c642d40bca0492ba76c1769dacaba38bd7952c06",
+    "map/rooms/forest/graveyard.lua": "3176a04380f4c3c5f7b6c82665a8475ad193bab5c4d040f3ddd96be920ad323d",
+    "map/rooms/forest/mandrake.lua": "af0743fac56299af1e4947898118be2f50d857ff40999c5056cee3b53de9b2f0",
+    "map/rooms/forest/pigs.lua": "63648edf309a81478ee58e98298ee82d97abe44b27a582f9ae4848737554c4a1",
+    "map/rooms/forest/spider.lua": "2be1e2fc749cac017a711b6cbc91dca6a720cad13e67a045bb75925669861e34",
+    "map/rooms/forest/terrain_forest.lua": "c0ea2395a30fe4d785d19a6096914c4434db0c24fe08ad39849f959e6e95f963",
+    "map/rooms/forest/terrain_grass.lua": "dc6085efb9fb92b57733b279dba604a10e453dcaa6b66141996aca3861c5320f",
+    "map/rooms/forest/terrain_marsh.lua": "76b9799a4335c057c587e480d9a36acd4ea358c7ef62ad2a7648f340711887ee",
+    "map/rooms/forest/terrain_noise.lua": "ca5b9056a021496d662227dd32fa605540e683420c8bc78d9a71f3fd02167ad2",
+    "map/rooms/forest/terrain_rocky.lua": "469f9811c995f00a8a4bb61db9df045ab5b3e1f83d35c5dc17ecbc804f2f284d",
+    "map/rooms/forest/terrain_savanna.lua": "573be3735cd4b29b9df7a81147b372d2a22803164339894b486441ba2835558f",
+    "map/rooms/forest/walrus.lua": "e39849fd4661284c05063a2db27126191625c7ea4e7c0916f9df2e706c0c4550",
+    "map/tasks.lua": "3546b7d6d8529fff141e4c1b3252470e91994deab722a191c14b90db5c099a0d",
+    "map/tasks/dst_tasks_forestworld.lua": "0a6b04c7e4227954c43a3d5d5d67e0cd608868c4be1ac297b2ca69c82778542a",
+    "map/layouts.lua": "23bb45e92478494294302ab7620cb2d66f77e2efbd1e7858a34f2efc3c4e54b2",
+    "map/static_layouts/deciduous_pond.lua": "6a15d3dfb62f5f6c85d43a83d7d7a9735aa8f3beb5152681b4365c6b63483093",
+    "map/static_layouts/default_pigking.lua": "51d32e1f54473fab995f08cafd06ab2c761e64cd69d6099cd95185eaaf67161e",
+    "map/static_layouts/moonbaseone.lua": "0a37a4321d7017000c0a6f418bc5c679296c47f0ad7ddb1f194979c6bcf9572b",
+    "map/static_layouts/dragonfly_arena.lua": "f265282622c242f12bc4642fbc3824f863d4fdc9aaab368669cf4cc0165d9395",
+    "map/static_layouts/oasis.lua": "4f0a36d1e3504a04a1f91b45b6facda38c12247cabea650a253b1e73cbdcda57",
+    "map/static_layouts/cave_entrance.lua": "0dda97a54b86e5f484e3265ad028a66aea778dddd7256d9550f56d742477b086",
+    "map/static_layouts/resurrectionstone.lua": "e57576c8ae02c5a241835a8f6c30ec2177052851c525d23f8617f735272aa800",
+    "map/static_layouts/wormhole_grass.lua": "a59ec5eec3882f9cd43169d95f797129a2f0c4a1e81f346ceaa7aacc2a327850",
+    "map/static_layouts/moose_nest.lua": "51760152effe87a2ebe3d71fe866819e3fe579a4ab5e00b9613eb4db313a098c",
+    "map/tasksets/forest.lua": "9760df58dbb467f9e75bf60742e3c75bb28d1f85254d70366925eb8dda544b22",
+    "map/storygen.lua": "35ae263a6fc0bafbe6f4ca50a5a87b7f9b948ef9a04ffb9c60ffb95c5718384a",
+    "map/locations.lua": "c1f5e188fcb85ccf58527f148c13978c480c8ac5eb3126e8cfbe0478cc16e124",
+    "map/level.lua": "08ec29a7b0b0b1a11e0187f21e11db6a936947f9d859f048376d1ffe417304b4",
+    "map/lockandkey.lua": "9fbb3c352ddf7457b73dbda39c7c3bacfe05c6117ff6154538888d5c06026d9e",
+    "map/network.lua": "94305b53291a6fec9317be86d79609871d9b450afb11fe7d25bb0e28aa22aa00",
+    "map/graphedge.lua": "bbcd3fd162d10f250d6e9de80c5826d13a250bf827248096dd54ef92760b7a2f"
+  },
+  "task_graph": {
+    "linker": "LinkNodesByKeys",
+    "required_mainland_tasks": 10,
+    "optional_candidates": 10,
+    "selected_optional_tasks": 5,
+    "distance_metric": "undirected shortest task-connection hops",
+    "task_order": "Seeded choice among currently attachable tasks",
+    "follow_up": [
+      "start/end loops",
+      "room-level crosslinks",
+      "island blank-node connections"
+    ]
+  }
+}

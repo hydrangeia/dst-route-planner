@@ -2,17 +2,35 @@ from __future__ import annotations
 
 from dst_route_planner.inference import normalize, score_tasks, task_unlock_probability
 from dst_route_planner.models import ActionScore, BeliefState, DirectionObservation, KnowledgeBase
-from dst_route_planner.world_sampler import sample_task_distances
+from dst_route_planner.world_sampler import DEFAULT_NUM_OPTIONAL_TASKS, sample_task_distances
 
 
-_distance_cache: dict[tuple[str, str], dict[str, float]] = {}
+_distance_cache_owner: KnowledgeBase | None = None
+_distance_cache: dict[tuple[str, int, int, int | None], dict[str, float]] = {}
 
 
-def _get_task_distances(kb: KnowledgeBase, target_task: str, num_samples: int = 1000) -> dict[str, float]:
-    """Cache sampled task distances by target task to avoid redundant sampling."""
-    cache_key = (id(kb), target_task)
+def _get_task_distances(
+    kb: KnowledgeBase,
+    target_task: str,
+    num_samples: int = 1000,
+    num_optional_tasks: int = DEFAULT_NUM_OPTIONAL_TASKS,
+    seed: int | None = 0,
+) -> dict[str, float]:
+    """Cache graph closeness samples by KB identity and sampling settings."""
+    global _distance_cache_owner
+    if _distance_cache_owner is not kb:
+        _distance_cache.clear()
+        _distance_cache_owner = kb
+
+    cache_key = (target_task, num_samples, num_optional_tasks, seed)
     if cache_key not in _distance_cache:
-        _distance_cache[cache_key] = sample_task_distances(kb, target_task, num_samples)
+        _distance_cache[cache_key] = sample_task_distances(
+            kb,
+            target_task,
+            num_samples,
+            num_optional_tasks,
+            seed=seed,
+        )
     return _distance_cache[cache_key]
 
 
@@ -21,6 +39,8 @@ def score_direction(
     target_prefab: str,
     belief: BeliefState,
     direction_obs: DirectionObservation,
+    *,
+    seed: int | None = 0,
 ) -> ActionScore:
     chains = kb.target_chains[target_prefab]
     task_probs, room_probs = score_tasks(kb, direction_obs.observation, dict(belief.task_probs))
@@ -49,7 +69,7 @@ def score_direction(
         max_distance = 0.0
         for chain in chains:
             if chain.task in kb.tasks:
-                distances = _get_task_distances(kb, chain.task)
+                distances = _get_task_distances(kb, chain.task, seed=seed)
                 distance = distances.get(name, 0.0)
                 max_distance = max(max_distance, distance)
         progress_score += prob * max_distance
@@ -106,8 +126,10 @@ def rank_directions(
     target_prefab: str,
     belief: BeliefState,
     observations: list[DirectionObservation],
+    *,
+    seed: int | None = 0,
 ) -> list[ActionScore]:
-    scores = [score_direction(kb, target_prefab, belief, obs) for obs in observations]
+    scores = [score_direction(kb, target_prefab, belief, obs, seed=seed) for obs in observations]
     return sorted(scores, key=lambda item: item.score, reverse=True)
 
 

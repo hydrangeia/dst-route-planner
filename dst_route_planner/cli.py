@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from dst_route_planner.inference import initial_belief, top_items, update_belief
@@ -8,6 +9,7 @@ from dst_route_planner.io import load_direction_observations, observation_from_d
 from dst_route_planner.knowledge import build_forest_default_kb
 from dst_route_planner.models import Direction, DirectionObservation, Observation
 from dst_route_planner.navigation import probabilities_by_direction, rank_directions
+from dst_route_planner.world_sampler import build_random_task_graph
 
 
 def demo_observations(target: str = "panflute") -> list[DirectionObservation]:
@@ -184,11 +186,11 @@ def demo_observations(target: str = "panflute") -> list[DirectionObservation]:
             DirectionObservation(
                 Direction.NORTH,
                 Observation(
-                    tile_types=frozenset({"FOREST"}),
+                    tile_types=frozenset({"GRASS"}),
                     prefabs_seen=frozenset({"evergreen", "fireflies", "flower"}),
                     connection_like=True,
                     background_like=False,
-                    note="forest with fireflies and flowers, possible mandrake location",
+                    note="grassy room with trees, fireflies and flowers, possible mandrake location",
                 ),
             ),
             DirectionObservation(
@@ -214,11 +216,11 @@ def demo_observations(target: str = "panflute") -> list[DirectionObservation]:
             DirectionObservation(
                 Direction.WEST,
                 Observation(
-                    tile_types=frozenset({"FOREST"}),
+                    tile_types=frozenset({"GRASS"}),
                     prefabs_seen=frozenset({"evergreen", "flower", "fireflies"}),
                     connection_like=True,
                     background_like=False,
-                    note="forest with flowers and fireflies, mandrake task area",
+                    note="grassy room with trees, flowers and fireflies, mandrake task area",
                 ),
             ),
         ],
@@ -228,18 +230,39 @@ def demo_observations(target: str = "panflute") -> list[DirectionObservation]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="DST mainland task/room probability route planner.")
-    parser.add_argument("--target", default="panflute", help="Target prefab. First supported target: panflute.")
+    parser = argparse.ArgumentParser(description="DST mainland route planner.")
+    parser.add_argument("--target", default="panflute", help="Target prefab (default: panflute).")
     parser.add_argument("--list-targets", action="store_true", help="List supported target prefabs and exit.")
     parser.add_argument("--observe-json", type=Path, help="JSON file containing directional observations.")
     parser.add_argument("--current-json", type=Path, help="Optional current-position observation JSON object.")
     parser.add_argument("--demo", action="store_true", help="Run a built-in example.")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for repeatable task graph sampling (default: 0).")
+    parser.add_argument("--sample-graph", action="store_true", help="Print a sampled mainland task connection graph as JSON and exit.")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     kb = build_forest_default_kb()
+    if args.sample_graph:
+        graph = build_random_task_graph(kb, seed=args.seed)
+        print(json.dumps({
+            "seed": args.seed,
+            "start_task": graph.start_task,
+            "tasks": list(graph.tasks),
+            "selected_optional_tasks": list(graph.selected_optional_tasks),
+            "order": list(graph.order),
+            "edges": [
+                {
+                    "parent_task": edge.parent_task,
+                    "child_task": edge.child_task,
+                    "forced": edge.forced,
+                    "matched_keys": list(edge.matched_keys),
+                }
+                for edge in graph.edges
+            ],
+        }, indent=2))
+        return 0
     if args.list_targets:
         print("Known targets:")
         for target in sorted(kb.target_chains):
@@ -252,8 +275,6 @@ def main() -> int:
 
     belief = initial_belief(kb)
     if args.current_json:
-        import json
-
         current = observation_from_dict(json.loads(args.current_json.read_text(encoding="utf-8")))
         belief = update_belief(kb, belief, current)
 
@@ -262,7 +283,7 @@ def main() -> int:
     else:
         observations = demo_observations(args.target)
 
-    scores = rank_directions(kb, args.target, belief, observations)
+    scores = rank_directions(kb, args.target, belief, observations, seed=args.seed)
     probs = probabilities_by_direction(scores)
 
     print(f"Target: {args.target}")

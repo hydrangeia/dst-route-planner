@@ -1,12 +1,12 @@
 {
-  "title": "区分曼德拉草森林 vs 月球基地",
-  "description": "两个都是FOREST瓷砖，但特征完全不同。通过mandrake_planted和moonbase来快速区分",
+  "title": "区分曼德拉草草地 vs 月球基地",
+  "description": "曼德拉草地点使用GRASS地皮，月球基地使用FOREST地皮；目标prefab也可直接区分",
   "test_cases": [
     {
-      "name": "曼德拉草森林：看到mandrake_planted",
+      "name": "曼德拉草地点：看到mandrake_planted",
       "target": "mandrake_planted",
       "observation": {
-        "tile_types": ["FOREST"],
+        "tile_types": ["GRASS"],
         "prefabs_seen": ["mandrake_planted", "flower", "evergreen"],
         "connection_like": false,
         "background_like": false,
@@ -29,18 +29,18 @@
       "expected_confidence": "very_high"
     },
     {
-      "name": "区分关键：fireflies密度",
+      "name": "区分关键：地皮",
       "target": "mandrake_planted",
       "observation": {
-        "tile_types": ["FOREST"],
+        "tile_types": ["GRASS"],
         "prefabs_seen": ["flower", "evergreen", "fireflies"],
         "connection_like": false,
         "background_like": false,
-        "note": "看到萤火虫 - MandrakeHome有fireflies=0.3（少），MoonbaseOne几乎没有"
+        "note": "萤火虫只能提供背景线索；GRASS地皮更符合MandrakeHome"
       },
       "expected_room_winner": "MandrakeHome",
       "expected_confidence": "moderate",
-      "reason": "MandrakeHome的distributeprefabs中fireflies=0.3（特征），MoonbaseOne没有fireflies"
+      "reason": "源码中MandrakeHome使用GRASS，MoonbaseOne使用FOREST；两者都有萤火虫，因此不能靠fireflies单独区分"
     }
   ]
 }
