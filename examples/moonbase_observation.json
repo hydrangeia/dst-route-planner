@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "sapling", "grass"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "月基地所在区域：针叶林（FOREST）与月球地形混合，见草木"
+    },
+    "east": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["grass", "flower", "sapling"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "开放草原区域，像是普通任务房间"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "evergreen"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "深林背景，不像连接口"
+    },
+    "west": {
+      "tile_types": ["ROCKY"],
+      "prefabs_seen": ["rock1", "gravestone"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "石头/墓地区域背景"
+    }
+  }
+}

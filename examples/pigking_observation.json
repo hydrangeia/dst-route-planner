@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["pighouse", "pighouse", "grass"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "猪房建筑，草地环境，像猪王地形"
+    },
+    "east": {
+      "tile_types": ["DECIDUOUS"],
+      "prefabs_seen": ["deciduoustree", "fireflies"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "落叶林过渡区域"
+    },
+    "south": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["grass", "pighouse"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "背景草地，可能是其他地形"
+    },
+    "west": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["pighouse", "deciduoustree"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "猪王地形：猪房与落叶树混合"
+    }
+  }
+}

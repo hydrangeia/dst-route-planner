@@ -1,0 +1,6 @@
+{
+  "tile_types": ["GRASS"],
+  "prefabs_seen": ["grass", "grass", "sapling", "flower"],
+  "background_like": false,
+  "note": "Example current-position observation; replace with what is visible around the player."
+}

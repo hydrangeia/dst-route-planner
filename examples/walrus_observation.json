@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["grass", "pond"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草地和池塘，像海象营地所在区域"
+    },
+    "east": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["grass", "evergreen"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草原与森林混合边界"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "evergreen", "spiderden"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "深林背景"
+    },
+    "west": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["grass", "sapling"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草地区域，像可以进入的房间"
+    }
+  }
+}

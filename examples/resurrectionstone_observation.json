@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["ROCKY"],
+      "prefabs_seen": ["gravestone", "rock1", "grass"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "墓地区域，复活石位置"
+    },
+    "east": {
+      "tile_types": ["SAVANNA"],
+      "prefabs_seen": ["grass", "rabbithole"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草原过渡区"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "spiderden"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "森林背景"
+    },
+    "west": {
+      "tile_types": ["ROCKY"],
+      "prefabs_seen": ["gravestone", "gravestone", "rock1"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "多个墓碑，复活石setpiece区域"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["DECIDUOUS"],
+      "prefabs_seen": ["deciduoustree", "fireflies", "flower"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "落叶林边界，像可以进入的 room"
+    },
+    "east": {
+      "tile_types": ["SAVANNA"],
+      "prefabs_seen": ["grass", "rabbithole"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草原/兔洞"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "spiderden"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "普通森林背景，不像连接口"
+    },
+    "west": {
+      "tile_types": ["DECIDUOUS"],
+      "prefabs_seen": ["pigking", "pighouse"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "看到猪王或猪房"
+    }
+  }
+}

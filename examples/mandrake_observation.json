@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "fireflies", "flower"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "森林区域，见萤火虫与花朵，可能是曼德拉草地点"
+    },
+    "east": {
+      "tile_types": ["SAVANNA"],
+      "prefabs_seen": ["grass", "flower", "beefalo"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草原/平原区域，不是森林"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "evergreen", "spiderden"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "深森林背景，蛛网陷阱"
+    },
+    "west": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "flower", "fireflies"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "森林与花朵和萤火虫组合，像曼德拉草任务房间"
+    }
+  }
+}

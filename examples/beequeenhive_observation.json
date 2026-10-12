@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["flower", "flower", "beehive"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "花朵众多，看到蜂巢，蜜蜂女王房间"
+    },
+    "east": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["flower", "wasphive"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "花朵与黄蜂巢，蜂类区域特征"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "sapling"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "森林背景，不是蜂类区域"
+    },
+    "west": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["flower", "flower", "flower", "beehive", "wasphive"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "大量花朵与蜂巢，蜜蜂女王区域核心"
+    }
+  }
+}

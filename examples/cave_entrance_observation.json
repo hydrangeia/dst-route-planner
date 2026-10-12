@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["ROCKY"],
+      "prefabs_seen": ["rock1", "rock2", "gravestone"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "石头区域，像洞穴入口"
+    },
+    "east": {
+      "tile_types": ["GRASS"],
+      "prefabs_seen": ["grass", "flower"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草地区过渡"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "evergreen"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "森林背景"
+    },
+    "west": {
+      "tile_types": ["ROCKY"],
+      "prefabs_seen": ["rock1", "gravestone"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "石头和墓地特征，洞穴区域"
+    }
+  }
+}

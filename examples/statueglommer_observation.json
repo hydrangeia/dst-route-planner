@@ -1,0 +1,32 @@
+{
+  "directions": {
+    "north": {
+      "tile_types": ["DECIDUOUS"],
+      "prefabs_seen": ["deciduoustree", "fireflies", "flower"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "落叶林边界，格罗姆雕像区域"
+    },
+    "east": {
+      "tile_types": ["SAVANNA"],
+      "prefabs_seen": ["grass", "rabbithole"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "草原过渡区"
+    },
+    "south": {
+      "tile_types": ["FOREST"],
+      "prefabs_seen": ["evergreen", "spiderden"],
+      "connection_like": false,
+      "background_like": true,
+      "note": "普通森林背景"
+    },
+    "west": {
+      "tile_types": ["DECIDUOUS"],
+      "prefabs_seen": ["deciduoustree", "flower", "fireflies"],
+      "connection_like": true,
+      "background_like": false,
+      "note": "格罗姆雕像所在的落叶林池塘区域"
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "title": "区分猪王宫 vs 猪村",
+  "description": "玩家看到pighouse - 现在需要区分是猪王宫还是猪村",
+  "test_cases": [
+    {
+      "name": "猪王宫特征：看到pigking",
+      "target": "pigking",
+      "observation": {
+        "tile_types": ["GRASS"],
+        "prefabs_seen": ["pigking", "pighouse", "deciduoustree"],
+        "connection_like": false,
+        "background_like": false,
+        "note": "清楚地看到猪王本尊"
+      },
+      "expected_room_winner": "PigKingdom",
+      "expected_confidence": "very_high"
+    },
+    {
+      "name": "猪村特征：只有pighouse，没有pigking",
+      "target": "pigking",
+      "observation": {
+        "tile_types": ["FOREST"],
+        "prefabs_seen": ["pighouse", "evergreen", "sapling"],
+        "connection_like": false,
+        "background_like": false,
+        "note": "森林里有猪房子，但没看到猪王"
+      },
+      "expected_room_winner": "PigVillage",
+      "expected_confidence": "high"
+    },
+    {
+      "name": "模糊情形：只看到pighouse，没有其他信息",
+      "target": "pigking",
+      "observation": {
+        "tile_types": ["GRASS"],
+        "prefabs_seen": ["pighouse"],
+        "connection_like": false,
+        "background_like": false,
+        "note": "只有pighouse，其他都看不清"
+      },
+      "expected_room_winner": "PigKingdom",
+      "expected_confidence": "moderate",
+      "reason": "PigKingdom有required_prefabs pigking，而pighouse本身在两个房间都有"
+    }
+  ]
+}

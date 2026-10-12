@@ -1,0 +1,46 @@
+{
+  "title": "区分神奇桦树林 vs 深桦树林",
+  "description": "两个都是DECIDUOUS瓷砖，但特征不同。通过molehill和statueglommer来区分",
+  "test_cases": [
+    {
+      "name": "神奇桦树林特征：看到statueglommer",
+      "target": "panflute",
+      "observation": {
+        "tile_types": ["DECIDUOUS"],
+        "prefabs_seen": ["statueglommer", "flower", "fireflies", "deciduoustree"],
+        "connection_like": false,
+        "background_like": false,
+        "note": "看到Glommer雕像 - 这绝对是神奇桦树林"
+      },
+      "expected_room_winner": "MagicalDeciduous",
+      "expected_confidence": "very_high"
+    },
+    {
+      "name": "深桦树林特征：没有molehill，fireflies较少",
+      "target": "panflute",
+      "observation": {
+        "tile_types": ["DECIDUOUS"],
+        "prefabs_seen": ["deciduoustree", "fireflies", "catcoonden"],
+        "connection_like": false,
+        "background_like": false,
+        "note": "深林，没看到雕像或molehill"
+      },
+      "expected_room_winner": "DeepDeciduous",
+      "expected_confidence": "high"
+    },
+    {
+      "name": "区分关键：molehill的出现",
+      "target": "panflute",
+      "observation": {
+        "tile_types": ["DECIDUOUS"],
+        "prefabs_seen": ["flower", "fireflies", "molehill", "deciduoustree"],
+        "connection_like": false,
+        "background_like": false,
+        "note": "看到molehill - 鼹鼠相关的特征"
+      },
+      "expected_room_winner": "MagicalDeciduous",
+      "expected_confidence": "high",
+      "reason": "MagicalDeciduous的distributeprefabs有molehill=2，DeepDeciduous的negative_prefabs中有molehill"
+    }
+  ]
+}
