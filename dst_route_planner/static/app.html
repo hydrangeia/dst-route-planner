@@ -60,6 +60,22 @@
       border: 1px solid var(--line); border-radius: 17px; background: var(--surface); box-shadow: var(--shadow);
     }
     .toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; padding: 17px; }
+    .record-panel { margin-top: 14px; padding: 17px; }
+    .record-fields { display: grid; grid-template-columns: minmax(180px, .75fr) minmax(260px, 1.5fr); gap: 11px; }
+    .record-fields label { display: grid; gap: 6px; color: #53665a; font-size: 12px; font-weight: 700; }
+    .record-fields textarea { min-height: 74px; resize: vertical; font-weight: 400; }
+    .record-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
+    .record-context { margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .record-message { min-height: 18px; margin-top: 8px; color: #4d644f; font-size: 12px; line-height: 1.5; }
+    .record-message.error { color: #823c31; }
+    .records-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 17px; }
+    .records-head h3 { margin: 0; color: #53665a; font-size: 13px; }
+    .records-status { margin: 7px 0; color: var(--muted); font-size: 12px; }
+    .record-list { display: grid; gap: 7px; }
+    .record-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #e2e8de; border-radius: 10px; background: #fff; }
+    .record-item-main { min-width: 0; }
+    .record-item-name { overflow: hidden; color: #415448; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .record-item-detail { margin-top: 3px; color: var(--muted); font-size: 11px; }
     .control { display: grid; gap: 6px; min-width: 190px; }
     .control.seed-control { min-width: 116px; width: 130px; }
     .control > span, .field-label { color: #53665a; font-size: 12px; font-weight: 700; }
@@ -166,6 +182,8 @@
       .topline { flex-direction: column; gap: 10px; }
       .api-state { margin: 0 0 0 56px; }
       .toolbar { align-items: stretch; }
+      .record-panel { padding: 13px; }
+      .record-fields { grid-template-columns: 1fr; }
       .control { flex: 1 1 100%; min-width: 0; }
       .control.seed-control { flex: 1 1 100%; width: auto; }
       .toolbar-spacer { display: none; }
@@ -211,6 +229,27 @@
           <input class="sr-only" id="fileInput" type="file" accept=".json,application/json" aria-label="选择观测 JSON 文件">
         </div>
       </div>
+    </section>
+    <section class="panel record-panel" aria-labelledby="recordTitle">
+      <div class="section-head" style="margin: 0 0 12px">
+        <div>
+          <h2 id="recordTitle">探索记录</h2>
+          <p>把当前观测和世界备注保存在本机，下次可以继续填写。</p>
+        </div>
+      </div>
+      <div class="record-fields">
+        <label for="recordName">记录名称<input id="recordName" type="text" maxlength="120" placeholder="例如：夏季存档·找排箫"></label>
+        <label for="worldNote">世界备注<textarea id="worldNote" maxlength="4096" placeholder="可记下世界设置、已探索地点等"></textarea></label>
+      </div>
+      <div class="record-actions">
+        <button class="button primary" id="saveRecordButton" type="button">保存记录</button>
+        <button class="button" id="saveAsNewRecordButton" type="button">另存为新记录</button>
+      </div>
+      <div class="record-context" id="activeRecordStatus">尚未打开已保存记录；保存会新建一条记录。</div>
+      <div class="record-message" id="recordMessage" role="status" aria-live="polite"></div>
+      <div class="records-head"><h3>已保存记录</h3><button class="button" id="refreshRecordsButton" type="button">刷新列表</button></div>
+      <div class="records-status" id="recordsStatus" role="status" aria-live="polite">正在读取记录…</div>
+      <div class="record-list" id="recordList"></div>
     </section>
     <div class="message" id="message" role="status" aria-live="polite"></div>
     <div class="current-badge" id="currentBadge"><span id="currentSummary"></span><button class="current-clear" id="clearCurrent" type="button">移除</button></div>
@@ -301,7 +340,10 @@
       options: { targets: [], tile_types: [], prefabs: [], directions: [] },
       target: "panflute", seed: "0", showDiagonals: false, current: null,
       dirs: Object.fromEntries(DIRS.map(direction => [direction, emptyDirection()])),
-      result: null, revision: 0, requestId: 0, controller: null, loading: false
+      result: null, revision: 0, requestId: 0, controller: null, loading: false,
+      records: [], recordsRequestId: 0, recordsLoading: false, recordOpenRequestId: 0,
+      recordOpening: false, savingRecord: false, activeRecordId: null, activeRecordName: null,
+      formGeneration: 0
     };
     const el = {
       target: document.getElementById("targetSelect"), seed: document.getElementById("seedInput"),
@@ -313,7 +355,12 @@
       file: document.getElementById("fileInput"), results: document.getElementById("resultsArea"),
       stale: document.getElementById("staleNote"), prefabOptions: document.getElementById("prefabOptions"),
       currentBadge: document.getElementById("currentBadge"), currentSummary: document.getElementById("currentSummary"),
-      clearCurrent: document.getElementById("clearCurrent")
+      clearCurrent: document.getElementById("clearCurrent"),
+      recordName: document.getElementById("recordName"), worldNote: document.getElementById("worldNote"),
+      saveRecord: document.getElementById("saveRecordButton"), saveAsNewRecord: document.getElementById("saveAsNewRecordButton"),
+      refreshRecords: document.getElementById("refreshRecordsButton"), recordMessage: document.getElementById("recordMessage"),
+      activeRecordStatus: document.getElementById("activeRecordStatus"), recordsStatus: document.getElementById("recordsStatus"),
+      recordList: document.getElementById("recordList")
     };
 
     function emptyDirection() {
@@ -328,6 +375,11 @@
       el.message.className = `message visible ${kind}`;
     }
     function clearMessage() { el.message.textContent = ""; el.message.className = "message"; }
+    function setRecordMessage(text, kind = "info") {
+      el.recordMessage.textContent = text;
+      el.recordMessage.className = "record-message" + (kind === "error" ? " error" : "");
+    }
+    function clearRecordMessage() { setRecordMessage(""); }
     function setApiStatus(kind, text) {
       el.apiState.className = `api-state ${kind || ""}`;
       el.apiStateText.textContent = text;
@@ -429,7 +481,178 @@
         setApiStatus("ready", "本地引擎已连接");
       } catch (error) {
         setApiStatus("error", "本地引擎未连接");
-        setMessage(`暂时无法读取本地选项：${error.message}。请确认服务已启动后重试。`, "error");
+        setMessage("暂时无法读取本地选项：" + error.message + "。请确认服务已启动后重试。", "error");
+      }
+      await refreshRecords({ quiet: true });
+    }
+    function updateRecordControls() {
+      el.saveRecord.disabled = state.savingRecord;
+      el.saveAsNewRecord.disabled = state.savingRecord;
+      el.refreshRecords.disabled = state.recordsLoading || state.recordOpening;
+      el.saveRecord.textContent = state.savingRecord ? "正在保存…" : "保存记录";
+      el.saveAsNewRecord.textContent = state.savingRecord ? "正在保存…" : "另存为新记录";
+      el.refreshRecords.textContent = state.recordsLoading ? "正在刷新…" : "刷新列表";
+      el.activeRecordStatus.textContent = state.activeRecordId
+        ? "当前记录：" + (state.activeRecordName || el.recordName.value || state.activeRecordId) + "。保存记录会更新它。"
+        : "尚未打开已保存记录；保存会新建一条记录。";
+    }
+    function formatSavedAt(value) {
+      const date = new Date(String(value || ""));
+      if (!Number.isFinite(date.getTime())) return String(value || "");
+      return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
+    }
+    function renderRecords() {
+      if (!state.records.length) {
+        el.recordList.innerHTML = '<div class="records-status">还没有保存的记录。</div>';
+        return;
+      }
+      el.recordList.innerHTML = state.records.map(record => {
+        if (!record || typeof record !== "object" || typeof record.id !== "string") return "";
+        const name = typeof record.name === "string" ? record.name : "未命名记录";
+        const target = typeof record.target === "string" ? record.target : "";
+        const targetLabel = TARGETS[target] ? TARGETS[target] + "（" + target + "）" : target;
+        const detail = [targetLabel, formatSavedAt(record.saved_at)].filter(Boolean).join(" · ");
+        return '<article class="record-item"><div class="record-item-main"><div class="record-item-name">' +
+          esc(name) + '</div><div class="record-item-detail">' + esc(detail) +
+          '</div></div><button class="button record-open" type="button" data-record-id="' + esc(record.id) +
+          '"' + (state.recordOpening ? " disabled" : "") + '>打开</button></article>';
+      }).join("");
+    }
+    async function refreshRecords(options = {}) {
+      const requestId = ++state.recordsRequestId;
+      state.recordsLoading = true;
+      el.recordsStatus.textContent = "正在读取已保存记录…";
+      updateRecordControls();
+      try {
+        const response = await fetch("/api/records", { headers: { "Accept": "application/json" } });
+        const result = await readJsonResponse(response);
+        if (requestId !== state.recordsRequestId) return;
+        if (!result || !Array.isArray(result.records)) throw new Error("记录列表格式无法识别。");
+        state.records = result.records;
+        renderRecords();
+        el.recordsStatus.textContent = state.records.length ? "共 " + state.records.length + " 条记录。" : "还没有保存的记录。";
+      } catch (error) {
+        if (requestId === state.recordsRequestId) {
+          el.recordsStatus.textContent = "读取记录失败：" + (error.message || "请稍后重试。");
+          if (!options.quiet) setRecordMessage("暂时无法读取记录：" + error.message, "error");
+        }
+      } finally {
+        if (requestId === state.recordsRequestId) {
+          state.recordsLoading = false;
+          updateRecordControls();
+        }
+      }
+    }
+    function createRecordPayload(asNew = false) {
+      const name = String(el.recordName.value || "").trim();
+      const worldNote = String(el.worldNote.value || "");
+      const errors = [];
+      if (!name) errors.push("请填写记录名称。");
+      if (Array.from(name).length > 120) errors.push("记录名称不能超过 120 个字符。");
+      if (Array.from(worldNote).length > 4096) errors.push("世界备注不能超过 4096 个字符。");
+      if (!state.options.targets.includes(state.target)) errors.push("未识别目标 ID：" + state.target);
+      if (!/^\d+$/.test(String(state.seed).trim()) || !Number.isSafeInteger(Number(state.seed)) || Number(state.seed) < 0) {
+        errors.push("随机种子需要是 0 或更大的整数。");
+      }
+      const directions = {};
+      for (const direction of DIRS) {
+        const observation = toObservation(direction, errors, "", true);
+        if (observation) directions[direction] = observation;
+      }
+      if (errors.length) throw new Error(errors.join(" "));
+      const observation = { schema_version: 1, target: state.target, seed: Number(state.seed), directions };
+      if (state.current) observation.current = state.current;
+      return {
+        record_version: 1,
+        ...(!asNew && state.activeRecordId ? { id: state.activeRecordId } : {}),
+        name, world_note: worldNote, observation
+      };
+    }
+    function validateSavedRecord(record) {
+      if (!record || typeof record !== "object" || Array.isArray(record) || record.record_version !== 1 ||
+          typeof record.id !== "string" || !record.id || typeof record.name !== "string" ||
+          typeof record.world_note !== "string" || !record.observation || typeof record.observation !== "object" ||
+          Array.isArray(record.observation)) {
+        throw new Error("记录内容格式无法识别。");
+      }
+      if (Array.from(record.name.trim()).length === 0 || Array.from(record.name).length > 120 ||
+          Array.from(record.world_note).length > 4096) throw new Error("记录名称或世界备注长度不正确。");
+      return record;
+    }
+    async function saveRecord(asNew = false) {
+      if (state.savingRecord) return;
+      clearRecordMessage();
+      let payload;
+      try {
+        payload = createRecordPayload(asNew);
+      } catch (error) {
+        setRecordMessage(error.message || "记录内容无法保存。", "error");
+        return;
+      }
+      const formGeneration = state.formGeneration;
+      const previousRecordId = state.activeRecordId;
+      const savedRevision = state.revision;
+      state.savingRecord = true;
+      updateRecordControls();
+      setRecordMessage("正在保存记录…");
+      try {
+        const response = await fetch("/api/records", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const saved = validateSavedRecord(await readJsonResponse(response));
+        if (state.formGeneration === formGeneration && state.activeRecordId === previousRecordId) {
+          state.activeRecordId = saved.id;
+          state.activeRecordName = saved.name;
+        }
+        const editedWhileSaving = state.formGeneration === formGeneration && state.revision !== savedRevision;
+        const savedName = saved.name;
+        if (editedWhileSaving) {
+          setRecordMessage("提交时的输入已保存；当前还有修改未保存，请再点“保存记录”。");
+        } else {
+          setRecordMessage("已保存记录“" + savedName + "”。");
+        }
+        void refreshRecords({ quiet: true });
+      } catch (error) {
+        setRecordMessage("保存失败：" + (error.message || "请稍后重试。") + " 当前填写已保留。", "error");
+      } finally {
+        state.savingRecord = false;
+        updateRecordControls();
+      }
+    }
+    async function openRecord(recordId) {
+      if (state.recordOpening || typeof recordId !== "string" || !recordId) return;
+      clearRecordMessage();
+      const requestId = ++state.recordOpenRequestId;
+      const revision = state.revision;
+      state.recordOpening = true;
+      renderRecords();
+      updateRecordControls();
+      setRecordMessage("正在打开记录…");
+      try {
+        const response = await fetch("/api/records/" + encodeURIComponent(recordId), {
+          headers: { "Accept": "application/json" }
+        });
+        const record = validateSavedRecord(await readJsonResponse(response));
+        if (requestId !== state.recordOpenRequestId) return;
+        if (revision !== state.revision) {
+          setRecordMessage("打开已取消：等待期间观测有修改，当前填写已保留。");
+          return;
+        }
+        applyPayload(record.observation, "已打开记录", record);
+        clearRecordMessage();
+        setRecordMessage("已打开记录“" + record.name + "”。");
+      } catch (error) {
+        if (requestId === state.recordOpenRequestId) {
+          setRecordMessage("打开失败：" + (error.message || "请稍后重试。") + " 当前填写已保留。", "error");
+        }
+      } finally {
+        if (requestId === state.recordOpenRequestId) {
+          state.recordOpening = false;
+          renderRecords();
+          updateRecordControls();
+        }
       }
     }
     function toObservation(direction, errors, prefix = "", includeNoteOnly = false) {
@@ -490,6 +713,7 @@
     }
     function cancelStaleRequest() {
       state.revision += 1;
+      if (state.activeRecordId && !state.savingRecord && !state.recordOpening) setRecordMessage("当前记录有未保存修改；保存记录会更新它。");
       if (state.controller) state.controller.abort();
       state.controller = null;
       if (state.loading) {
@@ -661,7 +885,7 @@
       el.currentSummary.textContent = `已载入当前位置线索：${tileCount} 种地皮、${prefabCount} 种地标；计算时会一并使用。`;
       el.currentBadge.classList.add("visible");
     }
-    function applyPayload(payload, label) {
+    function applyPayload(payload, label, recordContext = null) {
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("JSON 顶层需要是对象。");
       if (payload.schema_version !== undefined && payload.schema_version !== 1) throw new Error(`暂不支持 schema_version ${payload.schema_version}。`);
       const observationFields = ["tile_types", "prefabs_seen", "prefab_counts", "room_hints", "task_hints", "connection_like", "background_like", "note"];
@@ -674,14 +898,22 @@
       }
       if (!isObservationOnly && payload.target !== undefined && typeof payload.target !== "string") throw new Error("target 需要是 prefab ID 文本。");
       if (!isObservationOnly && payload.seed !== undefined && (!Number.isSafeInteger(payload.seed) || payload.seed < 0)) throw new Error("seed 需要是 0 或更大的整数。");
-      if (payload.current !== undefined && (!payload.current || typeof payload.current !== "object" || Array.isArray(payload.current))) throw new Error("current 需要是一个观测对象。");
+      if (payload.current !== undefined && payload.current !== null && (typeof payload.current !== "object" || Array.isArray(payload.current))) throw new Error("current 需要是一个观测对象。");
       const currentSource = isObservationOnly && payload.current === undefined ? payload : payload.current;
       const nextCurrent = currentSource ? normalizedObservationToJson(normalizeObservation(currentSource, "当前位置")) : null;
       cancelStaleRequest();
+      if (!isObservationOnly) state.formGeneration += 1;
       state.dirs = imported;
       if (!isObservationOnly && payload.target !== undefined) state.target = payload.target;
       if (!isObservationOnly && payload.seed !== undefined) state.seed = String(payload.seed);
       state.current = nextCurrent;
+      const importedRecordContext = recordContext || (isObservationOnly
+        ? { id: state.activeRecordId, name: el.recordName.value, world_note: el.worldNote.value }
+        : null);
+      state.activeRecordId = importedRecordContext && importedRecordContext.id ? importedRecordContext.id : null;
+      state.activeRecordName = importedRecordContext && importedRecordContext.name ? importedRecordContext.name : null;
+      el.recordName.value = importedRecordContext ? importedRecordContext.name : "";
+      el.worldNote.value = importedRecordContext ? importedRecordContext.world_note : "";
       const hasDiagonal = DIRS.some(direction => {
         if (CARDINALS.includes(direction)) return false;
         const data = imported[direction];
@@ -692,6 +924,9 @@
       el.seed.value = state.seed;
       renderTargetOptions(); renderCards();
       updateCurrentBadge();
+      updateRecordControls();
+      if (isObservationOnly && state.activeRecordId) setRecordMessage("当前位置观测已载入；当前记录有未保存修改。");
+      else if (!isObservationOnly) clearRecordMessage();
       el.stale.classList.toggle("visible", !!state.result);
       if (isObservationOnly) {
         setMessage(`${label}已载入当前位置观测。`, "info");
@@ -759,13 +994,19 @@
     }
     function resetForm() {
       cancelStaleRequest();
+      state.formGeneration += 1;
+      state.recordOpenRequestId += 1;
+      state.recordOpening = false;
+      state.activeRecordId = null; state.activeRecordName = null;
+      el.recordName.value = ""; el.worldNote.value = "";
+      clearRecordMessage();
       state.dirs = Object.fromEntries(DIRS.map(direction => [direction, emptyDirection()]));
       state.target = state.options.targets.includes("panflute") ? "panflute" : (state.options.targets[0] || "panflute");
       state.seed = "0"; state.showDiagonals = false; state.current = null; state.result = null;
       el.diagonal.checked = false; el.seed.value = "0"; el.stale.classList.remove("visible");
       updateCurrentBadge();
       el.results.innerHTML = '<div class="empty-results">填入至少一个方向的有效线索，再点“计算方向”。</div>';
-      renderTargetOptions(); renderCards(); clearMessage();
+      renderTargetOptions(); renderCards(); clearMessage(); updateRecordControls();
     }
     function handleGridInput(event) {
       const target = event.target;
@@ -811,6 +1052,15 @@
         if (!state.dirs[direction].prefabRows.length) state.dirs[direction].prefabRows.push({ id: "", count: "1" });
       }
       cancelStaleRequest(); renderCards();
+    });
+    el.recordName.addEventListener("input", () => { cancelStaleRequest(); updateRecordControls(); });
+    el.worldNote.addEventListener("input", () => { cancelStaleRequest(); updateRecordControls(); });
+    el.saveRecord.addEventListener("click", () => saveRecord(false));
+    el.saveAsNewRecord.addEventListener("click", () => saveRecord(true));
+    el.refreshRecords.addEventListener("click", () => refreshRecords());
+    el.recordList.addEventListener("click", event => {
+      const button = event.target.closest("button.record-open[data-record-id]");
+      if (button) openRecord(button.dataset.recordId);
     });
     el.calculate.addEventListener("click", calculate);
     el.demo.addEventListener("click", loadDemo);

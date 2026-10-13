@@ -25,9 +25,9 @@ python route_planner.py --ui --port 8766
 python route_planner.py --ui --no-browser
 ```
 
-默认地址是 `http://127.0.0.1:8765/`。`--port` 可指定本机端口；`--no-browser` 只启动服务并在终端显示地址。网页可以载入排箫示例、导入或下载 JSON 观测。
+默认地址是 `http://127.0.0.1:8765/`。`--port` 可指定本机端口；`--no-browser` 只启动服务并在终端显示地址。网页可以载入排箫示例、导入或下载 JSON 观测，也可以保存命名探索记录。
 
-也可以载入 `examples/current_observation.json` 补充当前位置线索；已填写的方向会保留。导出的文件会一起保存目标、随机种子、方向观测和当前位置线索。
+也可以载入 `examples/current_observation.json` 补充当前位置线索；已填写的方向会保留。导出的观测 JSON 会一起保存目标、随机种子、方向观测和当前位置线索。记录另存名称和世界备注，并保存同一份当前观测快照。
 
 运行开发测试：
 
@@ -68,7 +68,38 @@ python -m pytest -q
 }
 ```
 
-响应中的 `directions` 按推荐顺序列出 `direction`、`score`、`p_dir`、`p_task`、`p_room` 和 `explanation`。`current_tasks` 返回应用可选当前位置观测后的高分 task 信念。页面导出的 JSON 可以直接重新导入；页面也接受现有的无版本观测文件。
+响应中的 `directions` 按推荐顺序列出 `direction`、`score`、`p_dir`、`p_task`、`p_room` 和 `explanation`。`current_tasks` 返回应用可选当前位置观测后的高分 task 信念。页面导出的观测 JSON 可以直接重新导入；页面也接受现有的无版本观测文件。
+
+## 探索记录
+
+页面支持保存当前探索记录、另存为新记录、列出已有记录并打开记录。每条记录保存一个当前快照，包括名称、世界备注、目标、随机种子、各方向观测和可选的 `current`。每次保存会更新当前快照；修改观测后再点击保存。
+
+记录存放在当前仓库目录的 `.dst-route-planner/records/` 下，并由 Git 忽略。同一份 checkout 重启工具后仍可读取这些记录；用该 checkout 启动另一个浏览器会话或端口时，也能看到相同的记录。
+
+记录 HTTP API：
+
+- `GET /api/records` 返回记录摘要列表，例如：`{"records":[{"id":"<uuid>","name":"主世界排箫搜索","target":"panflute","saved_at":"<timestamp>"}]}`。
+- `GET /api/records/<uuid>` 返回完整记录，形状如下：
+
+```json
+{
+  "record_version": 1,
+  "id": "<uuid>",
+  "name": "主世界排箫搜索",
+  "world_note": "出生点在桦树林附近",
+  "saved_at": "<timestamp>",
+  "observation": {
+    "schema_version": 1,
+    "target": "panflute",
+    "seed": 0,
+    "directions": {}
+  }
+}
+```
+
+- `POST /api/records` 接收同样的对象，但不包含 `saved_at`；`id` 可省略。
+
+`observation` 使用现有的 schema version 1 观测结构。记录元数据不属于 `/api/plan` 的输入；普通 JSON 导入和导出仍只处理原有观测格式。
 
 ## 目标与世界生成线索
 
@@ -161,6 +192,7 @@ python -m pytest -q
 - `io.py` 读取方向观测和当前位置 JSON。
 - `cli.py` 提供命令行、演示和目标列表。
 - `app.py` 提供本地网页服务和方向计算 API，`static/app.html` 是观测录入与结果页面。
+- `records.py` 保存和读取命名探索记录。
 - `world_sampler.py` 抽取带锁/钥匙来源记录的 task 连接图，并以 BFS 最短跳数计算图上的 task 接近度。
 
 当前项目进度和下一步计划见根目录的 [`README.md`](../README.md) 与 [`TODO.md`](../TODO.md)。

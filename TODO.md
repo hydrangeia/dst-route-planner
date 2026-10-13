@@ -21,9 +21,9 @@
 
 ## 2. 连续手动探索 / Ongoing manual exploration
 
-- [ ] 保存并恢复一局探索记录，让玩家能在下次启动时接着补充观测。 / Save and reopen an exploration record so players can continue adding observations after restarting the tool.
-- [ ] 在记录中关联目标、世界备注、各次观测和已发现地点，方便回看同一张地图。 / Keep the target, world notes, observations over time, and discovered locations together for later review of the same map.
-- [ ] 试用几种简单的记录方式，找出手动探索时最省事的保存与更新流程。 / Try a few simple record formats and settle on an easy way to save and update notes during manual exploration.
+- [x] 保存并打开命名探索记录；记录包含目标、世界备注、随机种子和当前观测，重启或换浏览器/端口后也能继续补充。 / Save and reopen a named exploration record with its target, world note, random seed, and current observations, then continue after restarting or switching browsers/ports.
+- [ ] 为记录加入观测历史和已发现地点，方便回看同一张地图。 / Add observation history and discovered locations so players can review the same world over time.
+- [ ] 在实战中检查手动保存和更新是否顺手，并按反馈调整流程。 / Check whether saving and updating records feels convenient during play, and refine the flow from that feedback.
 
 ## 3. 实战使用与评估 / Play-world evaluation
 

@@ -15,6 +15,12 @@ from dst_route_planner.io import InputValidationError, direction_observations_fr
 from dst_route_planner.knowledge import build_forest_default_kb
 from dst_route_planner.models import Direction
 from dst_route_planner.navigation import probabilities_by_direction, rank_directions
+from dst_route_planner.records import (
+    CorruptRecordError,
+    InvalidRecordIdError,
+    RecordNotFoundError,
+    RecordStore,
+)
 
 
 MAX_REQUEST_BYTES = 256 * 1024
@@ -22,6 +28,7 @@ KB = build_forest_default_kb()
 PACKAGE_DIR = Path(__file__).resolve().parent
 APP_HTML_PATH = PACKAGE_DIR / "static" / "app.html"
 DEMO_JSON_PATH = PACKAGE_DIR.parent / "examples" / "panflute_observation.json"
+DEFAULT_RECORD_DIR = PACKAGE_DIR.parent / ".dst-route-planner" / "records"
 _LOG = logging.getLogger(__name__)
 
 
@@ -31,7 +38,9 @@ def _require_mapping(value: Any, label: str) -> Mapping[str, Any]:
     return value
 
 
-def _plan_request(payload: Any, kb=KB) -> dict[str, Any]:
+def _validated_observation_request(payload: Any, kb=KB) -> tuple[
+    dict[str, Any], str, int, list[Any], Any | None
+]:
     data = _require_mapping(payload, "request")
     if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
         raise InputValidationError("request must use schema_version 1.")
@@ -57,10 +66,18 @@ def _plan_request(payload: Any, kb=KB) -> dict[str, Any]:
         {"schema_version": 1, "directions": raw_directions}
     )
 
-    belief = initial_belief(kb)
     current = data.get("current")
+    parsed_current = None
     if current is not None:
-        belief = update_belief(kb, belief, observation_from_dict(_require_mapping(current, "current")))
+        parsed_current = observation_from_dict(_require_mapping(current, "current"))
+    return dict(data), target, seed, observations, parsed_current
+
+
+def _plan_request(payload: Any, kb=KB) -> dict[str, Any]:
+    _, target, seed, observations, current_observation = _validated_observation_request(payload, kb)
+    belief = initial_belief(kb)
+    if current_observation is not None:
+        belief = update_belief(kb, belief, current_observation)
 
     scores = rank_directions(kb, target, belief, observations, seed=seed)
     probabilities = probabilities_by_direction(scores)
@@ -160,6 +177,42 @@ class _PlannerHandler(BaseHTTPRequestHandler):
                 _LOG.exception("Unable to load the bundled example input")
                 self._send_json(500, {"error": "The bundled demo could not be loaded."})
             return
+        if path == "/api/records":
+            try:
+                records = self.server.record_store.list_records(
+                    observation_validator=lambda observation: _validated_observation_request(
+                        observation, self.server.kb
+                    )
+                )
+            except OSError:
+                _LOG.exception("Unable to list saved exploration records")
+                self._send_json(500, {"error": "Saved records could not be listed."})
+                return
+            self._send_json(200, {"records": records})
+            return
+        if path.startswith("/api/records/"):
+            record_id = path.removeprefix("/api/records/")
+            if not record_id or "/" in record_id:
+                self._send_json(404, {"error": "Route not found."})
+                return
+            try:
+                record = self.server.record_store.get(record_id)
+                _validated_observation_request(record["observation"], self.server.kb)
+            except InvalidRecordIdError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except RecordNotFoundError:
+                self._send_json(404, {"error": "Saved record not found."})
+                return
+            except (CorruptRecordError, InputValidationError):
+                self._send_json(500, {"error": "The saved record could not be read."})
+                return
+            except OSError:
+                _LOG.exception("Unable to read saved exploration record")
+                self._send_json(500, {"error": "The saved record could not be read."})
+                return
+            self._send_json(200, record)
+            return
         if path == "/":
             self._send_app_html()
             return
@@ -167,23 +220,47 @@ class _PlannerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = urlsplit(self.path).path
-        if path != "/api/plan":
+        if path not in {"/api/plan", "/api/records"}:
             self._send_json(404, {"error": "Route not found."})
             return
 
         try:
             payload = self._read_json_body()
-            response = _plan_request(payload, self.server.kb)
+            if path == "/api/plan":
+                response = _plan_request(payload, self.server.kb)
+                status = 200
+            else:
+                response, status = _save_record_request(
+                    payload, self.server.record_store, self.server.kb
+                )
         except _ResponseAlreadySent:
             return
         except InputValidationError as exc:
             self._send_json(400, {"error": str(exc)})
             return
+        except InvalidRecordIdError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except RecordNotFoundError:
+            self._send_json(404, {"error": "Saved record not found."})
+            return
+        except CorruptRecordError:
+            self._send_json(500, {"error": "The saved record could not be updated."})
+            return
+        except OSError:
+            _LOG.exception("Unable to save exploration record")
+            self._send_json(500, {"error": "The saved record could not be saved."})
+            return
         except Exception:
             _LOG.exception("Planner request failed")
-            self._send_json(500, {"error": "The planner could not process this request."})
+            message = (
+                "The planner could not process this request."
+                if path == "/api/plan"
+                else "The saved record could not be saved."
+            )
+            self._send_json(500, {"error": message})
             return
-        self._send_json(200, response)
+        self._send_json(status, response)
 
     def _read_json_body(self) -> Any:
         media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
@@ -251,7 +328,45 @@ class _ResponseAlreadySent(Exception):
     pass
 
 
-def create_server(port: int = 0) -> ThreadingHTTPServer:
+def _save_record_request(payload: Any, store: RecordStore, kb=KB) -> tuple[dict[str, Any], int]:
+    data = _require_mapping(payload, "request")
+    allowed_fields = {"record_version", "id", "name", "world_note", "observation"}
+    extra_fields = set(data) - allowed_fields
+    if extra_fields:
+        names = ", ".join(sorted(str(field) for field in extra_fields))
+        raise InputValidationError(f"request has unsupported field(s): {names}.")
+    if type(data.get("record_version")) is not int or data["record_version"] != 1:
+        raise InputValidationError("request must use record_version 1.")
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise InputValidationError("name must be a non-empty string.")
+    name = name.strip()
+    if len(name) > 120:
+        raise InputValidationError("name must be at most 120 characters.")
+    world_note = data.get("world_note")
+    if not isinstance(world_note, str):
+        raise InputValidationError("world_note must be a string.")
+    if len(world_note) > 4096:
+        raise InputValidationError("world_note must be at most 4096 characters.")
+
+    observation = data.get("observation")
+    validated_observation = _validated_observation_request(observation, kb)[0]
+    record_id = None
+    if "id" in data:
+        record_id = data["id"]
+        if not isinstance(record_id, str):
+            raise InputValidationError("id must be a UUID.")
+    record, created = store.save(
+        name=name,
+        world_note=world_note,
+        observation=validated_observation,
+        record_id=record_id,
+    )
+    return record, 201 if created else 200
+
+
+def create_server(port: int = 0, *, record_dir: Path | str | None = None) -> ThreadingHTTPServer:
     """Create a local-only HTTP server; port 0 asks the OS for a free port."""
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("port must be an integer from 0 through 65535.")
@@ -263,6 +378,9 @@ def create_server(port: int = 0) -> ThreadingHTTPServer:
         def __init__(self, address):
             super().__init__(address, _PlannerHandler)
             self.kb = KB
+            self.record_store = RecordStore(
+                DEFAULT_RECORD_DIR if record_dir is None else Path(record_dir)
+            )
 
     return PlannerHTTPServer(("127.0.0.1", port))
 

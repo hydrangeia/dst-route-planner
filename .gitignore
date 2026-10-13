@@ -20,3 +20,4 @@ dist/
 *.log
 Thumbs.db
 .DS_Store
+.dst-route-planner/

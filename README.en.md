@@ -21,20 +21,24 @@ On Windows, you can also double-click `start_planner.bat`. The page opens in you
 1. Choose a target.
 2. Enter the tiles, prefabs, and counts you see in each direction.
 3. Click “计算方向” to see the direction ranking and its clues.
-4. Explore in DST, update the observations, and calculate again.
+4. Return to DST and save. After restarting, open the world from the record list and continue adding and saving observations.
 
-The page includes demo observations and lets you import or export observation JSON.
+The page includes demo observations and lets you import or export observation JSON. You can also add a record name and world note, then select Save, or select Save as new to keep a separate copy. After restarting, or using another browser or port with the same checkout, open the world from the record list, add observations, and save again. Observation JSON import and export keep their existing format.
+
+Each save updates the record's current observations; click Save again after making changes.
 
 ```text
-Choose a target and enter visible tiles and landmarks for each direction
+Choose a target and enter the tiles and landmarks seen in each direction
   ↓
-Python matches the observations to room and task clues in its knowledge base
+Click Calculate; Python matches observations to room and task clues
   ↓
 Task-graph context and visible evidence rank the directions
   ↓
-Review the suggested direction and the reasons behind it
+Review the suggestions and reasons, then return to DST
   ↓
-Explore in DST, update the observations, and calculate again
+Update the observations and save a named record with its world note
+  ↓
+Next time, open the record and continue observing, calculating, and saving
 ```
 
 For now, enter observations in the web page. A future in-game collector can send the same JSON observations to the Python engine.
@@ -72,6 +76,6 @@ JSON fields and CLI examples are documented in [`dst_route_planner/README.md`](d
 
 ## Current state
 
-The local Python engine ranks directions using 20 tasks, 53 rooms, 13 static layouts, and clues for 20 targets in the default mainland world. The task graph captures generation topology; the tiles and landmarks entered in the page add evidence from the area around you.
+The local Python engine ranks directions using 20 tasks, 53 rooms, 13 static layouts, and clues for 20 targets in the default mainland world. The task graph captures generation topology; the tiles and landmarks entered in the page add evidence from the area around you. Named records keep a target, world note, and current observations on this machine so you can continue after restarting.
 
 The staged roadmap is in [`TODO.md`](TODO.md). Earlier development notes are in [`DST_ROUTE_PLANNER_WORK.md`](DST_ROUTE_PLANNER_WORK.md) and [`PHASE_5A_COMPLETION_REPORT.md`](PHASE_5A_COMPLETION_REPORT.md).
