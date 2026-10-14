@@ -19,10 +19,12 @@
 
 - [x] 客户端采集玩家坐标、当前地皮和附近地标，把每秒快照送给外置 Python。 / Collect player coordinates, the current tile, and nearby landmarks on the client, and send one snapshot per second to external Python.
 - [x] 网页实时展示位置与方向建议，识别采集暂停和世界切换。 / Show live positions and direction suggestions, and detect paused collection and world changes.
+
 采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
 
 - [ ] 在游戏中验证日志输出、坐标方向和地标采集，记录一次完整探索过程。 / Verify log output, coordinate directions, and landmark capture in game, and record a complete exploration run.
-- [ ] 记录实时坐标、探索轨迹和已发现地点，构建可通行地图并重算路径。 / Record live coordinates, exploration trails, and discovered locations, then build a walkable map and replan routes.
+- [x] 实时跟随时记录连续坐标、观测和方向建议，按世界与会话保存本机 JSONL 回放，并支持重启后下载。 / Record successive positions, observations, and suggestions during live following, save local JSONL replays per world/session, and download them after restarting.
+- [ ] 用回放记录绘制探索轨迹、标记已发现地点，再构建可通行地图并重算路径。 / Plot exploration trails and discovered places from replay records, then build a walkable map and replan routes.
 
 ## 1. 生成数据校对 / Generation data
 

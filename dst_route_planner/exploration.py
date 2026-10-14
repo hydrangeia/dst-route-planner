@@ -1,0 +1,473 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from dst_route_planner.live import validate_snapshot
+
+
+REPLAY_VERSION = 1
+MAX_EXPLORATION_BYTES = 32 * 1024 * 1024
+MAX_EXPLORATION_FRAMES = 10_000
+JOURNAL_LOCK_TIMEOUT_SECONDS = 1.0
+_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_STORE_LOCKS_GUARD = threading.Lock()
+_STORE_LOCKS: dict[str, Any] = {}
+
+
+class ExplorationError(Exception):
+    """Base class for exploration journal failures."""
+
+
+class InvalidExplorationIdError(ExplorationError, ValueError):
+    """Raised when a journal ID is not a lowercase SHA256 hex string."""
+
+
+class ExplorationNotFoundError(ExplorationError):
+    """Raised when a journal does not exist."""
+
+
+class CorruptExplorationError(ExplorationError):
+    """Raised when a complete journal line is malformed or inconsistent."""
+
+
+class ExplorationLockError(OSError):
+    """Raised when another process holds a journal lock for too long."""
+
+
+@dataclass(frozen=True)
+class _JournalMetadata:
+    header: dict[str, Any]
+    frame_count: int
+    started_at: str | None
+    last_captured_at: str | None
+    last_sequence: int
+    complete_size: int
+    file_size: int
+    mtime_ns: int
+
+
+def exploration_id(world_id: str, world_kind: str, session_id: str) -> str:
+    identity = json.dumps(
+        [world_id, world_kind, session_id], ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _captured_at_timestamp(value: int | float) -> str:
+    try:
+        return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="microseconds").replace(
+            "+00:00", "Z"
+        )
+    except (OverflowError, OSError, ValueError) as exc:
+        raise CorruptExplorationError("snapshot captured_at is outside the supported range.") from exc
+
+
+def _parse_timestamp(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise CorruptExplorationError(f"{label} must be a timestamp string.")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CorruptExplorationError(f"{label} is invalid.") from exc
+    if parsed.tzinfo is None:
+        raise CorruptExplorationError(f"{label} must include a timezone.")
+    return value
+
+
+def _json_line(value: dict[str, Any]) -> bytes:
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
+        "utf-8"
+    ) + b"\n"
+
+
+def _object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _summary(
+    header: dict[str, Any],
+    *,
+    frame_count: int,
+    started_at: str | None,
+    last_captured_at: str | None,
+    byte_count: int,
+    status: str | None = None,
+) -> dict[str, Any]:
+    if status is None:
+        status = (
+            "limit_reached"
+            if frame_count >= MAX_EXPLORATION_FRAMES or byte_count >= MAX_EXPLORATION_BYTES
+            else "recording"
+        )
+    return {
+        "id": header["id"],
+        "world_id": header["world_id"],
+        "world_kind": header["world_kind"],
+        "session_id": header["session_id"],
+        "frame_count": frame_count,
+        "started_at": started_at,
+        "last_captured_at": last_captured_at,
+        "status": status,
+    }
+
+
+def _metadata_summary(
+    metadata: _JournalMetadata, *, status: str | None = None
+) -> dict[str, Any]:
+    return _summary(
+        metadata.header,
+        frame_count=metadata.frame_count,
+        started_at=metadata.started_at,
+        last_captured_at=metadata.last_captured_at,
+        byte_count=metadata.complete_size,
+        status=status,
+    )
+
+
+class ExplorationStore:
+    """Append and serve local JSONL replays from live collector snapshots."""
+
+    def __init__(self, directory: Path | str):
+        self.directory = Path(directory)
+        lock_key = str(self.directory.resolve()).casefold()
+        with _STORE_LOCKS_GUARD:
+            self._lock = _STORE_LOCKS.setdefault(lock_key, threading.RLock())
+        self._metadata_cache: dict[str, _JournalMetadata] = {}
+
+    def capture(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        target: str,
+        seed: int,
+        plan: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # The live reader validates snapshots already; repeat validation at this
+        # persistence boundary so callers cannot put malformed data in a replay.
+        validated = validate_snapshot(snapshot)
+        world_id = validated["world_id"]
+        world_kind = validated["world_kind"]
+        session_id = validated["session_id"]
+        journal_id = exploration_id(world_id, world_kind, session_id)
+        header = {
+            "replay_version": REPLAY_VERSION,
+            "id": journal_id,
+            "world_id": world_id,
+            "world_kind": world_kind,
+            "session_id": session_id,
+        }
+        frame: dict[str, Any] = {
+            "replay_version": REPLAY_VERSION,
+            "received_at": _timestamp(),
+            "target": target,
+            "seed": seed,
+            "snapshot": validated,
+        }
+        if plan is not None:
+            frame["plan"] = plan
+        frame_bytes = _json_line(frame)
+        header_bytes = _json_line(header)
+        path = self._journal_path(journal_id)
+
+        with self._lock, self._journal_file_lock(journal_id):
+            self.directory.mkdir(parents=True, exist_ok=True)
+            if path.is_symlink():
+                raise CorruptExplorationError("journal path is not a regular file.")
+            exists = path.exists()
+            if exists:
+                metadata = self._read_metadata(path, journal_id)
+            else:
+                self._metadata_cache.pop(journal_id, None)
+                metadata = _JournalMetadata(header, 0, None, None, 0, 0, 0, 0)
+
+            summary = _metadata_summary(metadata)
+            # A full journal is immutable, including any bytes left after its
+            # final complete line.
+            if summary["status"] == "limit_reached":
+                return summary
+            if metadata.frame_count and validated["sequence"] <= metadata.last_sequence:
+                return summary
+
+            append_bytes = frame_bytes if exists else header_bytes + frame_bytes
+            projected_size = metadata.complete_size + len(append_bytes)
+            if metadata.frame_count + 1 > MAX_EXPLORATION_FRAMES or projected_size > MAX_EXPLORATION_BYTES:
+                if metadata.frame_count == 0:
+                    return _summary(
+                        metadata.header,
+                        frame_count=0,
+                        started_at=frame["received_at"],
+                        last_captured_at=_captured_at_timestamp(validated["captured_at"]),
+                        byte_count=metadata.complete_size,
+                        status="limit_reached",
+                    )
+                return _metadata_summary(metadata, status="limit_reached")
+
+            # An incomplete final line can only have come from an interrupted
+            # append. Remove it after validating all complete lines, then append.
+            if exists and metadata.file_size > metadata.complete_size:
+                with path.open("r+b") as journal:
+                    journal.truncate(metadata.complete_size)
+                    journal.flush()
+            with path.open("ab") as journal:
+                journal.write(append_bytes)
+                journal.flush()
+
+            stat = path.stat()
+            updated = _JournalMetadata(
+                header=metadata.header,
+                frame_count=metadata.frame_count + 1,
+                started_at=metadata.started_at or frame["received_at"],
+                last_captured_at=_captured_at_timestamp(validated["captured_at"]),
+                last_sequence=validated["sequence"],
+                complete_size=projected_size,
+                file_size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+            )
+            self._metadata_cache[journal_id] = updated
+            return _metadata_summary(updated)
+
+    def summary_for_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        """Return a matching journal summary without changing its file."""
+        validated = validate_snapshot(snapshot)
+        journal_id = exploration_id(
+            validated["world_id"], validated["world_kind"], validated["session_id"]
+        )
+        path = self._journal_path(journal_id)
+        with self._lock, self._journal_file_lock(journal_id):
+            try:
+                metadata = self._read_metadata(path, journal_id)
+            except FileNotFoundError:
+                return None
+            if metadata.frame_count == 0:
+                return None
+            return _metadata_summary(metadata)
+
+    def list_explorations(self) -> list[dict[str, Any]]:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        summaries: list[dict[str, Any]] = []
+        with self._lock:
+            for path in self.directory.iterdir():
+                if path.suffix != ".jsonl" or not path.is_file() or path.is_symlink():
+                    continue
+                journal_id = path.stem
+                if not _ID_PATTERN.fullmatch(journal_id):
+                    continue
+                try:
+                    with self._journal_file_lock(journal_id):
+                        metadata = self._read_metadata(path, journal_id)
+                except (OSError, CorruptExplorationError):
+                    continue
+                if metadata.frame_count:
+                    summaries.append(_metadata_summary(metadata))
+        summaries.sort(
+            key=lambda item: (
+                item["last_captured_at"] or "",
+                item["started_at"] or "",
+                item["id"],
+            ),
+            reverse=True,
+        )
+        return summaries
+
+    def get_bytes(self, journal_id: str) -> bytes:
+        normalized_id = self.normalize_id(journal_id)
+        path = self._journal_path(normalized_id)
+        try:
+            with self._lock, self._journal_file_lock(normalized_id):
+                if path.is_symlink():
+                    raise ExplorationNotFoundError("exploration not found")
+                metadata = self._read_metadata(path, normalized_id)
+                with path.open("rb") as journal:
+                    complete_content = journal.read(metadata.complete_size)
+                stat = path.stat()
+                if (stat.st_size, stat.st_mtime_ns) != (metadata.file_size, metadata.mtime_ns):
+                    self._metadata_cache.pop(normalized_id, None)
+                    raise CorruptExplorationError("journal changed while it was being exported.")
+                if len(complete_content) != metadata.complete_size:
+                    raise CorruptExplorationError("journal ended before its complete content was read.")
+                return complete_content
+        except FileNotFoundError as exc:
+            raise ExplorationNotFoundError("exploration not found") from exc
+
+    @staticmethod
+    def normalize_id(value: Any) -> str:
+        if not isinstance(value, str) or not _ID_PATTERN.fullmatch(value):
+            raise InvalidExplorationIdError("id must be a 64-character lowercase hexadecimal string.")
+        return value
+
+    def _journal_path(self, normalized_id: str) -> Path:
+        return self.directory / f"{normalized_id}.jsonl"
+
+    @contextmanager
+    def _journal_file_lock(self, journal_id: str):
+        self.directory.mkdir(parents=True, exist_ok=True)
+        lock_path = self.directory / f".{journal_id}.lock"
+        with lock_path.open("a+b") as lock_file:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            deadline = time.monotonic() + JOURNAL_LOCK_TIMEOUT_SECONDS
+            locked = False
+            while not locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise ExplorationLockError("exploration journal is busy.") from exc
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    import msvcrt
+
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _read_metadata(self, path: Path, journal_id: str) -> _JournalMetadata:
+        if path.is_symlink():
+            raise CorruptExplorationError("journal path is not a regular file.")
+        before = path.stat()
+        cached = self._metadata_cache.get(journal_id)
+        if cached is not None and (cached.file_size, cached.mtime_ns) == (
+            before.st_size,
+            before.st_mtime_ns,
+        ):
+            return cached
+        if before.st_size > MAX_EXPLORATION_BYTES:
+            raise CorruptExplorationError("journal exceeds the configured size limit.")
+        raw = path.read_bytes()
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or len(raw) != after.st_size:
+            raise CorruptExplorationError("journal changed while it was being read.")
+        header, frames, complete_size = self._read_journal_bytes(raw, journal_id)
+        metadata = _JournalMetadata(
+            header=header,
+            frame_count=len(frames),
+            started_at=frames[0]["received_at"] if frames else None,
+            last_captured_at=(
+                _captured_at_timestamp(frames[-1]["snapshot"]["captured_at"])
+                if frames
+                else None
+            ),
+            last_sequence=frames[-1]["snapshot"]["sequence"] if frames else 0,
+            complete_size=complete_size,
+            file_size=after.st_size,
+            mtime_ns=after.st_mtime_ns,
+        )
+        self._metadata_cache[journal_id] = metadata
+        return metadata
+
+    def _read_journal_bytes(
+        self, raw: bytes, expected_id: str
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+        if len(raw) > MAX_EXPLORATION_BYTES:
+            raise CorruptExplorationError("journal exceeds the configured size limit.")
+        if not raw:
+            raise CorruptExplorationError("journal is empty.")
+        last_newline = raw.rfind(b"\n")
+        if last_newline < 0:
+            raise CorruptExplorationError("journal has no complete header line.")
+        complete_size = last_newline + 1
+        complete = raw[:complete_size]
+        lines = complete.splitlines()
+        if not lines:
+            raise CorruptExplorationError("journal has no header line.")
+        values: list[Any] = []
+        try:
+            for line in lines:
+                values.append(
+                    json.loads(
+                        line.decode("utf-8"),
+                        object_pairs_hook=_object_no_duplicates,
+                        parse_constant=self._reject_constant,
+                    )
+                )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+            raise CorruptExplorationError("journal contains an invalid complete JSON line.") from exc
+
+        header = values[0]
+        expected_header_fields = {"replay_version", "id", "world_id", "world_kind", "session_id"}
+        if not isinstance(header, dict) or set(header) != expected_header_fields:
+            raise CorruptExplorationError("journal header fields are invalid.")
+        if type(header["replay_version"]) is not int or header["replay_version"] != REPLAY_VERSION:
+            raise CorruptExplorationError("journal replay version is unsupported.")
+        try:
+            stored_id = self.normalize_id(header["id"])
+            identity_id = exploration_id(header["world_id"], header["world_kind"], header["session_id"])
+        except (InvalidExplorationIdError, TypeError, ValueError) as exc:
+            raise CorruptExplorationError("journal identity is invalid.") from exc
+        if stored_id != expected_id or identity_id != stored_id:
+            raise CorruptExplorationError("journal identity does not match its filename.")
+        for key in ("world_id", "world_kind", "session_id"):
+            if not isinstance(header[key], str) or not header[key].strip():
+                raise CorruptExplorationError("journal identity fields are invalid.")
+
+        frames: list[dict[str, Any]] = []
+        previous_sequence = 0
+        required_frame_fields = {"replay_version", "received_at", "target", "seed", "snapshot"}
+        for value in values[1:]:
+            if not isinstance(value, dict) or not required_frame_fields <= set(value) or set(value) - (
+                required_frame_fields | {"plan"}
+            ):
+                raise CorruptExplorationError("journal frame fields are invalid.")
+            if type(value["replay_version"]) is not int or value["replay_version"] != REPLAY_VERSION:
+                raise CorruptExplorationError("journal frame version is unsupported.")
+            _parse_timestamp(value["received_at"], "received_at")
+            if not isinstance(value["target"], str) or not value["target"].strip():
+                raise CorruptExplorationError("journal frame target is invalid.")
+            if type(value["seed"]) is not int:
+                raise CorruptExplorationError("journal frame seed is invalid.")
+            try:
+                snapshot = validate_snapshot(value["snapshot"])
+            except Exception as exc:
+                raise CorruptExplorationError("journal frame snapshot is invalid.") from exc
+            if any(
+                snapshot[key] != header[key]
+                for key in ("world_id", "world_kind", "session_id")
+            ):
+                raise CorruptExplorationError("journal frame belongs to a different session.")
+            if snapshot["sequence"] <= previous_sequence:
+                raise CorruptExplorationError("journal frame sequences are not increasing.")
+            if "plan" in value and not isinstance(value["plan"], dict):
+                raise CorruptExplorationError("journal frame plan is invalid.")
+            previous_sequence = snapshot["sequence"]
+            frames.append(value)
+        return header, frames, complete_size
+
+    @staticmethod
+    def _reject_constant(value: str) -> None:
+        raise ValueError(f"invalid JSON constant {value}")

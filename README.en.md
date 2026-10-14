@@ -29,6 +29,8 @@ Enter a world and check “实时跟随” (live following) on the page. The col
 
 Directions use fixed world coordinates: north is `+Z` and east is `+X`. Walkable routes around obstacles will follow as explored-map data is added.
 
+While live following is active, the tool saves newly received snapshots locally, including coordinates, nearby clues, the current target, and direction suggestions. Download a JSONL file from “探索回放” (exploration replays) to keep the exploration session; saved replays remain available after restarting. Each world and collector session has its own recording.
+
 ## Manual entry and saved records
 
 1. Choose a target.
@@ -48,6 +50,8 @@ Client log → external Python; update the current position and directional clue
 Match room/task clues and use task-graph context to rank exploration directions
   ↓
 The page updates suggestions and straight-line distance to a visible target
+  ↓
+New snapshots → local replay; download coordinates, clues, and suggestions
   ↓
 Keep moving → collect, calculate, and update again
   ↓

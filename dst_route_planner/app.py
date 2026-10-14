@@ -15,10 +15,17 @@ from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import InputValidationError, direction_observations_from_dict, observation_from_dict
 from dst_route_planner.knowledge import build_forest_default_kb
 from dst_route_planner.live import (
+    FRESHNESS_SECONDS,
     LiveSnapshotError,
     freshness_status,
     nearest_visible_target,
     read_latest_snapshot,
+)
+from dst_route_planner.exploration import (
+    CorruptExplorationError,
+    ExplorationNotFoundError,
+    ExplorationStore,
+    InvalidExplorationIdError,
 )
 from dst_route_planner.models import Direction
 from dst_route_planner.navigation import probabilities_by_direction, rank_directions
@@ -155,7 +162,12 @@ def _demo(kb=KB) -> dict[str, Any]:
     }
 
 
-def _live_request(query: str, live_log: Path | None, kb=KB) -> dict[str, Any]:
+def _live_request(
+    query: str,
+    live_log: Path | None,
+    kb=KB,
+    exploration_store: ExplorationStore | None = None,
+) -> dict[str, Any]:
     parameters = parse_qs(query, keep_blank_values=True)
     unsupported = set(parameters) - {"target", "seed"}
     if unsupported:
@@ -195,31 +207,61 @@ def _live_request(query: str, live_log: Path | None, kb=KB) -> dict[str, Any]:
         "age_seconds": age,
         "snapshot": snapshot,
     }
-    if status != "live":
+    if age > FRESHNESS_SECONDS:
+        if exploration_store is not None and snapshot["world_kind"] in {"forest", "cave"}:
+            try:
+                summary = exploration_store.summary_for_snapshot(snapshot)
+                if summary is not None:
+                    result["recording"] = summary
+            except Exception as exc:
+                _LOG.exception("Unable to read the matching live exploration journal")
+                result["recording"] = {"status": "error", "error": str(exc)}
+        return result
+    if status not in {"live", "unsupported_world"}:
         return result
 
-    try:
-        result["plan"] = _plan_request(
-            {
-                "schema_version": 1,
-                "target": target,
-                "seed": seed,
-                "current": snapshot["current"],
-                "directions": snapshot["directions"],
-            },
-            kb,
-        )
-        visible_target = nearest_visible_target(snapshot, target)
-        if visible_target is not None:
-            result["visible_target"] = visible_target
-    except Exception as exc:
-        _LOG.exception("Unable to plan from the latest live snapshot")
-        return {
-            "status": "error",
-            "age_seconds": age,
-            "snapshot": snapshot,
-            "error": str(exc),
-        }
+    if status == "live":
+        try:
+            result["plan"] = _plan_request(
+                {
+                    "schema_version": 1,
+                    "target": target,
+                    "seed": seed,
+                    "current": snapshot["current"],
+                    "directions": snapshot["directions"],
+                },
+                kb,
+            )
+            visible_target = nearest_visible_target(snapshot, target)
+            if visible_target is not None:
+                result["visible_target"] = visible_target
+        except Exception as exc:
+            _LOG.exception("Unable to plan from the latest live snapshot")
+            return {
+                "status": "error",
+                "age_seconds": age,
+                "snapshot": snapshot,
+                "error": str(exc),
+            }
+
+    # Caves do not have forest inference yet, but fresh cave snapshots are
+    # still useful as an exploration replay.
+    if (
+        exploration_store is not None
+        and age <= FRESHNESS_SECONDS
+        and snapshot["world_kind"] in {"forest", "cave"}
+    ):
+        try:
+            result["recording"] = exploration_store.capture(
+                snapshot,
+                target=target,
+                seed=seed,
+                plan=result.get("plan"),
+            )
+        except Exception as exc:
+            # A failed local write must not interrupt the position or plan API.
+            _LOG.exception("Unable to record the latest live snapshot")
+            result["recording"] = {"status": "error", "error": str(exc)}
     return result
 
 
@@ -255,12 +297,47 @@ class _PlannerHandler(BaseHTTPRequestHandler):
         if path == "/api/live":
             try:
                 result = _live_request(
-                    urlsplit(self.path).query, self.server.live_log, self.server.kb
+                    urlsplit(self.path).query,
+                    self.server.live_log,
+                    self.server.kb,
+                    self.server.exploration_store,
                 )
             except InputValidationError as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
             self._send_json(200, result)
+            return
+        if path == "/api/explorations":
+            try:
+                explorations = self.server.exploration_store.list_explorations()
+            except OSError:
+                _LOG.exception("Unable to list live exploration replays")
+                self._send_json(500, {"error": "Explorations could not be listed."})
+                return
+            self._send_json(200, {"explorations": explorations})
+            return
+        if path.startswith("/api/explorations/"):
+            exploration_id = path.removeprefix("/api/explorations/")
+            if not exploration_id or "/" in exploration_id:
+                self._send_json(404, {"error": "Route not found."})
+                return
+            try:
+                normalized_id = self.server.exploration_store.normalize_id(exploration_id)
+                content = self.server.exploration_store.get_bytes(normalized_id)
+            except InvalidExplorationIdError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except ExplorationNotFoundError:
+                self._send_json(404, {"error": "Exploration not found."})
+                return
+            except CorruptExplorationError:
+                self._send_json(500, {"error": "The exploration could not be read."})
+                return
+            except OSError:
+                _LOG.exception("Unable to read live exploration replay")
+                self._send_json(500, {"error": "The exploration could not be read."})
+                return
+            self._send_exploration_download(normalized_id, content)
             return
         if path == "/api/records":
             try:
@@ -405,6 +482,19 @@ class _PlannerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _send_exploration_download(self, exploration_id: str, content: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="dst-exploration-{exploration_id}.jsonl"',
+        )
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+
     def log_message(self, format: str, *args: Any) -> None:
         _LOG.info("%s - %s", self.address_string(), format % args)
 
@@ -456,6 +546,7 @@ def create_server(
     *,
     record_dir: Path | str | None = None,
     live_log: Path | str | None = None,
+    exploration_dir: Path | str | None = None,
 ) -> ThreadingHTTPServer:
     """Create a local-only HTTP server; port 0 asks the OS for a free port."""
     if type(port) is not int or not 0 <= port <= 65535:
@@ -470,6 +561,14 @@ def create_server(
             self.kb = KB
             self.record_store = RecordStore(
                 DEFAULT_RECORD_DIR if record_dir is None else Path(record_dir)
+            )
+            default_exploration_dir = (
+                DEFAULT_RECORD_DIR.parent / "explorations"
+                if record_dir is None
+                else Path(record_dir).parent / "explorations"
+            )
+            self.exploration_store = ExplorationStore(
+                default_exploration_dir if exploration_dir is None else Path(exploration_dir)
             )
             self.live_log = None if live_log is None else Path(live_log)
 

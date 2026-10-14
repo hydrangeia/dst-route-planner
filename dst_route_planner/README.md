@@ -80,6 +80,18 @@ python -m pytest -q
 
 这一版根据当前快照排列探索方向。探索轨迹、可通行地图和绕障碍的路径重规划列在 [`TODO.md`](../TODO.md)。采集器的 Lua 接口已对照本地源码，并通过桩环境检查；首次游戏内连通验证还需要启用 mod 后完成。
 
+## 连续探索回放
+
+网页实时跟随时，`/api/live` 收到的新快照会自动追加到 `.dst-route-planner/explorations/`。文件按世界和采集会话分开，重复轮询同一份快照不会重复记录。大陆保存坐标、线索、目标、随机种子和方向建议；洞穴先保存收到的坐标与线索。已有的命名记录继续保存当前观测快照。
+
+在“探索回放”中可查看已记录的快照数量并下载 JSONL。下载文件的首行是 `replay_version: 1` 的会话信息，包含 `id`、`world_id`、`world_kind` 和 `session_id`；后续每行包含 `replay_version`、`received_at`、`target`、`seed`、完整的 `snapshot`，以及有方向建议时的 `plan`。快照内的 `captured_at` 和 `sequence` 保留采集时刻与顺序，方便之后复盘移动过程。
+
+- `GET /api/explorations` 返回 `explorations` 摘要列表，最近的记录排在前面。
+- `GET /api/explorations/<id>` 下载这次会话的 JSONL 文件。
+- `/api/live` 的 `recording` 返回记录 ID、快照数量和保存状态；存储失败时网页提示问题，实时坐标与建议继续更新。
+
+每个会话最多记录 10,000 份快照或 32 MiB，达到上限后保留已有文件供下载。回放保存在本机并由 Git 忽略。它用于积累连续探索记录；轨迹地图、地点标记与可通行路径仍按路线图继续实现。
+
 ## 探索记录
 
 页面支持保存当前探索记录、另存为新记录、列出已有记录并打开记录。每条记录保存一个当前快照，包括名称、世界备注、目标、随机种子、各方向观测和可选的 `current`。每次保存会更新当前快照；修改观测后再点击保存。
@@ -204,6 +216,7 @@ python -m pytest -q
 - `app.py` 提供本地网页服务和方向计算 API，`static/app.html` 是观测录入与结果页面。
 - `records.py` 保存和读取命名探索记录。
 - `live.py` 校验并读取客户端日志中的实时快照，判断数据新鲜度和可见目标距离。
+- `exploration.py` 保存连续探索回放并提供摘要和下载。
 - `world_sampler.py` 抽取带锁/钥匙来源记录的 task 连接图，并以 BFS 最短跳数计算图上的 task 接近度。
 
 当前项目进度和下一步计划见根目录的 [`README.md`](../README.md) 与 [`TODO.md`](../TODO.md)。

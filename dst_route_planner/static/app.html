@@ -72,6 +72,9 @@
     .records-head h3 { margin: 0; color: #53665a; font-size: 13px; }
     .records-status { margin: 7px 0; color: var(--muted); font-size: 12px; }
     .record-list { display: grid; gap: 7px; }
+    .live-replay { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 9px; }
+    .live-replay .record-context { margin: 0; }
+    .exploration-list .record-item-detail { overflow-wrap: anywhere; }
     .record-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #e2e8de; border-radius: 10px; background: #fff; }
     .record-item-main { min-width: 0; }
     .record-item-name { overflow: hidden; color: #415448; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
@@ -95,6 +98,7 @@
     .button:hover:not(:disabled) { border-color: #98ad98; background: #f3f7f1; }
     .button:active:not(:disabled) { transform: translateY(1px); }
     .button:disabled { cursor: wait; opacity: .7; }
+    .button[hidden] { display: none; }
     .button.primary { border-color: var(--green); color: #fff; background: var(--green); }
     .button.primary:hover:not(:disabled) { border-color: var(--green-dark); background: var(--green-dark); }
     .button.Quiet { background: transparent; }
@@ -238,7 +242,14 @@
       <div id="liveStatus" role="status" aria-live="polite">启用采集器并连接客户端日志后，勾选实时跟随。</div>
       <div id="livePosition" class="record-context"></div>
       <div id="liveTarget" class="record-context"></div>
+      <div class="live-replay">
+        <div id="liveRecordingStatus" class="record-context">实时跟随后，收到的快照会自动保存为回放。</div>
+        <a class="button" id="liveReplayLink" hidden download>下载这段回放</a>
+      </div>
       <p style="font-size:12px;color:var(--muted);margin:10px 0 0">方位按固定世界坐标：北 +Z，东 +X。<a href="https://github.com/hydrangeia/dst-route-planner/tree/main/mods/dst_route_collector">采集器安装说明</a></p>
+      <div class="records-head"><h3>已保存回放</h3><button class="button" id="refreshExplorationsButton" type="button">刷新回放</button></div>
+      <div class="records-status" id="explorationsStatus" role="status" aria-live="polite">正在读取探索回放…</div>
+      <div class="record-list exploration-list" id="explorationList"></div>
     </section>
     <section class="panel record-panel" aria-labelledby="recordTitle">
       <div class="section-head" style="margin: 0 0 12px">
@@ -352,6 +363,8 @@
       dirs: Object.fromEntries(DIRS.map(direction => [direction, emptyDirection()])),
       result: null, revision: 0, requestId: 0, controller: null, loading: false,
       records: [], recordsRequestId: 0, recordsLoading: false, recordOpenRequestId: 0,
+      explorations: [], explorationsRequestId: 0, explorationsLoading: false,
+      explorationsRefreshPending: false, explorationIdsSeen: new Set(), liveRecording: null,
       recordOpening: false, savingRecord: false, activeRecordId: null, activeRecordName: null,
       formGeneration: 0
     };
@@ -370,13 +383,18 @@
       saveRecord: document.getElementById("saveRecordButton"), saveAsNewRecord: document.getElementById("saveAsNewRecordButton"),
       refreshRecords: document.getElementById("refreshRecordsButton"), recordMessage: document.getElementById("recordMessage"),
       activeRecordStatus: document.getElementById("activeRecordStatus"), recordsStatus: document.getElementById("recordsStatus"),
-      recordList: document.getElementById("recordList")
+      recordList: document.getElementById("recordList"),
+      refreshExplorations: document.getElementById("refreshExplorationsButton"),
+      explorationsStatus: document.getElementById("explorationsStatus"),
+      explorationList: document.getElementById("explorationList")
     };
 
     const live = { following: false, timer: null, controller: null, request: 0, key: null, sequence: 0 };
     const liveEl = {
       follow: document.getElementById("liveFollow"), status: document.getElementById("liveStatus"),
-      position: document.getElementById("livePosition"), target: document.getElementById("liveTarget")
+      position: document.getElementById("livePosition"), target: document.getElementById("liveTarget"),
+      recordingStatus: document.getElementById("liveRecordingStatus"),
+      replayLink: document.getElementById("liveReplayLink")
     };
     function updateLiveControls() {
       el.grid.querySelectorAll("input, select, button").forEach(control => { control.disabled = live.following; });
@@ -417,6 +435,16 @@
     }
     function applyLiveResult(result) {
       const snapshot = result.snapshot;
+      const key = snapshotReplayIdentity(snapshot);
+      if (result.status === "live" && (!snapshot || !key || !result.plan || !Array.isArray(result.plan.directions))) {
+        throw new Error("实时数据格式无法识别。");
+      }
+      if (snapshot && key && live.key === key && snapshot.sequence < live.sequence) {
+        unavailableLive("忽略了倒序观测，等待新的采集快照。");
+        return;
+      }
+      const recording = Object.prototype.hasOwnProperty.call(result, "recording") ? result.recording : undefined;
+      updateLiveRecording(recording, snapshot);
       if (snapshot && snapshot.position) {
         const world = snapshot.world_kind === "forest" ? "大陆" : snapshot.world_kind === "cave" ? "洞穴" : snapshot.world_kind;
         liveEl.position.textContent = `${world} · 玩家坐标 X ${Number(snapshot.position.x).toFixed(1)} / Z ${Number(snapshot.position.z).toFixed(1)}`;
@@ -429,12 +457,6 @@
           unsupported_world: "已收到位置，这个世界的方向推理待接入。"
         };
         unavailableLive(messages[result.status] || "读取实时观测失败：" + (result.error || "请检查采集器和日志。"));
-        return;
-      }
-      if (!snapshot || !result.plan || !Array.isArray(result.plan.directions)) throw new Error("实时数据格式无法识别。");
-      const key = [snapshot.world_id, snapshot.world_kind, snapshot.session_id].join("\u0000");
-      if (live.key === key && snapshot.sequence < live.sequence) {
-        unavailableLive("忽略了倒序观测，等待新的采集快照。");
         return;
       }
       if (live.key && live.key !== key) {
@@ -612,15 +634,20 @@
         setApiStatus("error", "本地引擎未连接");
         setMessage("暂时无法读取本地选项：" + error.message + "。请确认服务已启动后重试。", "error");
       }
-      await refreshRecords({ quiet: true });
+      await Promise.all([
+        refreshRecords({ quiet: true }),
+        refreshExplorations({ quiet: true })
+      ]);
     }
     function updateRecordControls() {
       el.saveRecord.disabled = state.savingRecord;
       el.saveAsNewRecord.disabled = state.savingRecord;
       el.refreshRecords.disabled = state.recordsLoading || state.recordOpening;
+      el.refreshExplorations.disabled = state.explorationsLoading;
       el.saveRecord.textContent = state.savingRecord ? "正在保存…" : "保存记录";
       el.saveAsNewRecord.textContent = state.savingRecord ? "正在保存…" : "另存为新记录";
       el.refreshRecords.textContent = state.recordsLoading ? "正在刷新…" : "刷新列表";
+      el.refreshExplorations.textContent = state.explorationsLoading ? "正在刷新…" : "刷新回放";
       el.activeRecordStatus.textContent = state.activeRecordId
         ? "当前记录：" + (state.activeRecordName || el.recordName.value || state.activeRecordId) + "。保存记录会更新它。"
         : "尚未打开已保存记录；保存会新建一条记录。";
@@ -646,6 +673,178 @@
           '</div></div><button class="button record-open" type="button" data-record-id="' + esc(record.id) +
           '"' + (state.recordOpening ? " disabled" : "") + '>打开</button></article>';
       }).join("");
+    }
+    const REPLAY_ID_PATTERN = /^[a-f0-9]{64}$/;
+    const REPLAY_STATUSES = new Set(["recording", "limit_reached", "error"]);
+    function isReplayTimestamp(value) {
+      return typeof value === "string" && value.length > 0 && value.length <= 80 && Number.isFinite(Date.parse(value));
+    }
+    function normalizeExplorationSummary(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      if (typeof value.id !== "string" || !REPLAY_ID_PATTERN.test(value.id) ||
+          typeof value.world_id !== "string" || !value.world_id || value.world_id.length > 256 ||
+          typeof value.world_kind !== "string" || !value.world_kind || value.world_kind.length > 64 ||
+          typeof value.session_id !== "string" || !value.session_id || value.session_id.length > 256 ||
+          !Number.isSafeInteger(value.frame_count) || value.frame_count < 0 ||
+          !isReplayTimestamp(value.started_at) ||
+          !(value.last_captured_at === null || isReplayTimestamp(value.last_captured_at)) ||
+          !REPLAY_STATUSES.has(value.status) ||
+          (value.error !== undefined && typeof value.error !== "string")) return null;
+      return value;
+    }
+    function explorationDownloadUrl(summary) {
+      if (!summary || typeof summary.id !== "string" || !REPLAY_ID_PATTERN.test(summary.id)) return "";
+      return "/api/explorations/" + encodeURIComponent(summary.id);
+    }
+    function explorationWorldLabel(summary) {
+      const kind = summary.world_kind === "forest" ? "大陆" : summary.world_kind === "cave" ? "洞穴" : summary.world_kind;
+      return kind + " · " + summary.world_id;
+    }
+    function renderExplorations() {
+      if (!state.explorations.length) {
+        el.explorationList.innerHTML = '<div class="records-status">还没有探索回放。</div>';
+        return;
+      }
+      el.explorationList.innerHTML = state.explorations.map(summary => {
+        const href = explorationDownloadUrl(summary);
+        if (!href) return "";
+        const detail = explorationWorldLabel(summary) + " · " + formatSavedAt(summary.started_at) +
+          " · " + summary.frame_count + " 帧";
+        return '<article class="record-item"><div class="record-item-main"><div class="record-item-name">' +
+          esc(explorationWorldLabel(summary)) + '</div><div class="record-item-detail">' + esc(detail) +
+          '</div></div><a class="button" href="' + esc(href) + '" download>下载 JSONL</a></article>';
+      }).join("");
+    }
+    function queueExplorationsRefresh() {
+      if (state.explorationsLoading) {
+        state.explorationsRefreshPending = true;
+        return;
+      }
+      void refreshExplorations({ quiet: true });
+    }
+    async function refreshExplorations(options = {}) {
+      if (state.explorationsLoading) {
+        state.explorationsRefreshPending = true;
+        return;
+      }
+      const requestId = ++state.explorationsRequestId;
+      state.explorationsLoading = true;
+      el.explorationsStatus.textContent = "正在读取探索回放…";
+      updateRecordControls();
+      try {
+        const response = await fetch("/api/explorations", { headers: { "Accept": "application/json" } });
+        const result = await readJsonResponse(response);
+        if (requestId !== state.explorationsRequestId) return;
+        if (!result || !Array.isArray(result.explorations)) throw new Error("探索回放列表格式无法识别。");
+        const received = result.explorations;
+        const valid = received.map(normalizeExplorationSummary).filter(Boolean);
+        const invalidCount = received.length - valid.length;
+        state.explorations = valid.slice(0, 10);
+        for (const summary of state.explorations) state.explorationIdsSeen.add(summary.id);
+        renderExplorations();
+        let status = valid.length
+          ? valid.length > 10
+            ? "读取到 " + valid.length + " 条有效回放，显示最近 10 条。"
+            : "共 " + valid.length + " 条有效回放。"
+          : received.length
+            ? "没有可显示的有效回放。"
+            : "还没有探索回放。";
+        if (invalidCount > 0) status += " 已忽略 " + invalidCount + " 条格式不完整的项目。";
+        el.explorationsStatus.textContent = status;
+      } catch (error) {
+        if (requestId === state.explorationsRequestId) {
+          el.explorationsStatus.textContent = "读取回放失败：" + (error.message || "请稍后重试。");
+          if (!options.quiet) setRecordMessage("暂时无法读取探索回放：" + error.message, "error");
+        }
+      } finally {
+        if (requestId === state.explorationsRequestId) {
+          state.explorationsLoading = false;
+          updateRecordControls();
+          if (state.explorationsRefreshPending) {
+            state.explorationsRefreshPending = false;
+            queueExplorationsRefresh();
+          }
+        }
+      }
+    }
+    function snapshotReplayIdentity(snapshot) {
+      if (!snapshot || typeof snapshot.world_id !== "string" || !snapshot.world_id ||
+          typeof snapshot.world_kind !== "string" || !snapshot.world_kind ||
+          typeof snapshot.session_id !== "string" || !snapshot.session_id) return null;
+      return [snapshot.world_id, snapshot.world_kind, snapshot.session_id].join("\u0000");
+    }
+    function explorationReplayIdentity(summary) {
+      return [summary.world_id, summary.world_kind, summary.session_id].join("\u0000");
+    }
+    function hideLiveReplayLink() {
+      liveEl.replayLink.removeAttribute("href");
+      liveEl.replayLink.hidden = true;
+    }
+    function showLiveReplayLink(summary) {
+      const href = explorationDownloadUrl(summary);
+      if (!href) {
+        hideLiveReplayLink();
+        return;
+      }
+      liveEl.replayLink.href = href;
+      liveEl.replayLink.hidden = false;
+    }
+    function updateLiveRecording(value, snapshot = null) {
+      const identity = snapshotReplayIdentity(snapshot) || live.key;
+      let current = state.liveRecording;
+      let currentMatches = !identity || (!!current && explorationReplayIdentity(current) === identity);
+      if (identity && current && !currentMatches) {
+        state.liveRecording = null;
+        current = null;
+        hideLiveReplayLink();
+      }
+
+      if (value === undefined || value === null) {
+        if (identity && !current) liveEl.recordingStatus.textContent = "正在等待当前会话的探索回放。";
+        return;
+      }
+      const hasValidId = typeof value.id === "string" && REPLAY_ID_PATTERN.test(value.id);
+      if (value && typeof value === "object" && value.status === "error" &&
+          typeof value.error === "string" && !hasValidId) {
+        liveEl.recordingStatus.textContent = "自动记录失败：" + value.error +
+          (currentMatches && current ? " · " + explorationWorldLabel(current) : "");
+        if (currentMatches && current) showLiveReplayLink(current);
+        return;
+      }
+
+      const summary = normalizeExplorationSummary(value);
+      if (!summary) {
+        liveEl.recordingStatus.textContent = "回放信息格式无法识别；方向建议仍可继续使用。";
+        if (currentMatches && current) showLiveReplayLink(current);
+        return;
+      }
+      if (identity && explorationReplayIdentity(summary) !== identity) {
+        const summaryError = summary.status === "error" && summary.error
+          ? "自动记录失败：" + summary.error
+          : "回放信息与当前世界或会话不一致。";
+        liveEl.recordingStatus.textContent = summaryError +
+          (currentMatches && current ? " · " + explorationWorldLabel(current) : "");
+        if (currentMatches && current) showLiveReplayLink(current);
+        else hideLiveReplayLink();
+        return;
+      }
+
+      const previousId = current && current.id;
+      state.liveRecording = summary;
+      current = summary;
+      const statusText = summary.status === "recording" ? "已自动记录"
+        : summary.status === "limit_reached" ? "已达到记录上限"
+        : "自动记录失败" + (summary.error ? "：" + summary.error : "");
+      const latest = summary.last_captured_at ? "最近采集 " + formatSavedAt(summary.last_captured_at) : "尚未收到快照";
+      liveEl.recordingStatus.textContent = statusText + " · " + summary.frame_count + " 帧 · " +
+        explorationWorldLabel(summary) + " · " + latest;
+      showLiveReplayLink(summary);
+      if (previousId !== summary.id && !state.explorations.some(item => item.id === summary.id)) {
+        if (!state.explorationIdsSeen.has(summary.id)) {
+          state.explorationIdsSeen.add(summary.id);
+          queueExplorationsRefresh();
+        }
+      }
     }
     async function refreshRecords(options = {}) {
       const requestId = ++state.recordsRequestId;
@@ -1193,6 +1392,7 @@
     el.saveRecord.addEventListener("click", () => saveRecord(false));
     el.saveAsNewRecord.addEventListener("click", () => saveRecord(true));
     el.refreshRecords.addEventListener("click", () => refreshRecords());
+    el.refreshExplorations.addEventListener("click", () => refreshExplorations());
     el.recordList.addEventListener("click", event => {
       const button = event.target.closest("button.record-open[data-record-id]");
       if (button) openRecord(button.dataset.recordId);

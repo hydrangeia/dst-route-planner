@@ -314,13 +314,21 @@ def test_records_api_validates_metadata_ids_and_corrupt_files(local_server) -> N
 
 
 
-def _live_snapshot(observation: dict, captured_at: float | None = None) -> dict:
+def _live_snapshot(
+    observation: dict,
+    captured_at: float | None = None,
+    *,
+    sequence: int = 1,
+    world_id: str = "world-abc",
+    world_kind: str = "forest",
+    session_id: str = "session-1",
+) -> dict:
     return {
         "live_version": 1,
-        "world_id": "world-abc",
-        "world_kind": "forest",
-        "session_id": "session-1",
-        "sequence": 1,
+        "world_id": world_id,
+        "world_kind": world_kind,
+        "session_id": session_id,
+        "sequence": sequence,
         "captured_at": time.time() if captured_at is None else captured_at,
         "position": {"x": 0, "y": 0, "z": 0},
         "camera_heading": 270.0,
@@ -400,6 +408,44 @@ def test_live_endpoint_uses_current_position_for_plan_and_nearest_target(local_s
         "z": 1,
         "distance": pytest.approx(2**0.5),
     }
+    recording = response["recording"]
+    assert recording["status"] == "recording"
+    assert recording["frame_count"] == 1
+    assert recording["world_id"] == snapshot["world_id"]
+    assert recording["world_kind"] == snapshot["world_kind"]
+    assert recording["session_id"] == snapshot["session_id"]
+    assert isinstance(recording["started_at"], str)
+    assert isinstance(recording["last_captured_at"], str)
+
+    list_status, _, listing = _get(base_url, "/api/explorations")
+    assert list_status == 200
+    assert listing["explorations"] == [recording]
+    download_status, download_headers, download = _get(
+        base_url, f"/api/explorations/{recording['id']}"
+    )
+    assert download_status == 200
+    assert download_headers.get_content_type() == "application/x-ndjson"
+    assert download_headers["Content-Disposition"] == (
+        f"attachment; filename=\"dst-exploration-{recording['id']}.jsonl\""
+    )
+    assert download.encode("utf-8") == server.exploration_store.get_bytes(recording["id"])
+    journal_path = server.exploration_store._journal_path(recording["id"])
+    complete_journal = journal_path.read_bytes()
+    partial_tail = b'{"replay_version":1,"snapshot":'
+    journal_path.write_bytes(complete_journal + partial_tail)
+    partial_download_status, _, partial_download = _get(
+        base_url, f"/api/explorations/{recording['id']}"
+    )
+    assert partial_download_status == 200
+    assert partial_download.encode("utf-8") == complete_journal
+    assert journal_path.read_bytes() == complete_journal + partial_tail
+
+    invalid_id_status, _, invalid_id = _get(base_url, "/api/explorations/not-a-safe-id")
+    assert invalid_id_status == 400
+    assert "64-character lowercase hexadecimal" in invalid_id["error"]
+    missing_status, _, missing = _get(base_url, "/api/explorations/" + "0" * 64)
+    assert missing_status == 404
+    assert "not found" in missing["error"]
 
 
 def test_live_stale_and_cave_snapshots_never_run_inference(local_server, monkeypatch) -> None:
@@ -407,18 +453,43 @@ def test_live_stale_and_cave_snapshots_never_run_inference(local_server, monkeyp
     live_log = server.record_store.directory.parent / "client.log"
     server.live_log = live_log
 
+    _, _, demo = _get(base_url, "/api/demo")
+    fresh = _live_snapshot(demo["directions"])
+    _write_live_snapshot(live_log, fresh)
+    fresh_status, _, fresh_result = _get(base_url, "/api/live?target=panflute&seed=0")
+    assert fresh_status == 200
+    saved_id = fresh_result["recording"]["id"]
+    saved_path = server.exploration_store._journal_path(saved_id)
+    saved_bytes = saved_path.read_bytes()
+
     def inference_must_not_run(*args, **kwargs):
         raise AssertionError("stale or unsupported snapshots must not run inference")
 
     monkeypatch.setattr(app, "_plan_request", inference_must_not_run)
-    _, _, demo = _get(base_url, "/api/demo")
-    cave = _live_snapshot(demo["directions"])
-    cave["world_kind"] = "cave"
+    cave = _live_snapshot(demo["directions"], world_kind="cave")
     _write_live_snapshot(live_log, cave)
     cave_status, _, cave_result = _get(base_url, "/api/live?target=panflute&seed=0")
     assert cave_status == 200
     assert cave_result["status"] == "unsupported_world"
     assert "plan" not in cave_result
+    assert cave_result["recording"]["status"] == "recording"
+    assert cave_result["recording"]["frame_count"] == 1
+    cave_id = cave_result["recording"]["id"]
+    cave_path = server.exploration_store._journal_path(cave_id)
+    cave_bytes = cave_path.read_bytes()
+    stale_cave = _live_snapshot(
+        demo["directions"], captured_at=time.time() - 10, world_kind="cave"
+    )
+    _write_live_snapshot(live_log, stale_cave)
+    stale_cave_status, _, stale_cave_result = _get(
+        base_url, "/api/live?target=panflute&seed=0"
+    )
+    assert stale_cave_status == 200
+    assert stale_cave_result["status"] == "unsupported_world"
+    assert stale_cave_result["age_seconds"] > 5
+    assert stale_cave_result["recording"]["id"] == cave_id
+    assert stale_cave_result["recording"]["frame_count"] == 1
+    assert cave_path.read_bytes() == cave_bytes
 
     stale = _live_snapshot(demo["directions"], captured_at=time.time() - 10)
     _write_live_snapshot(live_log, stale)
@@ -427,6 +498,31 @@ def test_live_stale_and_cave_snapshots_never_run_inference(local_server, monkeyp
     assert stale_result["status"] == "stale"
     assert stale_result["age_seconds"] > 5
     assert "plan" not in stale_result
+    assert stale_result["recording"]["id"] == saved_id
+    assert stale_result["recording"]["frame_count"] == 1
+    assert saved_path.read_bytes() == saved_bytes
+
+
+def test_live_recording_disk_failure_does_not_break_position_or_plan(local_server, monkeypatch) -> None:
+    base_url, server = local_server
+    _, _, demo = _get(base_url, "/api/demo")
+    snapshot = _live_snapshot(demo["directions"])
+    live_log = server.record_store.directory.parent / "client.log"
+    _write_live_snapshot(live_log, snapshot)
+    server.live_log = live_log
+
+    def disk_failure(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(server.exploration_store, "capture", disk_failure)
+    status, _, result = _get(base_url, "/api/live?target=panflute&seed=0")
+
+    assert status == 200
+    assert result["status"] == "live"
+    assert result["snapshot"]["position"] == snapshot["position"]
+    assert "plan" in result
+    assert result["recording"]["status"] == "error"
+    assert result["recording"]["error"] == "disk full"
 
 
 def test_live_endpoint_returns_error_for_malformed_latest_snapshot(local_server) -> None:
@@ -440,3 +536,40 @@ def test_live_endpoint_returns_error_for_malformed_latest_snapshot(local_server)
     assert status == 200
     assert response["status"] == "error"
     assert "snapshot" in response["error"]
+    list_status, _, listing = _get(base_url, "/api/explorations")
+    assert list_status == 200
+    assert listing == {"explorations": []}
+
+
+def test_exploration_download_rejects_corrupt_and_oversize_files_without_changing_them(
+    local_server, monkeypatch
+) -> None:
+    from dst_route_planner import exploration as exploration_module
+
+    base_url, server = local_server
+    _, _, demo = _get(base_url, "/api/demo")
+    snapshot = _live_snapshot(demo["directions"])
+    live_log = server.record_store.directory.parent / "client.log"
+    _write_live_snapshot(live_log, snapshot)
+    server.live_log = live_log
+    _, _, response = _get(base_url, "/api/live?target=panflute&seed=0")
+    journal_id = response["recording"]["id"]
+    journal_path = server.exploration_store._journal_path(journal_id)
+    original = journal_path.read_bytes()
+
+    corrupt = original + b"not-json\n"
+    journal_path.write_bytes(corrupt)
+    corrupt_status, _, corrupt_response = _get(
+        base_url, f"/api/explorations/{journal_id}"
+    )
+    assert corrupt_status == 500
+    assert corrupt_response == {"error": "The exploration could not be read."}
+    assert journal_path.read_bytes() == corrupt
+
+    monkeypatch.setattr(exploration_module, "MAX_EXPLORATION_BYTES", len(corrupt) - 1)
+    oversize_status, _, oversize_response = _get(
+        base_url, f"/api/explorations/{journal_id}"
+    )
+    assert oversize_status == 500
+    assert oversize_response == {"error": "The exploration could not be read."}
+    assert journal_path.read_bytes() == corrupt
