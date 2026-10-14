@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+try:
+    from lupa import LuaRuntime
+except ImportError:  # Lupa is a development-only test dependency.
+    LuaRuntime = None
+
+
+ROOT = Path(__file__).resolve().parent
+MOD_ROOT = ROOT / "mods" / "dst_route_collector"
+MARKER = "DST_ROUTE_PLANNER_LIVE_V1 "
+DIRECTIONS = {
+    "north",
+    "northeast",
+    "east",
+    "southeast",
+    "south",
+    "southwest",
+    "west",
+    "northwest",
+}
+
+
+def _from_lua(value):
+    if hasattr(value, "keys") and hasattr(value, "items"):
+        keys = list(value.keys())
+        if not keys:
+            return []
+        if all(type(key) is int for key in keys):
+            largest = max(keys)
+            if set(keys) == set(range(1, largest + 1)):
+                return [_from_lua(value[index]) for index in range(1, largest + 1)]
+        return {str(key): _from_lua(item) for key, item in value.items()}
+    return value
+
+
+def _make_stub(*, dedicated: bool = False, player_present: bool = True):
+    lines: list[str] = []
+    sim_callbacks = []
+    lua = LuaRuntime(unpack_returned_tuples=True)
+
+    def add_sim_post_init(callback):
+        sim_callbacks.append(callback)
+
+    def encode(value):
+        return json.dumps(_from_lua(value), separators=(",", ":"), sort_keys=True)
+
+    lua.globals().AddSimPostInit = add_sim_post_init
+    lua.globals().print = lines.append
+    lua.globals().encode_snapshot = encode
+    lua.execute(
+        """
+        local function make_map()
+            return {
+                GetTileXYAtPoint = function(self, x, y, z)
+                    return math.floor(x / 4), math.floor(z / 4)
+                end,
+                GetTileAtPoint = function(self, x, y, z)
+                    if x <= -10 then return 3 end
+                    if x >= 4 then return 2 end
+                    return 1
+                end,
+            }
+        end
+
+        function make_world(world_id, world_kind)
+            return {
+                worldprefab = world_kind,
+                meta = { session_identifier = world_id },
+                Map = make_map(),
+                DoPeriodicTask = function(self, period, callback)
+                    self.period = period
+                    self.callback = callback
+                end,
+            }
+        end
+
+        function make_player(x, y, z, use_visibility_wrapper)
+            local player = {
+                Transform = {
+                    GetWorldPosition = function(self) return x, y, z end,
+                },
+                IsValid = function(self) return true end,
+            }
+            if use_visibility_wrapper then
+                player.CanSeePointOnMiniMap = function(self, px, py, pz)
+                    return px * px + pz * pz <= 12 * 12 and px > -10
+                end
+            else
+                player.player_classified = {
+                    MapExplorer = {
+                        IsTileSeeable = function(self, tx, ty) return tx >= -2 end,
+                    },
+                }
+            end
+            return player
+        end
+
+        function make_entity(prefab, x, z, visible, tags)
+            tags = tags or {}
+            return {
+                prefab = prefab,
+                Transform = {
+                    GetWorldPosition = function(self) return x, 0, z end,
+                },
+                entity = {
+                    IsVisible = function(self) return visible end,
+                },
+                IsValid = function(self) return true end,
+                HasTag = function(self, tag) return tags[tag] == true end,
+            }
+        end
+        """
+    )
+
+    g = lua.table()
+    g["os"] = lua.table_from({"time": lua.eval("function() return 1700000000 end")})
+    g["json"] = lua.table_from({"encode_compliant": lua.globals().encode_snapshot})
+    g["WORLD_TILES"] = lua.table_from({"INVALID": 65535})
+    g["GROUND"] = lua.table_from({"GRASS": 1, "MARSH": 2, "SECRET": 3})
+    g["TheNet"] = lua.table_from(
+        {"IsDedicated": lua.eval(f"function(self) return {'true' if dedicated else 'false'} end")}
+    )
+    g["TheCamera"] = lua.table_from(
+        {"GetHeading": lua.eval("function(self) return 73 end")}
+    )
+    g["TheSim"] = lua.table_from(
+        {
+            "FindEntities": lua.eval(
+                "function(self, x, y, z, radius) "
+                "assert(radius == 16); return self.entities end"
+            ),
+            "entities": lua.table(),
+        }
+    )
+    world = lua.globals().make_world("forest-session-1", "forest")
+    g["TheWorld"] = world
+    if player_present:
+        g["ThePlayer"] = lua.globals().make_player(0, 0, 0, True)
+    g["GLOBAL"] = g
+    lua.globals()["GLOBAL"] = g
+    lua.execute((MOD_ROOT / "collector.lua").read_text(encoding="utf-8"))
+
+    return {
+        "g": g,
+        "lines": lines,
+        "lua": lua,
+        "sim_callbacks": sim_callbacks,
+        "world": world,
+    }
+
+
+def _snapshot(lines: list[str]) -> dict:
+    assert lines
+    assert lines[-1].startswith(MARKER)
+    assert "\n" not in lines[-1]
+    return json.loads(lines[-1][len(MARKER) :])
+
+
+def _add_entities(runtime, entities) -> None:
+    lua = runtime["lua"]
+    runtime["g"]["TheSim"]["entities"] = lua.table_from(entities)
+
+
+def test_mod_is_client_only_and_uses_one_marked_line_per_snapshot() -> None:
+    modinfo = (MOD_ROOT / "modinfo.lua").read_text(encoding="utf-8")
+    modmain = (MOD_ROOT / "modmain.lua").read_text(encoding="utf-8")
+    collector = (MOD_ROOT / "collector.lua").read_text(encoding="utf-8")
+
+    assert "client_only_mod = true" in modinfo
+    assert 'modimport("collector.lua")' in modmain
+    assert MARKER.strip() in collector
+    assert "print(\"DST_ROUTE_PLANNER_LIVE_V1 \" .. G.json.encode_compliant(snapshot))" in collector
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_stub_emits_eight_world_axis_sectors_and_only_observable_entities() -> None:
+    runtime = _make_stub()
+    lua = runtime["lua"]
+    entities = [
+        lua.globals().make_entity("grass", 2, 2, True),
+        lua.globals().make_entity("tentacle", 0, 8, True),
+        lua.globals().make_entity("moonbase", 8, 8, True),
+        lua.globals().make_entity("pigking", 8, 0, True),
+        lua.globals().make_entity("wasphive", 8, -8, True),
+        lua.globals().make_entity("cave_entrance", 0, -8, True),
+        lua.globals().make_entity("walrus_camp", -8, -8, True),
+        lua.globals().make_entity("spiderden", -8, 0, True),
+        lua.globals().make_entity("beequeenhive", -8, 8, True),
+        lua.globals().make_entity("oasislake", 4, -10, False),
+        lua.globals().make_entity("lightninggoat", -10, 0, True),
+        lua.globals().make_entity("fx_spark", 4, 8, True, lua.table_from({"FX": True})),
+        lua.globals().make_entity("decor", 4, -8, True, lua.table_from({"DECOR": True})),
+        lua.globals().make_entity("limbo_item", -4, 8, True, lua.table_from({"INLIMBO": True})),
+        lua.globals().make_entity("remote_player", 0, 8, True, lua.table_from({"player": True})),
+        lua.globals().make_entity("private_classified", -8, 4, True, lua.table_from({"CLASSIFIED": True})),
+    ]
+    _add_entities(runtime, entities)
+
+    runtime["sim_callbacks"][0](runtime["world"])
+    assert runtime["world"]["period"] == 1
+    runtime["world"]["callback"]()
+    first = _snapshot(runtime["lines"])
+    runtime["world"]["callback"]()
+    second = _snapshot(runtime["lines"])
+
+    assert first["live_version"] == 1
+    assert first["world_id"] == "forest-session-1"
+    assert first["world_kind"] == "forest"
+    assert first["position"] == {"x": 0, "y": 0, "z": 0}
+    assert first["camera_heading"] == 73
+    assert first["sequence"] == 1
+    assert second["sequence"] == 2
+    assert first["session_id"] == second["session_id"]
+    assert set(first["directions"]) == DIRECTIONS
+    assert first["current"]["prefab_counts"] == {"grass": 1}
+    assert "GRASS" in first["current"]["tile_types"]
+    assert "MARSH" in first["directions"]["east"]["tile_types"]
+    assert first["directions"]["north"]["prefab_counts"] == {"tentacle": 1}
+    assert first["directions"]["northeast"]["prefab_counts"] == {"moonbase": 1}
+    assert first["directions"]["east"]["prefab_counts"] == {"pigking": 1}
+    assert first["directions"]["southeast"]["prefab_counts"] == {"wasphive": 1}
+    assert first["directions"]["south"]["prefab_counts"] == {"cave_entrance": 1}
+    assert first["directions"]["southwest"]["prefab_counts"] == {"walrus_camp": 1}
+    assert first["directions"]["west"]["prefab_counts"] == {"spiderden": 1}
+    assert first["directions"]["northwest"]["prefab_counts"] == {"beequeenhive": 1}
+    assert {item["prefab"] for item in first["landmarks"]} == {
+        "beequeenhive",
+        "cave_entrance",
+        "moonbase",
+        "pigking",
+        "spiderden",
+        "tentacle",
+        "walrus_camp",
+        "wasphive",
+    }
+    serialized = json.dumps(first)
+    for hidden_prefab in ("oasislake", "lightninggoat", "fx_spark", "decor", "limbo_item", "remote_player", "private_classified"):
+        assert hidden_prefab not in serialized
+    assert "connection_like" not in serialized
+    for observation in [first["current"], *first["directions"].values()]:
+        if "tile_types" in observation:
+            assert observation["tile_types"]
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_stub_waits_for_player_and_resets_session_for_player_and_world_changes() -> None:
+    runtime = _make_stub(player_present=False)
+    lua = runtime["lua"]
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    assert runtime["lines"] == []
+
+    runtime["g"]["ThePlayer"] = lua.globals().make_player(0, 0, 0, True)
+    runtime["world"]["callback"]()
+    first = _snapshot(runtime["lines"])
+    runtime["world"]["callback"]()
+    second = _snapshot(runtime["lines"])
+    assert first["sequence"] == 1
+    assert second["sequence"] == 2
+    assert first["session_id"] == second["session_id"]
+
+    runtime["g"]["ThePlayer"] = lua.globals().make_player(1, 0, 0, True)
+    runtime["world"]["callback"]()
+    replaced_player = _snapshot(runtime["lines"])
+    assert replaced_player["sequence"] == 1
+    assert replaced_player["session_id"] != first["session_id"]
+
+    new_world = lua.globals().make_world("cave-session-2", "cave")
+    runtime["g"]["TheWorld"] = new_world
+    runtime["sim_callbacks"][0](new_world)
+    new_world["callback"]()
+    replaced_world = _snapshot(runtime["lines"])
+    assert replaced_world["world_id"] == "cave-session-2"
+    assert replaced_world["world_kind"] == "cave"
+    assert replaced_world["sequence"] == 1
+    assert replaced_world["session_id"] != replaced_player["session_id"]
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_stub_falls_back_to_map_explorer_revealed_tiles_and_skips_dedicated_servers() -> None:
+    runtime = _make_stub()
+    runtime["g"]["ThePlayer"] = runtime["lua"].globals().make_player(0, 0, 0, False)
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+    tile_types = {
+        tile
+        for observation in [snapshot["current"], *snapshot["directions"].values()]
+        for tile in observation.get("tile_types", [])
+    }
+    assert "SECRET" not in tile_types
+
+    dedicated = _make_stub(dedicated=True)
+    dedicated["sim_callbacks"][0](dedicated["world"])
+    assert dedicated["world"]["callback"] is None
+    assert dedicated["lines"] == []
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_empty_observations_and_quoted_identity_are_valid_external_json() -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub()
+    lua = runtime["lua"]
+    runtime["g"]["ThePlayer"]["CanSeePointOnMiniMap"] = lua.eval("function() return false end")
+    runtime["world"]["meta"]["session_identifier"] = "world's quoted identity"
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    result = _snapshot(runtime["lines"])
+    assert result["world_id"] == "world's quoted identity"
+    assert result["current"] == {"note": ""}
+    assert all(value == {"note": ""} for value in result["directions"].values())
+    validate_snapshot(result)

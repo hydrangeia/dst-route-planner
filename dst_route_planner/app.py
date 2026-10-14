@@ -3,16 +3,23 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import time
 import webbrowser
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import InputValidationError, direction_observations_from_dict, observation_from_dict
 from dst_route_planner.knowledge import build_forest_default_kb
+from dst_route_planner.live import (
+    LiveSnapshotError,
+    freshness_status,
+    nearest_visible_target,
+    read_latest_snapshot,
+)
 from dst_route_planner.models import Direction
 from dst_route_planner.navigation import probabilities_by_direction, rank_directions
 from dst_route_planner.records import (
@@ -148,6 +155,74 @@ def _demo(kb=KB) -> dict[str, Any]:
     }
 
 
+def _live_request(query: str, live_log: Path | None, kb=KB) -> dict[str, Any]:
+    parameters = parse_qs(query, keep_blank_values=True)
+    unsupported = set(parameters) - {"target", "seed"}
+    if unsupported:
+        names = ", ".join(sorted(unsupported))
+        raise InputValidationError(f"unsupported query parameter(s): {names}.")
+    for key in ("target", "seed"):
+        if len(parameters.get(key, [])) > 1:
+            raise InputValidationError(f"{key} must be supplied at most once.")
+
+    target = parameters.get("target", ["panflute"])[0]
+    if not target.strip():
+        raise InputValidationError("target must be a non-empty prefab ID.")
+    if target not in kb.target_chains:
+        raise InputValidationError(f"unknown target {target!r}; choose a target from /api/options.")
+    raw_seed = parameters.get("seed", ["0"])[0]
+    try:
+        seed = int(raw_seed)
+    except ValueError as exc:
+        raise InputValidationError("seed must be an integer.") from exc
+
+    if live_log is None:
+        return {"status": "disabled"}
+    try:
+        snapshot = read_latest_snapshot(live_log)
+    except (LiveSnapshotError, OSError) as exc:
+        return {"status": "error", "error": str(exc)}
+    if snapshot is None:
+        return {"status": "waiting"}
+
+    now = time.time()
+    try:
+        status, age = freshness_status(snapshot, now=now)
+    except LiveSnapshotError as exc:
+        return {"status": "error", "error": str(exc)}
+    result: dict[str, Any] = {
+        "status": status,
+        "age_seconds": age,
+        "snapshot": snapshot,
+    }
+    if status != "live":
+        return result
+
+    try:
+        result["plan"] = _plan_request(
+            {
+                "schema_version": 1,
+                "target": target,
+                "seed": seed,
+                "current": snapshot["current"],
+                "directions": snapshot["directions"],
+            },
+            kb,
+        )
+        visible_target = nearest_visible_target(snapshot, target)
+        if visible_target is not None:
+            result["visible_target"] = visible_target
+    except Exception as exc:
+        _LOG.exception("Unable to plan from the latest live snapshot")
+        return {
+            "status": "error",
+            "age_seconds": age,
+            "snapshot": snapshot,
+            "error": str(exc),
+        }
+    return result
+
+
 def _json_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -176,6 +251,16 @@ class _PlannerHandler(BaseHTTPRequestHandler):
             except RuntimeError:
                 _LOG.exception("Unable to load the bundled example input")
                 self._send_json(500, {"error": "The bundled demo could not be loaded."})
+            return
+        if path == "/api/live":
+            try:
+                result = _live_request(
+                    urlsplit(self.path).query, self.server.live_log, self.server.kb
+                )
+            except InputValidationError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, result)
             return
         if path == "/api/records":
             try:
@@ -366,7 +451,12 @@ def _save_record_request(payload: Any, store: RecordStore, kb=KB) -> tuple[dict[
     return record, 201 if created else 200
 
 
-def create_server(port: int = 0, *, record_dir: Path | str | None = None) -> ThreadingHTTPServer:
+def create_server(
+    port: int = 0,
+    *,
+    record_dir: Path | str | None = None,
+    live_log: Path | str | None = None,
+) -> ThreadingHTTPServer:
     """Create a local-only HTTP server; port 0 asks the OS for a free port."""
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("port must be an integer from 0 through 65535.")
@@ -381,13 +471,19 @@ def create_server(port: int = 0, *, record_dir: Path | str | None = None) -> Thr
             self.record_store = RecordStore(
                 DEFAULT_RECORD_DIR if record_dir is None else Path(record_dir)
             )
+            self.live_log = None if live_log is None else Path(live_log)
 
     return PlannerHTTPServer(("127.0.0.1", port))
 
 
-def run_app(port: int = 8765, open_browser: bool = True) -> None:
+def run_app(
+    port: int = 8765,
+    open_browser: bool = True,
+    *,
+    live_log: Path | str | None = None,
+) -> None:
     """Run the local planner app until interrupted with Ctrl+C."""
-    server = create_server(port)
+    server = create_server(port, live_log=live_log)
     address, actual_port = server.server_address[:2]
     url = f"http://{address}:{actual_port}/"
     print(f"DST Route Planner is available at {url}")

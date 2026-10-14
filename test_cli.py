@@ -12,13 +12,21 @@ from dst_route_planner import app
 from dst_route_planner.cli import main
 
 
-def test_ui_forwards_port_and_browser_preference(monkeypatch) -> None:
-    calls: list[tuple[int, bool]] = []
-    monkeypatch.setattr(app, "run_app", lambda *, port, open_browser: calls.append((port, open_browser)))
-    monkeypatch.setattr(sys, "argv", ["route_planner.py", "--ui", "--port", "8042", "--no-browser"])
+def test_ui_forwards_port_browser_preference_and_live_log(monkeypatch) -> None:
+    calls: list[tuple[int, bool, Path | None]] = []
+    monkeypatch.setattr(
+        app,
+        "run_app",
+        lambda *, port, open_browser, live_log: calls.append((port, open_browser, live_log)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["route_planner.py", "--ui", "--port", "8042", "--no-browser", "--live-log", "client.log"],
+    )
 
     assert main() == 0
-    assert calls == [(8042, False)]
+    assert calls == [(8042, False, Path("client.log"))]
 
 
 @pytest.mark.parametrize(
@@ -63,7 +71,7 @@ def test_invalid_observation_input_returns_clean_error(monkeypatch, capsys) -> N
 
 
 def test_ui_startup_oserror_returns_clean_error(monkeypatch, capsys) -> None:
-    def fail_to_start(*, port: int, open_browser: bool) -> None:
+    def fail_to_start(*, port: int, open_browser: bool, live_log: Path | None) -> None:
         raise OSError("address already in use")
 
     monkeypatch.setattr(app, "run_app", fail_to_start)

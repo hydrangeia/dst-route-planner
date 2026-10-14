@@ -252,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ui", action="store_true", help="Start the local browser interface.")
     parser.add_argument("--port", type=_port_number, default=8765, help="Local interface port (default: 8765).")
     parser.add_argument("--no-browser", action="store_true", help="Start the interface without opening a browser.")
+    parser.add_argument("--live-log", type=Path, help="Read live snapshots from a client log file.")
     return parser
 
 
@@ -261,7 +262,11 @@ def main() -> int:
         from dst_route_planner.app import run_app
 
         try:
-            run_app(port=args.port, open_browser=not args.no_browser)
+            run_app(
+                port=args.port,
+                open_browser=not args.no_browser,
+                live_log=args.live_log,
+            )
         except OSError as error:
             print(f"Unable to start the local interface: {error}", file=sys.stderr)
             return 2

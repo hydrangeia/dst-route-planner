@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-Looking for a Pan Flute, Pig King, or Moonbase in *Don't Starve Together*? Open the local web page, choose a target, and enter the tiles and landmarks you see in each direction. The planner ranks where to explore next and shows the clues behind its suggestions.
+Looking for a Pan Flute, Pig King, or Moonbase in *Don't Starve Together*? A lightweight client collector reads your character's coordinates, nearby tiles, and landmarks. The external Python page updates exploration suggestions as observations arrive. You can also enter clues manually, load examples, or reuse a world's saved record.
 
 ## Get started
 
@@ -16,7 +16,20 @@ python route_planner.py --ui
 
 On Windows, you can also double-click `start_planner.bat`. The page opens in your local browser; its current labels are in Chinese.
 
-## Using the planner
+## Connect live observations
+
+Install and enable [`mods/dst_route_collector`](mods/dst_route_collector/README.md) as a client mod, then connect the game's client log:
+
+```powershell
+$liveLog = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Klei\DoNotStarveTogether\client_log.txt'
+python route_planner.py --ui --live-log "$liveLog"
+```
+
+Enter a world and check “实时跟随” (live following) on the page. The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring. If your log lives elsewhere, pass its actual path to `--live-log`.
+
+Directions use fixed world coordinates: north is `+Z` and east is `+X`. Walkable routes around obstacles will follow as explored-map data is added.
+
+## Manual entry and saved records
 
 1. Choose a target.
 2. Enter the tiles, prefabs, and counts you see in each direction.
@@ -28,20 +41,20 @@ The page includes demo observations and lets you import or export observation JS
 Each save updates the record's current observations; click Save again after making changes.
 
 ```text
-Choose a target and enter the tiles and landmarks seen in each direction
+Choose a target; collect player coordinates, tiles, and landmarks each second
   ↓
-Click Calculate; Python matches observations to room and task clues
+Client log → external Python; update the current position and directional clues
   ↓
-Task-graph context and visible evidence rank the directions
+Match room/task clues and use task-graph context to rank exploration directions
   ↓
-Review the suggestions and reasons, then return to DST
+The page updates suggestions and straight-line distance to a visible target
   ↓
-Update the observations and save a named record with its world note
+Keep moving → collect, calculate, and update again
   ↓
-Next time, open the record and continue observing, calculating, and saving
+Save current observations and world notes to continue next time
 ```
 
-For now, enter observations in the web page. A future in-game collector can send the same JSON observations to the Python engine.
+The page marks observations stale if collection pauses for more than five seconds. Manual entry and JSON examples remain available.
 
 ## Targets
 
@@ -76,6 +89,6 @@ JSON fields and CLI examples are documented in [`dst_route_planner/README.md`](d
 
 ## Current state
 
-The local Python engine ranks directions using 20 tasks, 53 rooms, 13 static layouts, and clues for 20 targets in the default mainland world. The task graph captures generation topology; the tiles and landmarks entered in the page add evidence from the area around you. Named records keep a target, world note, and current observations on this machine so you can continue after restarting.
+The local Python engine ranks directions using 20 tasks, 53 rooms, 13 static layouts, and clues for 20 targets in the default mainland world. The task graph captures generation topology; automatically collected or manually entered tiles and landmarks add evidence from the area around you. Named records keep a target, world note, and current observations on this machine so you can continue after restarting.
 
 The staged roadmap is in [`TODO.md`](TODO.md). Earlier development notes are in [`DST_ROUTE_PLANNER_WORK.md`](DST_ROUTE_PLANNER_WORK.md) and [`PHASE_5A_COMPLETION_REPORT.md`](PHASE_5A_COMPLETION_REPORT.md).

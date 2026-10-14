@@ -1,6 +1,6 @@
 # 开发路线 / Roadmap
 
-先让外部工具陪玩家完成一轮又一轮的手动探索，积累实战记录，再决定哪些游戏内辅助最有用。 / Make the external tool useful across repeated rounds of manual exploration, gather real play records, then decide which in-game helpers would help most.
+先接上玩家坐标与周围线索的实时采集，让外置工具随着游戏自动更新，再加入已探索地图和具体路径。 / Connect live player positions and nearby observations so the external tool updates during play, then add explored maps and concrete routes.
 
 ## 已完成 / Completed
 
@@ -14,6 +14,15 @@
 - [x] 网页支持载入示例、导入和导出观测 JSON，并显示方向排名与判断理由。 / Let the page load a demo, import and export observation JSON, and show ranked directions with reasons.
 - [x] 核对 53 个 room 的地皮、20 个 task 的字段与数量，修正关键房间内容，并记录源文件 SHA256。 / Check tiles for 53 rooms, fields and counts for 20 tasks, correct selected room contents, and record source-file SHA256 hashes.
 - [x] 把随机数量的表达式、范围和模型使用的平均值写入 [来源清单](dst_route_planner/knowledge/source_audit.json)。 / Record random-count expressions, ranges, and modeled averages in the [source manifest](dst_route_planner/knowledge/source_audit.json).
+
+## 实时探索 / Live exploration
+
+- [x] 客户端采集玩家坐标、当前地皮和附近地标，把每秒快照送给外置 Python。 / Collect player coordinates, the current tile, and nearby landmarks on the client, and send one snapshot per second to external Python.
+- [x] 网页实时展示位置与方向建议，识别采集暂停和世界切换。 / Show live positions and direction suggestions, and detect paused collection and world changes.
+采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
+
+- [ ] 在游戏中验证日志输出、坐标方向和地标采集，记录一次完整探索过程。 / Verify log output, coordinate directions, and landmark capture in game, and record a complete exploration run.
+- [ ] 记录实时坐标、探索轨迹和已发现地点，构建可通行地图并重算路径。 / Record live coordinates, exploration trails, and discovered locations, then build a walkable map and replan routes.
 
 ## 1. 生成数据校对 / Generation data
 
@@ -36,9 +45,8 @@
 - [ ] 加入 task 的起终点环路、房间内连接、道路和岛屿连接。 / Add task start/end loops, room connections, roads, and island links.
 - [ ] 加入坐标、视野范围、移动代价和路线重规划。 / Add coordinates, view range, movement costs, and route replanning.
 
-## 5. 可选游戏内辅助 / Optional in-game helpers
+## 5. 游戏内展示 / In-game display
 
-- [ ] 手动流程稳定后，再做 DST mod 采集层，把附近地皮、prefab 数量和方向写成同一种观测 JSON。 / Once the manual workflow is working well, consider a DST mod collector that writes nearby tiles, prefab counts, and directions in the same observation JSON format.
 - [ ] 视需要加入 HUD 目标选择器，显示推荐方向、理由和观测状态。 / If useful, add a HUD target picker that shows suggested directions, reasons, and observation status.
 
 ## 6. 更多世界内容 / More world content

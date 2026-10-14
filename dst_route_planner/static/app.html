@@ -209,7 +209,7 @@
         <div class="mark" aria-hidden="true">⌖</div>
         <div>
           <h1>默认大陆路线规划</h1>
-          <p class="subtitle">记下四周看到的地皮和地标，查看更值得先探索的方向。</p>
+          <p class="subtitle">读取游戏坐标与周围线索，查看更值得先探索的方向。</p>
         </div>
       </div>
       <div class="api-state" id="apiState" role="status"><span class="api-dot"></span><span id="apiStateText">正在连接本地引擎</span></div>
@@ -229,6 +229,16 @@
           <input class="sr-only" id="fileInput" type="file" accept=".json,application/json" aria-label="选择观测 JSON 文件">
         </div>
       </div>
+    </section>
+    <section class="panel record-panel" aria-labelledby="liveTitle">
+      <div class="section-head" style="margin:0 0 10px">
+        <div><h2 id="liveTitle">实时游戏观测</h2><p>连接客户端采集器，随着玩家移动更新位置和方向。</p></div>
+        <label class="toggle-label"><input id="liveFollow" type="checkbox"><span>实时跟随</span></label>
+      </div>
+      <div id="liveStatus" role="status" aria-live="polite">启用采集器并连接客户端日志后，勾选实时跟随。</div>
+      <div id="livePosition" class="record-context"></div>
+      <div id="liveTarget" class="record-context"></div>
+      <p style="font-size:12px;color:var(--muted);margin:10px 0 0">方位按固定世界坐标：北 +Z，东 +X。<a href="https://github.com/hydrangeia/dst-route-planner/tree/main/mods/dst_route_collector">采集器安装说明</a></p>
     </section>
     <section class="panel record-panel" aria-labelledby="recordTitle">
       <div class="section-head" style="margin: 0 0 12px">
@@ -363,6 +373,125 @@
       recordList: document.getElementById("recordList")
     };
 
+    const live = { following: false, timer: null, controller: null, request: 0, key: null, sequence: 0 };
+    const liveEl = {
+      follow: document.getElementById("liveFollow"), status: document.getElementById("liveStatus"),
+      position: document.getElementById("livePosition"), target: document.getElementById("liveTarget")
+    };
+    function updateLiveControls() {
+      el.grid.querySelectorAll("input, select, button").forEach(control => { control.disabled = live.following; });
+      el.diagonal.disabled = live.following;
+      el.calculate.disabled = live.following || state.loading;
+      el.clearCurrent.disabled = live.following;
+    }
+    function renderCards() { renderManualCards(); updateLiveControls(); }
+    function stopLive(message = "已暂停实时跟随，可以手动修改观测。") {
+      const wasFollowing = live.following;
+      live.following = false;
+      live.request += 1;
+      clearTimeout(live.timer);
+      live.timer = null;
+      if (live.controller) live.controller.abort();
+      live.controller = null;
+      liveEl.follow.checked = false;
+      if (wasFollowing) {
+        liveEl.status.textContent = message;
+        liveEl.target.textContent = "";
+        if (state.result) el.stale.classList.add("visible");
+      }
+      updateLiveControls();
+    }
+    function registerObservedIds(observations) {
+      for (const data of observations) {
+        for (const tile of data.tiles) if (!state.options.tile_types.includes(tile)) state.options.tile_types.push(tile);
+        for (const row of data.prefabRows) if (row.id && !state.options.prefabs.includes(row.id)) state.options.prefabs.push(row.id);
+      }
+      renderPrefabOptions();
+    }
+    function unavailableLive(message) {
+      liveEl.status.textContent = message;
+      liveEl.target.textContent = "";
+      state.result = null;
+      el.stale.classList.remove("visible");
+      el.results.innerHTML = '<div class="empty-results">' + esc(message) + '</div>';
+    }
+    function applyLiveResult(result) {
+      const snapshot = result.snapshot;
+      if (snapshot && snapshot.position) {
+        const world = snapshot.world_kind === "forest" ? "大陆" : snapshot.world_kind === "cave" ? "洞穴" : snapshot.world_kind;
+        liveEl.position.textContent = `${world} · 玩家坐标 X ${Number(snapshot.position.x).toFixed(1)} / Z ${Number(snapshot.position.z).toFixed(1)}`;
+      }
+      if (result.status !== "live") {
+        const messages = {
+          disabled: "尚未连接日志：用 --live-log 指定客户端日志后重新启动工具。",
+          waiting: "正在等待采集器输出，请进入世界并启用客户端 mod。",
+          stale: "采集已暂停，最新观测超过五秒；等待新数据后继续更新。",
+          unsupported_world: "已收到位置，这个世界的方向推理待接入。"
+        };
+        unavailableLive(messages[result.status] || "读取实时观测失败：" + (result.error || "请检查采集器和日志。"));
+        return;
+      }
+      if (!snapshot || !result.plan || !Array.isArray(result.plan.directions)) throw new Error("实时数据格式无法识别。");
+      const key = [snapshot.world_id, snapshot.world_kind, snapshot.session_id].join("\u0000");
+      if (live.key === key && snapshot.sequence < live.sequence) {
+        unavailableLive("忽略了倒序观测，等待新的采集快照。");
+        return;
+      }
+      if (live.key && live.key !== key) {
+        state.formGeneration += 1;
+        state.activeRecordId = null; state.activeRecordName = null;
+        el.recordName.value = ""; el.worldNote.value = "";
+        clearRecordMessage();
+      }
+      live.key = key; live.sequence = snapshot.sequence;
+      const dirs = Object.fromEntries(DIRS.map(direction => [direction, emptyDirection()]));
+      for (const [direction, value] of Object.entries(snapshot.directions)) {
+        if (!DIRS.includes(direction)) throw new Error("实时观测中包含未知方向。");
+        dirs[direction] = normalizeObservation(value, DIR_LABELS[direction][0]);
+      }
+      const current = normalizeObservation(snapshot.current, "当前位置");
+      registerObservedIds([current, ...Object.values(dirs)]);
+      cancelStaleRequest();
+      state.dirs = dirs;
+      state.current = normalizedObservationToJson(current);
+      state.showDiagonals = true; el.diagonal.checked = true;
+      state.result = result.plan;
+      renderCards(); updateCurrentBadge(); updateRecordControls(); renderResults(result.plan);
+      el.stale.classList.remove("visible");
+      liveEl.status.textContent = `实时更新 · 观测 ${snapshot.sequence} · ${Number(result.age_seconds || 0).toFixed(1)} 秒前`;
+      const target = result.visible_target;
+      liveEl.target.textContent = target
+        ? `${TARGETS[state.target] || state.target}已在附近 · 直线距离 ${Number(target.distance).toFixed(1)} · X ${Number(target.x).toFixed(1)} / Z ${Number(target.z).toFixed(1)}` : "";
+    }
+    async function pollLive() {
+      if (!live.following) return;
+      const request = ++live.request;
+      const target = state.target, seed = state.seed;
+      const controller = new AbortController();
+      live.controller = controller;
+      try {
+        if (!state.options.targets.includes(target) || !/^\d+$/.test(String(seed)) || !Number.isSafeInteger(Number(seed))) throw new Error("请选择目标，并填写非负整数种子。");
+        const response = await fetch(`/api/live?target=${encodeURIComponent(target)}&seed=${encodeURIComponent(seed)}`, {signal: controller.signal, headers: {Accept: "application/json"}});
+        const result = await readJsonResponse(response);
+        if (!live.following || request !== live.request || target !== state.target || seed !== state.seed) return;
+        applyLiveResult(result);
+      } catch (error) {
+        if (error.name !== "AbortError" && live.following && request === live.request) unavailableLive("实时连接暂时中断：" + error.message);
+      } finally {
+        if (live.following && request === live.request) {
+          live.controller = null;
+          live.timer = setTimeout(pollLive, 1000);
+        }
+      }
+    }
+    liveEl.follow.addEventListener("change", () => {
+      if (!liveEl.follow.checked) { stopLive(); return; }
+      cancelStaleRequest();
+      live.following = true; live.key = null; live.sequence = 0;
+      liveEl.status.textContent = "正在连接实时采集…";
+      updateLiveControls(); pollLive();
+    });
+
     function emptyDirection() {
       return { tiles: [], prefabRows: [{ id: "", count: "1" }], connection: "", background: "", note: "", roomHints: "", taskHints: "" };
     }
@@ -408,7 +537,7 @@
     function activeDirections() {
       return state.showDiagonals ? DIRS : CARDINALS;
     }
-    function renderCards() {
+    function renderManualCards() {
       const tileOptions = [...new Set(state.options.tile_types)];
       el.grid.innerHTML = activeDirections().map(direction => {
         const [label, arrow] = DIR_LABELS[direction] || [direction, "·"];
@@ -622,6 +751,7 @@
       }
     }
     async function openRecord(recordId) {
+      stopLive();
       if (state.recordOpening || typeof recordId !== "string" || !recordId) return;
       clearRecordMessage();
       const requestId = ++state.recordOpenRequestId;
@@ -725,7 +855,7 @@
     }
     function setCalculating(active) {
       state.loading = active;
-      el.calculate.disabled = active;
+      el.calculate.disabled = active || live.following;
       el.calculate.innerHTML = active
         ? '<span class="spinner" aria-hidden="true"></span><span>正在计算…</span>'
         : '<span class="button-icon" aria-hidden="true">⌁</span><span>计算方向</span>';
@@ -900,7 +1030,9 @@
       if (!isObservationOnly && payload.seed !== undefined && (!Number.isSafeInteger(payload.seed) || payload.seed < 0)) throw new Error("seed 需要是 0 或更大的整数。");
       if (payload.current !== undefined && payload.current !== null && (typeof payload.current !== "object" || Array.isArray(payload.current))) throw new Error("current 需要是一个观测对象。");
       const currentSource = isObservationOnly && payload.current === undefined ? payload : payload.current;
-      const nextCurrent = currentSource ? normalizedObservationToJson(normalizeObservation(currentSource, "当前位置")) : null;
+      const normalizedCurrent = currentSource ? normalizeObservation(currentSource, "当前位置") : null;
+      registerObservedIds([...Object.values(imported), ...(normalizedCurrent ? [normalizedCurrent] : [])]);
+      const nextCurrent = normalizedCurrent ? normalizedObservationToJson(normalizedCurrent) : null;
       cancelStaleRequest();
       if (!isObservationOnly) state.formGeneration += 1;
       state.dirs = imported;
@@ -936,6 +1068,7 @@
       }
     }
     async function loadDemo() {
+      stopLive();
       clearMessage();
       cancelStaleRequest();
       const requestId = ++state.requestId;
@@ -981,6 +1114,7 @@
       } catch (error) { setMessage(error.message, "error"); }
     }
     async function readFile(file) {
+      stopLive();
       if (!file) return;
       clearMessage();
       const revision = state.revision;
@@ -993,6 +1127,7 @@
       } finally { el.file.value = ""; }
     }
     function resetForm() {
+      stopLive();
       cancelStaleRequest();
       state.formGeneration += 1;
       state.recordOpenRequestId += 1;

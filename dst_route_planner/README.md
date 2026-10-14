@@ -29,7 +29,7 @@ python route_planner.py --ui --no-browser
 
 也可以载入 `examples/current_observation.json` 补充当前位置线索；已填写的方向会保留。导出的观测 JSON 会一起保存目标、随机种子、方向观测和当前位置线索。记录另存名称和世界备注，并保存同一份当前观测快照。
 
-运行开发测试：
+运行开发测试。开发依赖包含执行 Lua 桩测试的 Lupa；网页状态回归使用 Node.js：
 
 ```powershell
 python -m pip install -r requirements-dev.txt
@@ -69,6 +69,16 @@ python -m pytest -q
 ```
 
 响应中的 `directions` 按推荐顺序列出 `direction`、`score`、`p_dir`、`p_task`、`p_room` 和 `explanation`。`current_tasks` 返回应用可选当前位置观测后的高分 task 信念。页面导出的观测 JSON 可以直接重新导入；页面也接受现有的无版本观测文件。
+
+## 实时观测
+
+启用 [`客户端采集器`](../mods/dst_route_collector/README.md) 后，用 `--ui --live-log <客户端日志路径>` 启动，再在页面勾选“实时跟随”。采集器把一秒一份的快照写入游戏日志，Python 读取最近的完整快照，更新坐标和方向建议。
+
+实时快照采用独立的 `live_version: 1`，包括 `world_id`、`world_kind`、`session_id`、`sequence`、Unix 时间 `captured_at`、`position: {x,y,z}`、`camera_heading`、`current`、`directions`，以及可选的 `landmarks: [{prefab,x,z}]`。其中观测字段沿用现有的 observation 格式。世界坐标约定北为 `+Z`、东为 `+X`；镜头角度作为独立信息提供。
+
+`GET /api/live?target=panflute&seed=0` 返回连接状态、快照和可用的 `plan`。`plan` 与 `/api/plan` 的结果格式相同。看到所选目标时，`visible_target` 提供最近目标的坐标与直线距离。超过五秒的快照会标记为 `stale`，停止生成实时建议。当前大陆知识库处理 `forest` 世界，其他世界会显示 `unsupported_world`。
+
+这一版根据当前快照排列探索方向。探索轨迹、可通行地图和绕障碍的路径重规划列在 [`TODO.md`](../TODO.md)。采集器的 Lua 接口已对照本地源码，并通过桩环境检查；首次游戏内连通验证还需要启用 mod 后完成。
 
 ## 探索记录
 
@@ -193,6 +203,7 @@ python -m pytest -q
 - `cli.py` 提供命令行、演示和目标列表。
 - `app.py` 提供本地网页服务和方向计算 API，`static/app.html` 是观测录入与结果页面。
 - `records.py` 保存和读取命名探索记录。
+- `live.py` 校验并读取客户端日志中的实时快照，判断数据新鲜度和可见目标距离。
 - `world_sampler.py` 抽取带锁/钥匙来源记录的 task 连接图，并以 BFS 最短跳数计算图上的 task 接近度。
 
 当前项目进度和下一步计划见根目录的 [`README.md`](../README.md) 与 [`TODO.md`](../TODO.md)。

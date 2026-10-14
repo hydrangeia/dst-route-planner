@@ -4,6 +4,7 @@ import copy
 import http.client
 import json
 import threading
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
@@ -12,6 +13,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from dst_route_planner import app
+from dst_route_planner.live import LIVE_MARKER
 
 
 @pytest.fixture
@@ -309,3 +311,132 @@ def test_records_api_validates_metadata_ids_and_corrupt_files(local_server) -> N
     corrupt_status, _, corrupt = _get(base_url, f"/api/records/{corrupt_id}")
     assert corrupt_status == 500
     assert "could not be read" in corrupt["error"]
+
+
+
+def _live_snapshot(observation: dict, captured_at: float | None = None) -> dict:
+    return {
+        "live_version": 1,
+        "world_id": "world-abc",
+        "world_kind": "forest",
+        "session_id": "session-1",
+        "sequence": 1,
+        "captured_at": time.time() if captured_at is None else captured_at,
+        "position": {"x": 0, "y": 0, "z": 0},
+        "camera_heading": 270.0,
+        "current": {"schema_version": 1, "tile_types": ["GRASS"], "note": "near spawn"},
+        "directions": copy.deepcopy(observation),
+        "landmarks": [
+            {"prefab": "panflute", "x": 3, "z": 4},
+            {"prefab": "panflute", "x": 1, "z": 1},
+            {"prefab": "pigking", "x": 0, "z": 2},
+        ],
+    }
+
+
+def _write_live_snapshot(path: Path, snapshot: dict, *, prefix: str = "") -> None:
+    path.write_text(
+        f"{prefix}{LIVE_MARKER}{json.dumps(snapshot, separators=(',', ':'))}\n",
+        encoding="utf-8",
+    )
+
+
+def test_live_endpoint_disabled_waiting_and_query_validation(local_server) -> None:
+    base_url, server = local_server
+    disabled_status, _, disabled = _get(base_url, "/api/live?target=panflute&seed=0")
+    assert disabled_status == 200
+    assert disabled == {"status": "disabled"}
+
+    live_log = server.record_store.directory.parent / "client.log"
+    server.live_log = live_log
+    waiting_status, _, waiting = _get(base_url, "/api/live?target=panflute&seed=0")
+    assert waiting_status == 200
+    assert waiting == {"status": "waiting"}
+
+    bad_target_status, _, bad_target = _get(base_url, "/api/live?target=unknown&seed=0")
+    assert bad_target_status == 400
+    assert "unknown target" in bad_target["error"]
+    bad_seed_status, _, bad_seed = _get(base_url, "/api/live?target=panflute&seed=not-a-number")
+    assert bad_seed_status == 400
+    assert "seed must be an integer" in bad_seed["error"]
+    duplicate_status, _, duplicate = _get(
+        base_url, "/api/live?target=panflute&target=moonbase&seed=0"
+    )
+    assert duplicate_status == 400
+    assert "target must be supplied at most once" in duplicate["error"]
+
+
+def test_live_endpoint_uses_current_position_for_plan_and_nearest_target(local_server) -> None:
+    base_url, server = local_server
+    _, _, demo = _get(base_url, "/api/demo")
+    directions = copy.deepcopy(demo["directions"])
+    directions["north"].setdefault("prefab_counts", {})["panflute"] = 1
+    snapshot = _live_snapshot(directions)
+    live_log = server.record_store.directory.parent / "client.log"
+    _write_live_snapshot(live_log, snapshot, prefix="[client timestamp] ")
+    server.live_log = live_log
+
+    status, _, response = _get(base_url, "/api/live?target=panflute&seed=0")
+
+    assert status == 200
+    assert response["status"] == "live"
+    assert response["snapshot"] == snapshot
+    assert response["age_seconds"] <= 5
+    expected_plan = app._plan_request(
+        {
+            "schema_version": 1,
+            "target": "panflute",
+            "seed": 0,
+            "current": snapshot["current"],
+            "directions": snapshot["directions"],
+        }
+    )
+    assert response["plan"] == expected_plan
+    assert response["plan"]["target"] == "panflute"
+    assert len(response["plan"]["directions"]) == 4
+    assert response["visible_target"] == {
+        "prefab": "panflute",
+        "x": 1,
+        "z": 1,
+        "distance": pytest.approx(2**0.5),
+    }
+
+
+def test_live_stale_and_cave_snapshots_never_run_inference(local_server, monkeypatch) -> None:
+    base_url, server = local_server
+    live_log = server.record_store.directory.parent / "client.log"
+    server.live_log = live_log
+
+    def inference_must_not_run(*args, **kwargs):
+        raise AssertionError("stale or unsupported snapshots must not run inference")
+
+    monkeypatch.setattr(app, "_plan_request", inference_must_not_run)
+    _, _, demo = _get(base_url, "/api/demo")
+    cave = _live_snapshot(demo["directions"])
+    cave["world_kind"] = "cave"
+    _write_live_snapshot(live_log, cave)
+    cave_status, _, cave_result = _get(base_url, "/api/live?target=panflute&seed=0")
+    assert cave_status == 200
+    assert cave_result["status"] == "unsupported_world"
+    assert "plan" not in cave_result
+
+    stale = _live_snapshot(demo["directions"], captured_at=time.time() - 10)
+    _write_live_snapshot(live_log, stale)
+    stale_status, _, stale_result = _get(base_url, "/api/live?target=panflute&seed=0")
+    assert stale_status == 200
+    assert stale_result["status"] == "stale"
+    assert stale_result["age_seconds"] > 5
+    assert "plan" not in stale_result
+
+
+def test_live_endpoint_returns_error_for_malformed_latest_snapshot(local_server) -> None:
+    base_url, server = local_server
+    live_log = server.record_store.directory.parent / "client.log"
+    live_log.write_text(f"{LIVE_MARKER}{{}}\n", encoding="utf-8")
+    server.live_log = live_log
+
+    status, _, response = _get(base_url, "/api/live?target=panflute&seed=0")
+
+    assert status == 200
+    assert response["status"] == "error"
+    assert "snapshot" in response["error"]
