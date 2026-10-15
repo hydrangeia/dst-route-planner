@@ -6,9 +6,9 @@ const elements = new Map();
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     value: "", checked: false, disabled: false, textContent: "", innerHTML: "",
-    className: "", href: "", hidden: true,
+    className: "", href: "", hidden: true, listeners: Object.create(null),
     classList: {add() {}, remove() {}, toggle() {}, contains() { return false; }},
-    querySelectorAll() { return []; }, addEventListener() {},
+    querySelectorAll() { return []; }, addEventListener(name, handler) { this.listeners[name] = handler; },
     removeAttribute(name) { if (name === "href") this.href = ""; }
   });
   return elements.get(id);
@@ -21,6 +21,16 @@ const context = vm.createContext({
 vm.runInContext(source, context);
 function run(code) { return vm.runInContext(code, context); }
 function apiResponse(payload) { return {ok: true, json: async () => payload}; }
+function trailPoint(sequence, capturedAt, x, z) { return {sequence, captured_at: capturedAt, x, z}; }
+function trailPayload(summary, points) {
+  const xs = points.map(point => point.x), zs = points.map(point => point.z);
+  return {
+    trail_version: 1, id: summary.id, world_id: summary.world_id,
+    world_kind: summary.world_kind, session_id: summary.session_id,
+    frame_count: points.length, points,
+    bounds: points.length ? {min_x: Math.min(...xs), max_x: Math.max(...xs), min_z: Math.min(...zs), max_z: Math.max(...zs)} : null
+  };
+}
 run('state.options={targets:["panflute","moonbase"],tile_types:["GRASS"],prefabs:["grass"],directions:DIRS.slice()}; live.following=true;');
 function replaySummary(id, options = {}) {
   return {
@@ -35,12 +45,13 @@ function replaySummary(id, options = {}) {
     ...(options.error ? {error: options.error} : {})
   };
 }
-function frame(session = "one", sequence = 1, recording = null, worldId = "world-a") {
+function frame(session = "one", sequence = 1, recording = null, worldId = "world-a", trail = {}) {
   const result = {
     status: "live", age_seconds: 0.5,
     snapshot: {
-      world_id: worldId, world_kind: "forest", session_id: session, sequence,
-      position: {x: 12, y: 0, z: 30},
+      world_id: worldId, world_kind: trail.worldKind || "forest", session_id: session, sequence,
+      captured_at: trail.capturedAt === undefined ? sequence : trail.capturedAt,
+      position: {x: trail.x === undefined ? 12 : trail.x, y: 0, z: trail.z === undefined ? 30 : trail.z},
       current: {prefab_counts: {observed_custom_prefab: 2}},
       directions: {north: {tile_types: ["CUSTOM_TILE"], prefab_counts: {panflute: 1}}}
     },
@@ -49,6 +60,45 @@ function frame(session = "one", sequence = 1, recording = null, worldId = "world
   };
   if (recording) result.recording = recording;
   return result;
+}
+const projection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:10,z:0},{sequence:3,captured_at:3,x:0,z:10}])");
+assert.ok(projection.points[1].x > projection.points[0].x, "east (+X) projects right");
+assert.ok(projection.points[2].y < projection.points[0].y, "north (+Z) projects up");
+assert.ok(Math.abs((projection.points[1].x - projection.points[0].x) - (projection.points[0].y - projection.points[2].y)) < 1e-9,
+  "equal world distances use the same map scale on X and Z");
+assert.equal(run("projectTrailCoordinates([]).points.length"), 0);
+assert.equal(run("projectTrailCoordinates([{sequence:1,captured_at:1,x:-1e308,z:0},{sequence:2,captured_at:2,x:1e308,z:0}]).error"), true,
+  "extreme finite coordinates fail cleanly instead of producing invalid SVG values");
+const stationaryProjection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:7,z:-4},{sequence:2,captured_at:2,x:7,z:-4}])");
+assert.deepEqual(
+  {x: stationaryProjection.points[0].x, y: stationaryProjection.points[0].y},
+  {x: stationaryProjection.points[1].x, y: stationaryProjection.points[1].y}
+);
+run('trailState.points=[];trailState.error="";renderTrail()');
+assert.ok(element("trailSvg").innerHTML.includes("还没有可绘制的坐标"));
+run('trailState.points=[{sequence:1,captured_at:1,x:7,z:-4},{sequence:2,captured_at:2,x:7,z:-4}];renderTrail()');
+assert.ok(element("trailSvg").innerHTML.includes('class="trail-route"'));
+assert.ok(element("trailSvg").innerHTML.includes('class="trail-first"'));
+assert.ok(element("trailSvg").innerHTML.includes('class="trail-latest"'));
+assert.ok(element("trailSvg").innerHTML.includes("起点") && element("trailSvg").innerHTML.includes("最新位置"));
+const segmentLengths = JSON.parse(JSON.stringify(run(`splitTrailSegments([
+  {sequence:1,captured_at:1,x:0,z:0}, {sequence:2,captured_at:6,x:64,z:0},
+  {sequence:3,captured_at:11,x:65,z:0}, {sequence:4,captured_at:17,x:65,z:0},
+  {sequence:5,captured_at:18,x:130,z:0}, {sequence:6,captured_at:18,x:131,z:0}
+]).map(segment => segment.length)`)));
+assert.deepEqual(segmentLengths, [3, 1, 1, 1], "five-second/64-unit edges connect; nonpositive time, long gaps, and jumps split segments");
+run('trailState.points=[{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:7,x:0,z:0},{sequence:3,captured_at:8,x:100,z:0}];trailState.mode="history";renderTrail()');
+assert.equal((element("trailSvg").innerHTML.match(/class="trail-isolated"/g) || []).length, 3,
+  "samples on either side of breaks remain visible as isolated points");
+run('trailState.points=[];trailState.mode="idle";renderTrail()');
+const validationSummary = replaySummary("9".repeat(64), {worldId: "validate-world", session: "validate-session"});
+for (const field of ["id", "world_id", "world_kind", "session_id"]) {
+  const payload = trailPayload(validationSummary, []);
+  payload[field] = "wrong-" + field;
+  context.validationSummary = validationSummary;
+  context.validationPayload = payload;
+  assert.throws(() => run("validateTrailPayload(validationPayload, validationSummary)"), undefined,
+    "trail payload validates " + field);
 }
 element("recordName").value = "My world";
 element("worldNote").value = "Exploration note";
@@ -227,6 +277,165 @@ run('live.following=true;state.result=null;');
   assert.equal(run("state.explorations.length"), 0, "created_at must not substitute for started_at");
   assert.ok(element("explorationsStatus").textContent.includes("格式不完整"));
 
+  const liveTrailId = "1".repeat(64);
+  const liveTrailSummary = replaySummary(liveTrailId, {worldId: "trail-world", session: "trail-session", frames: 3});
+  run(`trailState.mode="idle";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;trailState.points=[];trailState.error="";trailState.loading=false;trailState.trimmed=false;trailState.requests.clear();trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false};state.liveRecording=null;state.explorations=[${JSON.stringify(liveTrailSummary)}];state.explorationIdsSeen.add("${liveTrailId}");live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;resumeLiveTrailView();`);
+  let resolveLiveTrail;
+  let trailCalls = 0;
+  context.fetch = url => {
+    if (url !== "/api/explorations/" + liveTrailId + "/trail") throw new Error("unexpected fetch " + url);
+    trailCalls += 1;
+    return new Promise(resolve => { resolveLiveTrail = resolve; });
+  };
+  context.reply = frame("trail-session", 1, liveTrailSummary, "trail-world", {x: 1, z: 1, capturedAt: 100});
+  run("applyLiveResult(reply)");
+  context.reply = frame("trail-session", 2, {...liveTrailSummary, frame_count: 2}, "trail-world", {x: 2, z: 1, capturedAt: 101});
+  run("applyLiveResult(reply)");
+  context.reply = frame("trail-session", 3, liveTrailSummary, "trail-world", {x: 3, z: 1, capturedAt: 102});
+  run("applyLiveResult(reply)");
+  assert.equal(trailCalls, 1, "live updates append locally without a journal request per frame");
+  assert.equal(run("trailState.live.localPoints.length"), 3);
+  resolveLiveTrail(apiResponse(trailPayload(liveTrailSummary, [
+    trailPoint(0, 99, 0, 0), trailPoint(2, 101, 222, 222)
+  ])));
+  await settle();
+  const mergedLivePoints = JSON.parse(run("JSON.stringify(trailState.points)"));
+  assert.deepEqual(mergedLivePoints.map(point => point.sequence), [0, 1, 2, 3]);
+  assert.deepEqual({x: mergedLivePoints[2].x, z: mergedLivePoints[2].z}, {x: 2, z: 1}, "accepted local points win duplicate sequences");
+  context.reply = frame("trail-session", 3, {...liveTrailSummary, frame_count: 3}, "trail-world", {x: 9, z: 1, capturedAt: 102});
+  run("applyLiveResult(reply)");
+  assert.equal(run("trailState.live.localPoints.length"), 3, "local trail points deduplicate by sequence");
+  assert.equal(trailCalls, 1);
+
+  const raceA = replaySummary("2".repeat(64), {worldId: "race-a", session: "same-session", frames: 1});
+  const raceB = replaySummary("3".repeat(64), {worldId: "race-b", session: "same-session", frames: 1});
+  const pendingTrails = new Map();
+  const trailCallCounts = new Map();
+  context.fetch = url => {
+    const match = url.match(/^\/api\/explorations\/([a-f0-9]{64})\/trail$/);
+    if (!match) throw new Error("unexpected fetch " + url);
+    const id = match[1];
+    trailCallCounts.set(id, (trailCallCounts.get(id) || 0) + 1);
+    return new Promise(resolve => pendingTrails.set(id, resolve));
+  };
+  context.reply = frame("same-session", 1, raceA, "race-a", {x: 500, z: 0, capturedAt: 200});
+  run("applyLiveResult(reply)");
+  context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 200});
+  run("applyLiveResult(reply)");
+  assert.equal(run("trailState.identity"), "race-b\u0000forest\u0000same-session");
+  pendingTrails.get(raceA.id)(apiResponse(trailPayload(raceA, [trailPoint(0, 1, 500, 0)])));
+  await settle();
+  assert.equal(run("trailState.id"), raceB.id, "late world trail responses cannot replace the active world");
+  assert.ok(JSON.parse(run("JSON.stringify(trailState.points)")).every(point => point.x !== 500));
+  pendingTrails.get(raceB.id)({ok: false, status: 500, json: async () => ({error: "trail unavailable"})});
+  await settle();
+  assert.ok(element("trailStatus").textContent.includes("trail unavailable"));
+  assert.equal(run("state.result.directions[0].direction"), "north", "trail failure does not remove live recommendations");
+  assert.ok(element("livePosition").textContent.includes("50.0"));
+  assert.equal(element("liveReplayLink").href, "/api/explorations/" + raceB.id, "trail failure does not remove replay download");
+  assert.equal(trailCallCounts.get(raceB.id), 1);
+  context.fetch = async url => {
+    if (url !== "/api/explorations/" + raceB.id + "/trail") throw new Error("unexpected fetch " + url);
+    trailCallCounts.set(raceB.id, trailCallCounts.get(raceB.id) + 1);
+    return apiResponse({...trailPayload(raceB, [trailPoint(0, 199, 49, 0)]), world_id: "wrong-world"});
+  };
+  run("refreshSelectedTrail()");
+  await settle();
+  assert.equal(trailCallCounts.get(raceB.id), 2, "explicit refresh retries a failed trail request");
+  assert.ok(run("trailState.error").includes("身份不匹配"), "trail payload world/session identity is validated");
+  context.fetch = async url => {
+    if (url !== "/api/explorations/" + raceB.id + "/trail") throw new Error("unexpected fetch " + url);
+    trailCallCounts.set(raceB.id, trailCallCounts.get(raceB.id) + 1);
+    return apiResponse(trailPayload(raceB, [trailPoint(0, 199, 49, 0)]));
+  };
+  run("refreshSelectedTrail()");
+  await settle();
+  assert.equal(trailCallCounts.get(raceB.id), 3);
+  assert.equal(run("trailState.error"), "");
+
+  const newerRaceB = {...raceB, frame_count: 4};
+  context.fetch = async url => {
+    if (url !== "/api/explorations/" + raceB.id + "/trail") throw new Error("unexpected fetch " + url);
+    trailCallCounts.set(raceB.id, trailCallCounts.get(raceB.id) + 1);
+    return apiResponse(trailPayload(newerRaceB, [
+      trailPoint(0, 199, 49, 0), trailPoint(1, 200, 50, 0),
+      trailPoint(2, 201, 51, 0), trailPoint(3, 202, 52, 0)
+    ]));
+  };
+  run(`state.explorations=[${JSON.stringify(newerRaceB)}];renderExplorations();live.following=true;liveEl.follow.checked=true;`);
+  const trailButton = {dataset: {explorationId: raceB.id}};
+  element("explorationList").listeners.click({target: {closest: selector => selector === "button.trail-open[data-exploration-id]" ? trailButton : null}});
+  assert.equal(run("live.following"), false, "opening a saved trail stops live following");
+  assert.equal(element("liveFollow").checked, false);
+  assert.equal(run("trailState.mode"), "history");
+  assert.equal(run("trailState.id"), raceB.id);
+  await settle();
+  assert.equal(trailCallCounts.get(raceB.id), 4, "opening a replay refreshes cached trail data when its frame count advanced");
+  assert.equal(run("trailState.points.length"), 4);
+  assert.ok(element("trailStatus").textContent.includes("历史回放"));
+  const liveIdentityBeforeResume = run("trailState.live.identity");
+  context.fetch = async url => {
+    if (!url.startsWith("/api/live?")) throw new Error("unexpected fetch " + url);
+    return apiResponse({status: "waiting"});
+  };
+  element("liveFollow").checked = true;
+  element("liveFollow").listeners.change();
+  assert.equal(run("live.following"), true);
+  assert.equal(run("trailState.mode"), "live");
+  assert.equal(run("trailState.identity"), liveIdentityBeforeResume, "checking live follow resumes the current live trail");
+  await settle();
+  run("stopLive()");
+
+  const stoppedLive = replaySummary("7".repeat(64), {worldId: "stop-world", session: "stop-session"});
+  let resolveStoppedLive;
+  context.fetch = url => {
+    if (url !== "/api/explorations/" + stoppedLive.id + "/trail") throw new Error("unexpected fetch " + url);
+    return new Promise(resolve => { resolveStoppedLive = resolve; });
+  };
+  run('live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;trailState.mode="live";');
+  context.reply = frame("stop-session", 1, stoppedLive, "stop-world", {x: 4, z: 0, capturedAt: 300});
+  run("applyLiveResult(reply)");
+  run("stopLive()");
+  resolveStoppedLive(apiResponse(trailPayload(stoppedLive, [trailPoint(0, 299, 800, 0)])));
+  await settle();
+  assert.equal(run("trailState.id"), stoppedLive.id);
+  assert.equal(run("trailState.points.length"), 1);
+  assert.equal(run("trailState.points[0].x"), 4, "a pending live trail response is ignored after stopping");
+
+  const historyA = replaySummary("4".repeat(64), {worldId: "history-a", session: "hist-a"});
+  const historyB = replaySummary("5".repeat(64), {worldId: "history-b", session: "hist-b"});
+  context.fetch = url => {
+    const match = url.match(/^\/api\/explorations\/([a-f0-9]{64})\/trail$/);
+    if (!match) throw new Error("unexpected fetch " + url);
+    return new Promise(resolve => pendingTrails.set(match[1], resolve));
+  };
+  run(`openExplorationTrail(${JSON.stringify(historyA)})`);
+  run(`openExplorationTrail(${JSON.stringify(historyB)})`);
+  pendingTrails.get(historyA.id)(apiResponse(trailPayload(historyA, [trailPoint(1, 10, -10, 0)])));
+  await settle();
+  assert.equal(run("trailState.id"), historyB.id, "late saved-history responses are ignored after selection changes");
+  assert.equal(run("trailState.points.length"), 0);
+  pendingTrails.get(historyB.id)(apiResponse(trailPayload(historyB, [trailPoint(2, 10, 20, 30)])));
+  await settle();
+  assert.equal(run("trailState.points[0].x"), 20);
+  const historyC = replaySummary("6".repeat(64), {worldId: "history-c", session: "hist-c"});
+  run(`openExplorationTrail(${JSON.stringify(historyC)})`);
+  run("stopLive()");
+  pendingTrails.get(historyC.id)(apiResponse(trailPayload(historyC, [trailPoint(3, 10, 900, 0)])));
+  await settle();
+  assert.equal(run("trailState.points.length"), 0, "stopping invalidates a pending historical trail response");
+
+  run('trailState.mode="idle";trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false};state.liveRecording=null;');
+  run(`for(let i=0;i<10002;i++){recordLiveTrailSnapshot({world_id:"bound-world",world_kind:"forest",session_id:"bound-session",sequence:i,captured_at:i,position:{x:i,z:0}});}`);
+  assert.equal(run("trailState.live.localPoints.length"), 10000);
+  assert.equal(run("trailState.live.localPoints[0].sequence"), 0, "trimming retains the original point");
+  assert.equal(run("trailState.live.localPoints[9999].sequence"), 10001, "trimming retains the latest points");
+  run('live.following=true;resumeLiveTrailView()');
+  assert.equal(run("trailState.points.length"), 10000);
+  assert.ok(element("trailStatus").textContent.includes("最近 9999 个位置"));
+  run("stopLive()");
+  assert.ok(run("trailState.requests.size") <= 4, "trail payload cache stays bounded");
+
   const initSummary = replaySummary("f".repeat(64), {worldId: "after-restart"});
   const initCalls = [];
   context.fetch = async url => {
@@ -244,5 +453,5 @@ run('live.following=true;state.result=null;');
   assert.equal(run("state.explorations[0].id"), initSummary.id);
   assert.ok(element("explorationList").innerHTML.includes("/api/explorations/" + initSummary.id));
 
-  console.log("Live UI: live updates, no-ID recording errors, replay identity, out-of-order frames, limits, persisted list counts, stale retention, world changes, and initialization checks passed");
+  console.log("Live UI: replay recording plus trail projection, segmentation, merging, races, retries, retention bounds, map independence, history opening, and initialization checks passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

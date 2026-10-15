@@ -31,6 +31,8 @@ Directions use fixed world coordinates: north is `+Z` and east is `+X`. Walkable
 
 While live following is active, the tool saves newly received snapshots locally, including coordinates, nearby clues, the current target, and direction suggestions. Download a JSONL file from “探索回放” (exploration replays) to keep the exploration session; saved replays remain available after restarting. Each world and collector session has its own recording.
 
+“探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review that exploration; this pauses live following. Check live following again to return to the current session. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
+
 ## Manual entry and saved records
 
 1. Choose a target.
@@ -51,7 +53,9 @@ Match room/task clues and use task-graph context to rank exploration directions
   ↓
 The page updates suggestions and straight-line distance to a visible target
   ↓
-New snapshots → local replay; download coordinates, clues, and suggestions
+New snapshots → local replay → trail showing start and latest positions
+  ↓
+Saved replay → view its trail or download coordinates, clues, and suggestions
   ↓
 Keep moving → collect, calculate, and update again
   ↓

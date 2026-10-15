@@ -35,6 +35,7 @@ from dst_route_planner.records import (
     RecordNotFoundError,
     RecordStore,
 )
+from dst_route_planner.trail import TrailDataError, project_trail
 
 
 MAX_REQUEST_BYTES = 256 * 1024
@@ -315,6 +316,32 @@ class _PlannerHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": "Explorations could not be listed."})
                 return
             self._send_json(200, {"explorations": explorations})
+            return
+        trail_prefix = "/api/explorations/"
+        trail_suffix = "/trail"
+        if path.startswith(trail_prefix) and path.endswith(trail_suffix):
+            exploration_id = path[len(trail_prefix) : -len(trail_suffix)]
+            if not exploration_id:
+                self._send_json(404, {"error": "Route not found."})
+                return
+            try:
+                normalized_id = self.server.exploration_store.normalize_id(exploration_id)
+                content = self.server.exploration_store.get_bytes(normalized_id)
+                trail = project_trail(content)
+            except InvalidExplorationIdError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except ExplorationNotFoundError:
+                self._send_json(404, {"error": "Exploration not found."})
+                return
+            except (CorruptExplorationError, TrailDataError):
+                self._send_json(500, {"error": "The exploration trail could not be read."})
+                return
+            except OSError:
+                _LOG.exception("Unable to read live exploration trail")
+                self._send_json(500, {"error": "The exploration trail could not be read."})
+                return
+            self._send_json(200, trail)
             return
         if path.startswith("/api/explorations/"):
             exploration_id = path.removeprefix("/api/explorations/")

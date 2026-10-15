@@ -24,7 +24,8 @@
 
 - [ ] 在游戏中验证日志输出、坐标方向和地标采集，记录一次完整探索过程。 / Verify log output, coordinate directions, and landmark capture in game, and record a complete exploration run.
 - [x] 实时跟随时记录连续坐标、观测和方向建议，按世界与会话保存本机 JSONL 回放，并支持重启后下载。 / Record successive positions, observations, and suggestions during live following, save local JSONL replays per world/session, and download them after restarting.
-- [ ] 用回放记录绘制探索轨迹、标记已发现地点，再构建可通行地图并重算路径。 / Plot exploration trails and discovered places from replay records, then build a walkable map and replan routes.
+- [x] 显示实时探索轨迹、起点和最新位置，并能打开已保存回放的轨迹；采集间隔与位置跳变处分段。 / Show live trails with start/latest positions, open trails from saved replays, and split lines at capture gaps and position jumps.
+- [ ] 在轨迹图上标记已发现地点，再接入已探索地皮、可通行地图与路径重规划。 / Mark discovered places on the trail map, then add explored tiles, a walkable map, and route replanning.
 
 ## 1. 生成数据校对 / Generation data
 

@@ -573,3 +573,137 @@ def test_exploration_download_rejects_corrupt_and_oversize_files_without_changin
     assert oversize_status == 500
     assert oversize_response == {"error": "The exploration could not be read."}
     assert journal_path.read_bytes() == corrupt
+
+
+def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local_server) -> None:
+    base_url, server = local_server
+    _, _, demo = _get(base_url, "/api/demo")
+    points = [(-12, 3.5), (-12, 3.5), (8.25, -20)]
+    captured_times = []
+    summary = None
+    for sequence, (x, z) in enumerate(points, start=1):
+        captured_at = time.time() - (3 - sequence) * 0.01
+        captured_times.append(captured_at)
+        snapshot = _live_snapshot(
+            demo["directions"], sequence=sequence, captured_at=captured_at
+        )
+        snapshot["position"].update(x=x, z=z)
+        summary = server.exploration_store.capture(
+            snapshot,
+            target="panflute",
+            seed=0,
+            plan={"private_plan_detail": "must not be exposed"},
+        )
+    other_session = _live_snapshot(
+        demo["directions"], world_id="world-abc", session_id="another-session"
+    )
+    other_session["position"].update(x=500, z=600)
+    other_summary = server.exploration_store.capture(
+        other_session, target="panflute", seed=0
+    )
+
+    trail_status, _, trail = _get(base_url, f"/api/explorations/{summary['id']}/trail")
+    assert trail_status == 200
+    assert trail == {
+        "trail_version": 1,
+        "id": summary["id"],
+        "world_id": "world-abc",
+        "world_kind": "forest",
+        "session_id": "session-1",
+        "frame_count": 3,
+        "points": [
+            {"sequence": 1, "captured_at": captured_times[0], "x": -12, "z": 3.5},
+            {"sequence": 2, "captured_at": captured_times[1], "x": -12, "z": 3.5},
+            {"sequence": 3, "captured_at": captured_times[2], "x": 8.25, "z": -20},
+        ],
+        "bounds": {"min_x": -12, "max_x": 8.25, "min_z": -20, "max_z": 3.5},
+    }
+    assert trail["id"] != other_summary["id"]
+    other_status, _, isolated_trail = _get(
+        base_url, f"/api/explorations/{other_summary['id']}/trail"
+    )
+    assert other_status == 200
+    assert isolated_trail["session_id"] == "another-session"
+    assert isolated_trail["points"] == [
+        {
+            "sequence": 1,
+            "captured_at": other_session["captured_at"],
+            "x": 500,
+            "z": 600,
+        }
+    ]
+    assert "private_plan_detail" not in json.dumps(trail)
+    assert "directions" not in trail
+    assert "landmarks" not in trail
+
+    journal_path = server.exploration_store._journal_path(summary["id"])
+    complete_journal = journal_path.read_bytes()
+    partial_tail = b'{"replay_version":1,"snapshot":'
+    journal_path.write_bytes(complete_journal + partial_tail)
+    partial_status, _, partial_trail = _get(
+        base_url, f"/api/explorations/{summary['id']}/trail"
+    )
+    assert partial_status == 200
+    assert partial_trail == trail
+    assert journal_path.read_bytes() == complete_journal + partial_tail
+
+
+def test_exploration_trail_api_handles_empty_invalid_missing_and_bad_journals(
+    local_server, monkeypatch
+) -> None:
+    from dst_route_planner import exploration as exploration_module
+    from dst_route_planner.exploration import exploration_id
+
+    base_url, server = local_server
+    invalid_status, _, invalid = _get(base_url, "/api/explorations/not-safe/trail")
+    assert invalid_status == 400
+    assert "64-character lowercase hexadecimal" in invalid["error"]
+    missing_id = "0" * 64
+    missing_status, _, missing = _get(base_url, f"/api/explorations/{missing_id}/trail")
+    assert missing_status == 404
+    assert missing == {"error": "Exploration not found."}
+
+    empty_id = exploration_id("empty-world", "forest", "empty-session")
+    server.exploration_store.directory.mkdir(parents=True, exist_ok=True)
+    empty_path = server.exploration_store._journal_path(empty_id)
+    empty_path.write_text(
+        json.dumps(
+            {
+                "replay_version": 1,
+                "id": empty_id,
+                "world_id": "empty-world",
+                "world_kind": "forest",
+                "session_id": "empty-session",
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    empty_status, _, empty = _get(base_url, f"/api/explorations/{empty_id}/trail")
+    assert empty_status == 200
+    assert empty["frame_count"] == 0
+    assert empty["points"] == []
+    assert empty["bounds"] is None
+
+    _, _, demo = _get(base_url, "/api/demo")
+    snapshot = _live_snapshot(demo["directions"])
+    summary = server.exploration_store.capture(snapshot, target="panflute", seed=0)
+    journal_path = server.exploration_store._journal_path(summary["id"])
+    original = journal_path.read_bytes()
+    corrupt = original + b"not-json\n"
+    journal_path.write_bytes(corrupt)
+    corrupt_status, _, corrupt_response = _get(
+        base_url, f"/api/explorations/{summary['id']}/trail"
+    )
+    assert corrupt_status == 500
+    assert corrupt_response == {"error": "The exploration trail could not be read."}
+    assert journal_path.read_bytes() == corrupt
+
+    monkeypatch.setattr(exploration_module, "MAX_EXPLORATION_BYTES", len(corrupt) - 1)
+    oversized_status, _, oversized_response = _get(
+        base_url, f"/api/explorations/{summary['id']}/trail"
+    )
+    assert oversized_status == 500
+    assert oversized_response == {"error": "The exploration trail could not be read."}
+    assert journal_path.read_bytes() == corrupt
