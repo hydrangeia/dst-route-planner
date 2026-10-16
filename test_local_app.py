@@ -683,6 +683,14 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
     base_url, server = local_server
     _, _, demo = _get(base_url, "/api/demo")
     points = [(-12, 3.5), (-12, 3.5), (8.25, -20)]
+    terrain_by_frame = [
+        [{"x": 1, "z": 1, "tile": "GRASS"}],
+        [
+            {"x": 1, "z": 1, "tile": "FOREST"},
+            {"x": 2, "z": 2, "tile": "MARSH"},
+        ],
+        [{"x": 1, "z": 1, "tile": "DECIDUOUS"}],
+    ]
     captured_times = []
     summary = None
     for sequence, (x, z) in enumerate(points, start=1):
@@ -692,6 +700,7 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             demo["directions"], sequence=sequence, captured_at=captured_at
         )
         snapshot["position"].update(x=x, z=z)
+        snapshot["terrain"] = {"tile_size": 4, "tiles": terrain_by_frame[sequence - 1]}
         summary = server.exploration_store.capture(
             snapshot,
             target="panflute",
@@ -702,6 +711,10 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         demo["directions"], world_id="world-abc", session_id="another-session"
     )
     other_session["position"].update(x=500, z=600)
+    other_session["terrain"] = {
+        "tile_size": 4,
+        "tiles": [{"x": 99, "z": -4, "tile": "ROCKY"}],
+    }
     other_summary = server.exploration_store.capture(
         other_session, target="panflute", seed=0
     )
@@ -751,6 +764,26 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             },
         ],
         "landmarks_truncated": False,
+        "terrain": {
+            "tile_size": 4,
+            "tiles": [
+                {
+                    "x": 1,
+                    "z": 1,
+                    "tile": "DECIDUOUS",
+                    "last_seen": captured_times[2],
+                    "last_sequence": 3,
+                },
+                {
+                    "x": 2,
+                    "z": 2,
+                    "tile": "MARSH",
+                    "last_seen": captured_times[1],
+                    "last_sequence": 2,
+                },
+            ],
+            "truncated": False,
+        },
     }
     assert trail["id"] != other_summary["id"]
     other_status, _, isolated_trail = _get(
@@ -766,6 +799,19 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             "z": 600,
         }
     ]
+    assert isolated_trail["terrain"] == {
+        "tile_size": 4,
+        "tiles": [
+            {
+                "x": 99,
+                "z": -4,
+                "tile": "ROCKY",
+                "last_seen": other_session["captured_at"],
+                "last_sequence": 1,
+            }
+        ],
+        "truncated": False,
+    }
     assert isolated_trail["landmarks_truncated"] is False
     assert {item["prefab"] for item in isolated_trail["landmarks"]} == {
         "panflute",
@@ -786,6 +832,45 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
     assert partial_status == 200
     assert partial_trail == trail
     assert journal_path.read_bytes() == complete_journal + partial_tail
+
+    restarted_server = app.create_server(
+        port=0,
+        record_dir=server.record_store.directory,
+        exploration_dir=server.exploration_store.directory,
+    )
+    restarted_thread = threading.Thread(target=restarted_server.serve_forever, daemon=True)
+    restarted_thread.start()
+    host, port = restarted_server.server_address[:2]
+    try:
+        restarted_url = f"http://{host}:{port}"
+        list_status, _, listing = _get(restarted_url, "/api/explorations")
+        assert list_status == 200
+        assert {item["id"] for item in listing["explorations"]} == {
+            summary["id"], other_summary["id"]
+        }
+        restart_status, _, restarted_trail = _get(
+            restarted_url, f"/api/explorations/{summary['id']}/trail"
+        )
+        assert restart_status == 200
+        assert restarted_trail == trail
+        download_status, download_headers, downloaded = _get(
+            restarted_url, f"/api/explorations/{summary['id']}"
+        )
+        assert download_status == 200
+        assert download_headers.get_content_type() == "application/x-ndjson"
+        downloaded_frames = [json.loads(line) for line in downloaded.splitlines()][1:]
+        assert [frame["snapshot"]["terrain"] for frame in downloaded_frames] == [
+            {"tile_size": 4, "tiles": tiles} for tiles in terrain_by_frame
+        ]
+        isolated_status, _, restarted_isolated_trail = _get(
+            restarted_url, f"/api/explorations/{other_summary['id']}/trail"
+        )
+        assert isolated_status == 200
+        assert restarted_isolated_trail["terrain"] == isolated_trail["terrain"]
+    finally:
+        restarted_server.shutdown()
+        restarted_server.server_close()
+        restarted_thread.join(timeout=2)
 
 
 def test_exploration_trail_api_handles_empty_invalid_missing_and_bad_journals(

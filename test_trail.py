@@ -13,6 +13,7 @@ def _journal(
     world_kind: str = "forest",
     session_id: str = "session-trail",
     landmarks_by_frame: list[list[dict]] | None = None,
+    terrain_by_frame: list[list[dict]] | None = None,
 ) -> bytes:
     journal_id = exploration_id(world_id, world_kind, session_id)
     header = {
@@ -40,6 +41,11 @@ def _journal(
         }
         if landmarks_by_frame is not None and frame_index < len(landmarks_by_frame):
             frame["snapshot"]["landmarks"] = landmarks_by_frame[frame_index]
+        if terrain_by_frame is not None and frame_index < len(terrain_by_frame):
+            frame["snapshot"]["terrain"] = {
+                "tile_size": 4,
+                "tiles": terrain_by_frame[frame_index],
+            }
         lines.append(json.dumps(frame, separators=(",", ":")))
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -70,6 +76,7 @@ def test_project_trail_preserves_every_stationary_and_asymmetric_point() -> None
         "bounds": {"min_x": -12, "max_x": 8.25, "min_z": -20, "max_z": 3.5},
         "landmarks": [],
         "landmarks_truncated": False,
+        "terrain": {"tile_size": 4, "tiles": [], "truncated": False},
     }
     assert "private_plan_detail" not in json.dumps(trail)
     assert "directions" not in trail
@@ -92,6 +99,7 @@ def test_project_trail_keeps_sessions_separate_and_empty_bounds_null() -> None:
     assert empty["bounds"] is None
     assert empty["landmarks"] == []
     assert empty["landmarks_truncated"] is False
+    assert empty["terrain"] == {"tile_size": 4, "tiles": [], "truncated": False}
 
 
 def test_project_trail_deduplicates_exact_sightings_and_keeps_first_last_values() -> None:
@@ -223,3 +231,57 @@ def test_project_trail_trims_frame_overflow_by_rank_and_keeps_newer_sightings() 
     assert retained[2]["last_sequence"] == 1
     assert retained[-1]["x"] == 497
     assert {item["x"] for item in retained} == {499, 500, *range(498)}
+
+
+def test_project_trail_uses_sequence_for_latest_tile_and_time_when_clock_moves_back() -> None:
+    trail = project_trail(
+        _journal(
+            [(1, 300, 0, 0), (2, 100, 1, 0), (3, 50, 2, 0)],
+            terrain_by_frame=[
+                [
+                    {"x": 1, "z": 2, "tile": "GRASS"},
+                    {"x": -1, "z": 0, "tile": "MARSH"},
+                ],
+                [
+                    {"x": 1, "z": 2, "tile": "FOREST"},
+                    {"x": 3, "z": 4, "tile": "ROCKY"},
+                ],
+                [{"x": 1, "z": 2, "tile": "DECIDUOUS"}],
+            ],
+        )
+    )
+
+    assert trail["terrain"] == {
+        "tile_size": 4,
+        "tiles": [
+            {"x": 1, "z": 2, "tile": "DECIDUOUS", "last_seen": 50, "last_sequence": 3},
+            {"x": 3, "z": 4, "tile": "ROCKY", "last_seen": 100, "last_sequence": 2},
+            {"x": -1, "z": 0, "tile": "MARSH", "last_seen": 300, "last_sequence": 1},
+        ],
+        "truncated": False,
+    }
+
+
+def test_project_trail_caps_terrain_at_2500_by_latest_sequence_then_coordinates() -> None:
+    terrain_by_frame = [
+        [
+            {"x": frame_index * 256 + tile_index, "z": 0, "tile": f"T{frame_index}-{tile_index}"}
+            for tile_index in range(256)
+        ]
+        for frame_index in range(10)
+    ]
+    points = [(sequence, 2000 - sequence * 100, sequence, 0) for sequence in range(1, 11)]
+
+    terrain = project_trail(_journal(points, terrain_by_frame=terrain_by_frame))["terrain"]
+
+    assert terrain["truncated"] is True
+    assert len(terrain["tiles"]) == 2500
+    assert terrain["tiles"][0] == {
+        "x": 2304, "z": 0, "tile": "T9-0", "last_seen": 1000, "last_sequence": 10
+    }
+    assert terrain["tiles"][255]["last_sequence"] == 10
+    assert terrain["tiles"][256]["last_sequence"] == 9
+    assert terrain["tiles"][2303]["last_sequence"] == 2
+    assert terrain["tiles"][2304]["x"] == 0
+    assert terrain["tiles"][2304]["last_sequence"] == 1
+    assert terrain["tiles"][-1]["x"] == 195

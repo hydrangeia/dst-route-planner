@@ -22,8 +22,9 @@ def _snapshot(
     session_id: str = "session-a",
     sequence: int = 1,
     world_kind: str = "forest",
+    terrain: dict | None = None,
 ) -> dict:
-    return {
+    snapshot = {
         "live_version": 1,
         "world_id": "world-123",
         "world_kind": world_kind,
@@ -46,6 +47,9 @@ def _snapshot(
             {"prefab": "panflute", "x": 13, "z": -8},
         ],
     }
+    if terrain is not None:
+        snapshot["terrain"] = terrain
+    return snapshot
 
 
 def _line(snapshot: dict, prefix: str = "") -> str:
@@ -146,6 +150,62 @@ def test_snapshot_validation_rejects_bad_version_ids_counts_and_nonfinite_values
         mutate(bad)
         with pytest.raises(LiveSnapshotError, match=message):
             validate_snapshot(bad)
+
+
+def test_snapshot_validation_accepts_legacy_empty_and_populated_terrain() -> None:
+    legacy = _snapshot()
+    assert "terrain" not in validate_snapshot(legacy)
+
+    empty = _snapshot(terrain={"tile_size": 4, "tiles": []})
+    assert validate_snapshot(empty)["terrain"] == {"tile_size": 4, "tiles": []}
+
+    populated = _snapshot(
+        terrain={"tile_size": 4.0, "tiles": [{"x": -2.5, "z": 3, "tile": "DECIDUOUS"}]}
+    )
+    assert validate_snapshot(populated)["terrain"] == populated["terrain"]
+
+    adjacent_large_coordinates = _snapshot(
+        terrain={
+            "tile_size": 4,
+            "tiles": [
+                {"x": 10**16, "z": 0, "tile": "GRASS"},
+                {"x": 10**16 + 1, "z": 0, "tile": "FOREST"},
+            ],
+        }
+    )
+    assert len(validate_snapshot(adjacent_large_coordinates)["terrain"]["tiles"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("terrain", "message"),
+    [
+        ({}, "terrain must contain exactly"),
+        ({"tile_size": 4, "tiles": [], "extra": 1}, "terrain must contain exactly"),
+        ({"tile_size": True, "tiles": []}, "terrain.tile_size"),
+        ({"tile_size": 4.5, "tiles": []}, "terrain.tile_size must equal 4"),
+        ({"tile_size": 4, "tiles": {}}, "terrain.tiles must be an array"),
+        (
+            {"tile_size": 4, "tiles": [{"x": index, "z": 0, "tile": "GRASS"} for index in range(257)]},
+            "at most 256",
+        ),
+        ({"tile_size": 4, "tiles": [{"x": 0, "z": 0}]}, "exactly x, z, and tile"),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "extra": 1}]},
+            "exactly x, z, and tile",
+        ),
+        ({"tile_size": 4, "tiles": [{"x": True, "z": 0, "tile": "GRASS"}]}, r"terrain.tiles\[0\].x"),
+        ({"tile_size": 4, "tiles": [{"x": 0, "z": float("nan"), "tile": "GRASS"}]}, r"terrain.tiles\[0\].z"),
+        ({"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": " "}]}, r"terrain.tiles\[0\].tile"),
+        ({"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "T" * 129}]}, "at most 128"),
+        (
+            {"tile_size": 4, "tiles": [{"x": 1, "z": 2, "tile": "GRASS"}, {"x": 1.0, "z": 2, "tile": "FOREST"}]},
+            "duplicate coordinate",
+        ),
+    ],
+)
+def test_snapshot_validation_rejects_malformed_terrain(terrain: dict, message: str) -> None:
+    with pytest.raises(LiveSnapshotError, match=message):
+        validate_snapshot(_snapshot(terrain=terrain))
 
 
 def test_latest_snapshot_age_does_not_refresh_when_the_same_log_is_reread(tmp_path) -> None:

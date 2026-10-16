@@ -76,11 +76,11 @@ python -m pytest -q
 
 启用 [`客户端采集器`](../mods/dst_route_collector/README.md) 后，用 `--ui` 启动，点击“检查连接”，收到新快照后再勾选“实时跟随”。采集器把一秒一份的快照写入游戏日志，Python 读取最近的完整快照，更新坐标和方向建议。
 
-实时快照采用独立的 `live_version: 1`，包括 `world_id`、`world_kind`、`session_id`、`sequence`、Unix 时间 `captured_at`、`position: {x,y,z}`、`camera_heading`、`current`、`directions`，以及可选的 `landmarks: [{prefab,x,z}]`。其中观测字段沿用现有的 observation 格式。世界坐标约定北为 `+Z`、东为 `+X`；镜头角度作为独立信息提供。
+实时快照采用独立的 `live_version: 1`，包括 `world_id`、`world_kind`、`session_id`、`sequence`、Unix 时间 `captured_at`、`position: {x,y,z}`、`camera_heading`、`current`、`directions`，以及可选的 `landmarks: [{prefab,x,z}]` 和 `terrain: {tile_size:4,tiles:[{x,z,tile}]}`。地皮坐标为引擎给出的格中心，每格边长为 4 个世界单位；只采集玩家附近、地图已揭示的格。每份快照最多接受 256 格，同一份内的格中心不能重复。旧快照可省略 `terrain`。其中观测字段沿用现有的 observation 格式。世界坐标约定北为 `+Z`、东为 `+X`；镜头角度作为独立信息提供。
 
 `GET /api/live?target=panflute&seed=0` 返回连接状态、快照和可用的 `plan`。`plan` 与 `/api/plan` 的结果格式相同。看到所选目标时，`visible_target` 提供最近目标的坐标与直线距离。超过五秒的快照会标记为 `stale`，停止生成实时建议。当前大陆知识库处理 `forest` 世界，其他世界会显示 `unsupported_world`。
 
-这一版根据当前快照排列探索方向。探索轨迹、可通行地图和绕障碍的路径重规划列在 [`TODO.md`](../TODO.md)。采集器的 Lua 接口已对照本地源码，并通过桩环境检查；首次游戏内连通验证还需要启用 mod 后完成。
+这一版根据当前快照排列探索方向。轨迹图保存已见目标并显示已观测地皮，可通行判断和绕障碍的路径重规划列在 [`TODO.md`](../TODO.md)。采集器的 Lua 接口已对照本地源码，并通过桩环境检查；首次游戏内连通验证还需要启用 mod 后完成。
 
 ## 自动定位与连接检查
 
@@ -102,7 +102,7 @@ python -m pytest -q
 - `GET /api/explorations/<id>` 下载这次会话的 JSONL 文件。
 - `/api/live` 的 `recording` 返回记录 ID、快照数量和保存状态；存储失败时网页提示问题，实时坐标与建议继续更新。
 
-每个会话最多记录 10,000 份快照或 32 MiB，达到上限后保留已有文件供下载。回放保存在本机并由 Git 忽略。探索轨迹和已见目标位置可以直接在网页查看；可通行路径仍按路线图继续实现。
+每个会话最多记录 10,000 份快照或 32 MiB，达到上限后保留已有文件供下载。回放保存在本机并由 Git 忽略。探索轨迹、已见目标和地皮底图可以直接在网页查看；可通行路径仍按路线图继续实现。
 
 ## 探索轨迹
 
@@ -116,7 +116,15 @@ python -m pytest -q
 
 轨迹接口新增 `landmarks` 和 `landmarks_truncated`。每个地标包含 `prefab`、`x`、`z`、`first_seen`、`last_seen`、`first_sequence` 和 `last_sequence`。同一 prefab 的完全相同坐标合并为一个观测位置；不同坐标分别记录。每个会话的投影最多保留最近观测到的 500 个位置，超过时设置截断标记；原始 JSONL 回放仍保留完整快照。未记录地标的旧回放返回空列表。`bounds` 继续只表示玩家轨迹范围，网页绘图会一起纳入当前展示的目标位置。
 
-这些标记表示当时看到的位置。目标移动、被采集或消失后，记录仍可用来复盘；地皮、障碍和可行走路径会在后续地图功能中接入。
+这些标记表示当时看到的位置。目标移动、被采集或消失后，记录仍可用来复盘。
+
+### 已观测地皮
+
+“显示已观测地皮”默认打开。每个色块是一格 4×4 世界单位的地皮，颜色按草地、森林、岩地、沼泽、水域和其他地皮分组；指向色块可以查看原始地皮名和坐标。未采集的位置留空，关闭开关即可只看轨迹和目标。地皮颜色用于识别区域，通行判断还需结合障碍等数据。
+
+轨迹接口的 `terrain` 包含 `tile_size: 4`、`tiles` 和 `truncated`。每格包含 `x`、`z`、`tile`、Unix 时间 `last_seen` 和 `last_sequence`。同一格按最新观测顺序更新类型；投影最多保留最近观测到的 2,500 格，超出时设置 `truncated`，原始回放仍保留完整快照。旧回放没有地皮时返回空列表。`bounds` 仍只包含玩家轨迹，网页会把显示的格边缘纳入绘图范围。
+
+采集器 0.2.0 起提供地皮中心。更新已有安装时重新复制采集器文件夹，再进入世界；已有玩家轨迹和目标标记可继续回看。
 
 ## 探索记录
 

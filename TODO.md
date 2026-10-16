@@ -27,7 +27,8 @@
 - [x] 实时跟随时记录连续坐标、观测和方向建议，按世界与会话保存本机 JSONL 回放，并支持重启后下载。 / Record successive positions, observations, and suggestions during live following, save local JSONL replays per world/session, and download them after restarting.
 - [x] 显示实时探索轨迹、起点和最新位置，并能打开已保存回放的轨迹；采集间隔与位置跳变处分段。 / Show live trails with start/latest positions, open trails from saved replays, and split lines at capture gaps and position jumps.
 - [x] 在实时与历史轨迹图上标记已见目标位置，显示最近看到的时间，以及相对最新玩家观测的方向和直线距离。 / Mark observed targets on live and saved trails, with last sighting time, direction, and straight-line distance from the latest player observation.
-- [ ] 接入已探索地皮、可通行地图与路径重规划。 / Add explored tiles, a walkable map, and route replanning.
+- [x] 采集附近地图已揭示格的地皮中心与类型，在实时和历史轨迹下显示地皮底图。 / Collect centers and types of nearby revealed tiles and show a terrain layer under live and saved trails.
+- [ ] 接入可通行判断、障碍与路径重规划。 / Add walkability checks, obstacles, and route replanning.
 
 ## 1. 生成数据校对 / Generation data
 
@@ -48,7 +49,7 @@
 ## 4. 路线与地图推理 / Route and map reasoning
 
 - [ ] 加入 task 的起终点环路、房间内连接、道路和岛屿连接。 / Add task start/end loops, room connections, roads, and island links.
-- [ ] 加入坐标、视野范围、移动代价和路线重规划。 / Add coordinates, view range, movement costs, and route replanning.
+- [ ] 利用坐标和地皮观测，加入视野范围、移动代价和路线重规划。 / Use position and terrain observations to add view range, movement costs, and route replanning.
 
 ## 5. 游戏内展示 / In-game display
 

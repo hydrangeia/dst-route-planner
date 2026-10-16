@@ -39,7 +39,13 @@ def _from_lua(value):
     return value
 
 
-def _make_stub(*, dedicated: bool = False, player_present: bool = True):
+def _make_stub(
+    *,
+    dedicated: bool = False,
+    player_present: bool = True,
+    visibility_mode: str = "point",
+    has_tile_center_api: bool = True,
+):
     lines: list[str] = []
     sim_callbacks = []
     lua = LuaRuntime(unpack_returned_tuples=True)
@@ -56,11 +62,20 @@ def _make_stub(*, dedicated: bool = False, player_present: bool = True):
     lua.execute(
         """
         local function make_map()
+            local origin_x, origin_z = 101, -53
+            local tile_reads = {}
             return {
+                tile_reads = tile_reads,
                 GetTileXYAtPoint = function(self, x, y, z)
-                    return math.floor(x / 4), math.floor(z / 4)
+                    return math.floor((x - origin_x) / 4), math.floor((z - origin_z) / 4)
+                end,
+                GetTileCenterPoint = function(self, tx, ty)
+                    return origin_x + tx * 4 + 2, 0, origin_z + ty * 4 + 2
                 end,
                 GetTileAtPoint = function(self, x, y, z)
+                    tile_reads[#tile_reads + 1] = { x = x, z = z }
+                    local tx, ty = self:GetTileXYAtPoint(x, y, z)
+                    if tx == -24 and ty == 13 then return 65535 end
                     if x <= -10 then return 3 end
                     if x >= 4 then return 2 end
                     return 1
@@ -68,11 +83,13 @@ def _make_stub(*, dedicated: bool = False, player_present: bool = True):
             }
         end
 
-        function make_world(world_id, world_kind)
+        function make_world(world_id, world_kind, omit_center_api)
+            local map = make_map()
+            if omit_center_api then map.GetTileCenterPoint = nil end
             return {
                 worldprefab = world_kind,
                 meta = { session_identifier = world_id },
-                Map = make_map(),
+                Map = map,
                 DoPeriodicTask = function(self, period, callback)
                     self.period = period
                     self.callback = callback
@@ -80,21 +97,26 @@ def _make_stub(*, dedicated: bool = False, player_present: bool = True):
             }
         end
 
-        function make_player(x, y, z, use_visibility_wrapper)
+        function make_player(x, y, z, visibility_mode)
             local player = {
                 Transform = {
                     GetWorldPosition = function(self) return x, y, z end,
                 },
                 IsValid = function(self) return true end,
             }
-            if use_visibility_wrapper then
+            if visibility_mode == "point" or visibility_mode == "tile" then
                 player.CanSeePointOnMiniMap = function(self, px, py, pz)
                     return px * px + pz * pz <= 12 * 12 and px > -10
                 end
-            else
+            end
+            if visibility_mode == "tile" then
+                player.CanSeeTileOnMiniMap = function(self, tx, ty)
+                    return tx % 2 == 0
+                end
+            elseif visibility_mode == "explorer" then
                 player.player_classified = {
                     MapExplorer = {
-                        IsTileSeeable = function(self, tx, ty) return tx >= -2 end,
+                        IsTileSeeable = function(self, tx, ty) return tx >= -26 end,
                     },
                 }
             end
@@ -138,10 +160,10 @@ def _make_stub(*, dedicated: bool = False, player_present: bool = True):
             "entities": lua.table(),
         }
     )
-    world = lua.globals().make_world("forest-session-1", "forest")
+    world = lua.globals().make_world("forest-session-1", "forest", not has_tile_center_api)
     g["TheWorld"] = world
     if player_present:
-        g["ThePlayer"] = lua.globals().make_player(0, 0, 0, True)
+        g["ThePlayer"] = lua.globals().make_player(0, 0, 0, visibility_mode)
     g["GLOBAL"] = g
     lua.globals()["GLOBAL"] = g
     lua.execute((MOD_ROOT / "collector.lua").read_text(encoding="utf-8"))
@@ -249,6 +271,70 @@ def test_stub_emits_eight_world_axis_sectors_and_only_observable_entities() -> N
 
 
 @pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_terrain_uses_map_tile_centers_and_only_reads_revealed_noninvalid_tiles() -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub(visibility_mode="tile")
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    first = _snapshot(runtime["lines"])
+
+    terrain = first["terrain"]
+    assert terrain["tile_size"] == 4
+    tiles = terrain["tiles"]
+    assert 0 < len(tiles) <= 256
+    assert [(tile["x"], tile["z"]) for tile in tiles] == sorted(
+        (tile["x"], tile["z"]) for tile in tiles
+    )
+    assert len({(tile["x"], tile["z"]) for tile in tiles}) == len(tiles)
+    assert all((tile["x"] - 103) % 8 == 0 for tile in tiles)
+    assert all(
+        tile["x"] * tile["x"] + tile["z"] * tile["z"] <= 16 * 16
+        for tile in tiles
+    )
+    # The real tile containing the player is centered at (-1, 1) because the
+    # test map has a nonzero origin; a world-coordinate / 4 guess misses it.
+    assert any(tile["x"] == -1 and tile["z"] == 1 for tile in tiles)
+    # CanSeeTileOnMiniMap takes precedence over the narrower point wrapper.
+    assert any(tile["x"] == 15 and tile["z"] == 1 for tile in tiles)
+    # The visible INVALID cell is queried, then removed from the output.
+    assert not any(tile["x"] == 7 and tile["z"] == 1 for tile in tiles)
+    # The hidden center at (3, 1) has an odd x index and must never be queried.
+    reads = _from_lua(runtime["world"]["Map"]["tile_reads"])
+    assert not any(read["x"] == 3 and read["z"] == 1 for read in reads)
+
+    validate_snapshot(first)
+
+    runtime["g"]["ThePlayer"] = runtime["lua"].globals().make_player(
+        0.2, 0, 0.2, "tile"
+    )
+    runtime["world"]["callback"]()
+    second = _snapshot(runtime["lines"])
+    assert second["terrain"]["tiles"] == tiles
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_terrain_falls_back_to_point_visibility_and_omits_it_without_center_api() -> None:
+    runtime = _make_stub(visibility_mode="point")
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+    assert snapshot["terrain"]["tiles"]
+    assert all(
+        tile["x"] * tile["x"] + tile["z"] * tile["z"] <= 12 * 12
+        and tile["x"] > -10
+        for tile in snapshot["terrain"]["tiles"]
+    )
+
+    without_centers = _make_stub(has_tile_center_api=False)
+    without_centers["sim_callbacks"][0](without_centers["world"])
+    without_centers["world"]["callback"]()
+    old_snapshot = _snapshot(without_centers["lines"])
+    assert "terrain" not in old_snapshot
+    assert old_snapshot["current"].get("tile_types")
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
 def test_stub_waits_for_player_and_resets_session_for_player_and_world_changes() -> None:
     runtime = _make_stub(player_present=False)
     lua = runtime["lua"]
@@ -256,7 +342,7 @@ def test_stub_waits_for_player_and_resets_session_for_player_and_world_changes()
     runtime["world"]["callback"]()
     assert runtime["lines"] == []
 
-    runtime["g"]["ThePlayer"] = lua.globals().make_player(0, 0, 0, True)
+    runtime["g"]["ThePlayer"] = lua.globals().make_player(0, 0, 0, "point")
     runtime["world"]["callback"]()
     first = _snapshot(runtime["lines"])
     runtime["world"]["callback"]()
@@ -265,7 +351,7 @@ def test_stub_waits_for_player_and_resets_session_for_player_and_world_changes()
     assert second["sequence"] == 2
     assert first["session_id"] == second["session_id"]
 
-    runtime["g"]["ThePlayer"] = lua.globals().make_player(1, 0, 0, True)
+    runtime["g"]["ThePlayer"] = lua.globals().make_player(1, 0, 0, "point")
     runtime["world"]["callback"]()
     replaced_player = _snapshot(runtime["lines"])
     assert replaced_player["sequence"] == 1
@@ -285,7 +371,7 @@ def test_stub_waits_for_player_and_resets_session_for_player_and_world_changes()
 @pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
 def test_stub_falls_back_to_map_explorer_revealed_tiles_and_skips_dedicated_servers() -> None:
     runtime = _make_stub()
-    runtime["g"]["ThePlayer"] = runtime["lua"].globals().make_player(0, 0, 0, False)
+    runtime["g"]["ThePlayer"] = runtime["lua"].globals().make_player(0, 0, 0, "explorer")
     runtime["sim_callbacks"][0](runtime["world"])
     runtime["world"]["callback"]()
     snapshot = _snapshot(runtime["lines"])
@@ -295,6 +381,12 @@ def test_stub_falls_back_to_map_explorer_revealed_tiles_and_skips_dedicated_serv
         for tile in observation.get("tile_types", [])
     }
     assert "SECRET" not in tile_types
+    assert snapshot["terrain"]["tiles"]
+    assert all(
+        round((tile["x"] - 103) / 4) >= -26
+        for tile in snapshot["terrain"]["tiles"]
+    )
+    assert all(tile["tile"] != "SECRET" for tile in snapshot["terrain"]["tiles"])
 
     dedicated = _make_stub(dedicated=True)
     dedicated["sim_callbacks"][0](dedicated["world"])
@@ -316,4 +408,5 @@ def test_empty_observations_and_quoted_identity_are_valid_external_json() -> Non
     assert result["world_id"] == "world's quoted identity"
     assert result["current"] == {"note": ""}
     assert all(value == {"note": ""} for value in result["directions"].values())
+    assert "terrain" not in result
     validate_snapshot(result)

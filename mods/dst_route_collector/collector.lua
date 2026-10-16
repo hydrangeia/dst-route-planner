@@ -2,6 +2,8 @@ local G = GLOBAL
 
 local SAMPLE_RADIUS = 16
 local CURRENT_RADIUS = 4
+local TILE_SIZE = 4
+local MAX_TERRAIN_TILES = 256
 local SAMPLE_STEP = 4
 local SAMPLE_RADIUS_SQ = SAMPLE_RADIUS * SAMPLE_RADIUS
 local CURRENT_RADIUS_SQ = CURRENT_RADIUS * CURRENT_RADIUS
@@ -97,6 +99,70 @@ end
 local function tile_name(map, x, z)
     local tile = map:GetTileAtPoint(x, 0, z)
     return TILE_NAMES[tile]
+end
+
+local function visible_tile_center(player, map, tx, ty)
+    if player.CanSeeTileOnMiniMap ~= nil then
+        if player:CanSeeTileOnMiniMap(tx, ty) ~= true then
+            return nil
+        end
+        local center_x, _, center_z = map:GetTileCenterPoint(tx, ty)
+        if type(center_x) == "number" and type(center_z) == "number" then
+            return center_x, center_z
+        end
+        return nil
+    end
+
+    local center_x, _, center_z = map:GetTileCenterPoint(tx, ty)
+    if type(center_x) == "number" and type(center_z) == "number"
+        and can_see_point(player, map, center_x, center_z) then
+        return center_x, center_z
+    end
+    return nil
+end
+
+local function sample_terrain(player, map, x, z)
+    if map.GetTileCenterPoint == nil then
+        return nil
+    end
+
+    local player_tx, player_ty = map:GetTileXYAtPoint(x, 0, z)
+    if type(player_tx) ~= "number" or type(player_ty) ~= "number" then
+        return nil
+    end
+
+    local tiles = {}
+    local invalid_tile = G.WORLD_TILES ~= nil and G.WORLD_TILES.INVALID or nil
+    for offset_x = -SAMPLE_RADIUS / TILE_SIZE, SAMPLE_RADIUS / TILE_SIZE do
+        for offset_y = -SAMPLE_RADIUS / TILE_SIZE, SAMPLE_RADIUS / TILE_SIZE do
+            local tx = player_tx + offset_x
+            local ty = player_ty + offset_y
+            local center_x, center_z = visible_tile_center(player, map, tx, ty)
+            if center_x ~= nil and center_z ~= nil then
+                local dx = center_x - x
+                local dz = center_z - z
+                if dx * dx + dz * dz <= SAMPLE_RADIUS_SQ then
+                    local tile = map:GetTileAtPoint(center_x, 0, center_z)
+                    local name = TILE_NAMES[tile]
+                    if name ~= nil and name ~= "INVALID" and tile ~= invalid_tile
+                        and #tiles < MAX_TERRAIN_TILES then
+                        table.insert(tiles, { x = center_x, z = center_z, tile = name })
+                    end
+                end
+            end
+        end
+    end
+
+    if #tiles == 0 then
+        return nil
+    end
+    table.sort(tiles, function(left, right)
+        if left.x ~= right.x then
+            return left.x < right.x
+        end
+        return left.z < right.z
+    end)
+    return { tile_size = TILE_SIZE, tiles = tiles }
 end
 
 local function direction_for_offset(dx, dz)
@@ -265,6 +331,11 @@ local function sample(world, player, sequence, world_id, session_id)
         current = finalize_observation(current),
         directions = direction_observations,
     }
+
+    local terrain = sample_terrain(player, map, x, z)
+    if terrain ~= nil then
+        snapshot.terrain = terrain
+    end
 
     local nonempty_landmarks = sorted_landmarks(landmarks)
     if nonempty_landmarks ~= nil then

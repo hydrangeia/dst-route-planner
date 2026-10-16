@@ -1,7 +1,8 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const source = fs.readFileSync("dst_route_planner/static/app.html", "utf8").match(/<script>([\s\S]*?)<\/script>/)[1].replace("    initialize();", "");
+const appHtml = fs.readFileSync("dst_route_planner/static/app.html", "utf8");
+const source = appHtml.match(/<script>([\s\S]*?)<\/script>/)[1].replace("    initialize();", "");
 const elements = new Map();
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
@@ -25,14 +26,18 @@ function trailPoint(sequence, capturedAt, x, z) { return {sequence, captured_at:
 function remembered(prefab, x, z, firstSequence, lastSequence, firstSeen = firstSequence, lastSeen = lastSequence) {
   return {prefab, x, z, first_seen: firstSeen, last_seen: lastSeen, first_sequence: firstSequence, last_sequence: lastSequence};
 }
-function trailPayload(summary, points, landmarks = undefined, landmarksTruncated = false) {
+function terrainCell(x, z, tile, lastSequence, lastSeen = lastSequence) {
+  return {x, z, tile, last_seen: lastSeen, last_sequence: lastSequence};
+}
+function trailPayload(summary, points, landmarks = undefined, landmarksTruncated = false, terrain = undefined) {
   const xs = points.map(point => point.x), zs = points.map(point => point.z);
   return {
     trail_version: 1, id: summary.id, world_id: summary.world_id,
     world_kind: summary.world_kind, session_id: summary.session_id,
     frame_count: points.length, points,
     bounds: points.length ? {min_x: Math.min(...xs), max_x: Math.max(...xs), min_z: Math.min(...zs), max_z: Math.max(...zs)} : null,
-    ...(landmarks === undefined ? {} : {landmarks, landmarks_truncated: landmarksTruncated})
+    ...(landmarks === undefined ? {} : {landmarks, landmarks_truncated: landmarksTruncated}),
+    ...(terrain === undefined ? {} : {terrain})
   };
 }
 run('state.options={targets:["panflute","moonbase"],tile_types:["GRASS"],prefabs:["grass"],directions:DIRS.slice()}; live.following=true;');
@@ -64,6 +69,7 @@ function frame(session = "one", sequence = 1, recording = null, worldId = "world
   };
   if (recording) result.recording = recording;
   if (Object.prototype.hasOwnProperty.call(trail, "landmarks")) result.snapshot.landmarks = trail.landmarks;
+  if (Object.prototype.hasOwnProperty.call(trail, "terrain")) result.snapshot.terrain = trail.terrain;
   return result;
 }
 const projection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:10,z:0},{sequence:3,captured_at:3,x:0,z:10}])");
@@ -96,6 +102,32 @@ assert.ok(element("trailSvg").innerHTML.includes('class="trail-route"'));
 assert.ok(element("trailSvg").innerHTML.includes('class="trail-first"'));
 assert.ok(element("trailSvg").innerHTML.includes('class="trail-latest"'));
 assert.ok(element("trailSvg").innerHTML.includes("起点") && element("trailSvg").innerHTML.includes("最新位置"));
+assert.equal(element("terrainToggle").checked, true, "observed terrain is on by default");
+assert.ok(appHtml.includes('id="terrainLegend"') && appHtml.includes('aria-label="地皮图例"'), "the map has a named terrain legend");
+for (const label of ["草地", "森林", "岩地", "沼泽", "水域", "其他"]) assert.ok(appHtml.includes(">" + label + "</span>"), "legend includes " + label);
+assert.ok(appHtml.includes(".terrain-water { background: #83b9c9; fill: #83b9c9; }"), "SVG terrain classes define fill colors");
+const terrainProjection = run('projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:4,z:0}],[],[{x:0,z:0,tile:"GRASS"},{x:4,z:0,tile:"OCEAN"},{x:8,z:0,tile:"OTHER"}])');
+assert.ok(Math.abs((terrainProjection.points[1].x - terrainProjection.points[0].x) - 4 * terrainProjection.scale) < 1e-9,
+  "terrain cells and player positions use the same X/Z scale");
+run('trailState.mode="live";trailState.points=[{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:4,z:0}];trailState.terrainTiles=[{x:0,z:0,tile:"GRASS",last_seen:1,last_sequence:1},{x:4,z:0,tile:"OCEAN",last_seen:2,last_sequence:2},{x:8,z:0,tile:"<img&x>",last_seen:3,last_sequence:3}];trailState.terrainAvailable=true;trailState.terrainTruncated=false;trailState.terrainError="";renderTrail()');
+const terrainSvg = element("trailSvg").innerHTML;
+assert.equal((terrainSvg.match(/class="terrain-cell/g) || []).length, 3);
+assert.ok(terrainSvg.includes("terrain-grass") && terrainSvg.includes("terrain-water") && terrainSvg.includes("terrain-other"),
+  "known grass and water names are grouped, and unknown names stay neutral");
+assert.ok(terrainSvg.includes("&lt;img&amp;x&gt;") && !terrainSvg.includes("<img"), "tile names are escaped inside SVG titles");
+assert.ok(terrainSvg.includes("X 8.0 / Z 0.0"), "tile titles include world coordinates");
+assert.ok(terrainSvg.indexOf('class="terrain-cell') < terrainSvg.indexOf('class="trail-route-halo"'), "terrain is drawn below the trail halo");
+const grassRect = terrainSvg.match(/class="terrain-cell terrain-grass" x="[^"]*" y="[^"]*" width="([^"]*)" height="([^"]*)"/);
+assert.ok(grassRect && Math.abs(Number(grassRect[1]) - Number(grassRect[2])) < 1e-9, "four-unit tile cells render as squares");
+const renderedWidth = Number(grassRect[1]);
+assert.ok(Math.abs(renderedWidth - 4 * terrainProjection.scale) < 0.02, "cell edges use the same scale as coordinate movement");
+element("terrainToggle").checked = false;
+element("terrainToggle").listeners.change();
+assert.ok(!element("trailSvg").innerHTML.includes("terrain-cell"), "the terrain toggle hides cells");
+assert.ok(element("terrainStatus").textContent.includes("3 格") && element("terrainStatus").textContent.includes("已隐藏"));
+element("terrainToggle").checked = true;
+element("terrainToggle").listeners.change();
+run('trailState.mode="idle";trailState.points=[];trailState.terrainTiles=[];trailState.terrainAvailable=false;trailState.terrainTruncated=false;trailState.terrainError="";renderTrail()');
 const segmentLengths = JSON.parse(JSON.stringify(run(`splitTrailSegments([
   {sequence:1,captured_at:1,x:0,z:0}, {sequence:2,captured_at:6,x:64,z:0},
   {sequence:3,captured_at:11,x:65,z:0}, {sequence:4,captured_at:17,x:65,z:0},
@@ -152,6 +184,39 @@ context.validationPayload = trailPayload(validationSummary, []);
 const legacyTrail = JSON.parse(JSON.stringify(run("validateTrailPayload(validationPayload, validationSummary)")));
 assert.deepEqual(legacyTrail.landmarks, [], "version 1 historical trails without optional landmarks remain supported");
 assert.equal(legacyTrail.landmarksTruncated, false);
+assert.equal(legacyTrail.terrainTiles.length, 0, "older trail payloads without terrain remain valid");
+assert.equal(legacyTrail.terrainAvailable, false);
+const validTerrainPayload = trailPayload(validationSummary, [trailPoint(1, 10, 2, 3)], undefined, false,
+  {tile_size: 4, tiles: [terrainCell(2, 3, "GRASS", 1, 10)], truncated: false});
+context.validationPayload = validTerrainPayload;
+const normalizedTerrainPayload = JSON.parse(run("JSON.stringify(validateTrailPayload(validationPayload, validationSummary))"));
+assert.equal(normalizedTerrainPayload.terrainAvailable, true);
+assert.deepEqual(normalizedTerrainPayload.terrainTiles, [terrainCell(2, 3, "GRASS", 1, 10)]);
+const malformedTerrainPayload = trailPayload(validationSummary, [trailPoint(1, 10, 2, 3)], undefined, false,
+  {tile_size: true, tiles: [], truncated: false});
+context.validationPayload = malformedTerrainPayload;
+const malformedTerrainResult = JSON.parse(run("JSON.stringify(validateTrailPayload(validationPayload, validationSummary))"));
+assert.equal(malformedTerrainResult.points.length, 1, "bad optional terrain does not discard player trail points");
+assert.ok(malformedTerrainResult.terrainError.includes("地皮"));
+assert.equal(run('terrainCategory("__proto__")'), "other");
+assert.equal(run('terrainCategory("constructor")'), "other");
+context.terrainSnapshot = {sequence: 1, captured_at: 10, terrain: {tile_size: true, tiles: []}};
+assert.throws(() => run("normalizeSnapshotTerrain(terrainSnapshot)"), undefined, "boolean tile_size is rejected for live snapshots");
+context.terrainSnapshot = {sequence: 1, captured_at: 10, terrain: {tile_size: 4, tiles: [
+  {x: 1, z: 2, tile: "GRASS"}, {x: 1, z: 2, tile: "FOREST"}
+]}};
+assert.throws(() => run("normalizeSnapshotTerrain(terrainSnapshot)"), undefined, "duplicate live snapshot coordinates invalidate only terrain");
+context.terrainSnapshot = {sequence: 1, captured_at: 10, terrain: {tile_size: 4, tiles: [{x: 1, z: 2, tile: "   "}]}};
+assert.throws(() => run("normalizeSnapshotTerrain(terrainSnapshot)"), undefined, "empty tile identifiers are rejected");
+context.manyTerrain = Array.from({length: 2501}, (_, x) => terrainCell(x, 0, "GRASS", 9, x));
+const cappedTerrain = JSON.parse(run("JSON.stringify(mergeTrailTerrain([], manyTerrain, false, false))"));
+assert.equal(cappedTerrain.tiles.length, 2500);
+assert.deepEqual([cappedTerrain.tiles[0].x, cappedTerrain.tiles[2499].x], [0, 2499], "terrain overflow keeps deterministic (-sequence,x,z) order");
+assert.equal(cappedTerrain.truncated, true);
+assert.equal(run("mergeTrailTerrain([manyTerrain[0]], [], true, false).truncated"), true, "terrain truncation stays sticky");
+run('trailState.mode="history";trailState.points=[];trailState.terrainTiles=[];trailState.terrainAvailable=false;trailState.terrainError="";renderTrail()');
+assert.ok(element("terrainStatus").textContent.includes("没有地皮数据"));
+run('trailState.mode="idle";renderTrail()');
 const malformedLandmarkPayload = trailPayload(validationSummary, [trailPoint(1, 10, 2, 3)], [
   {prefab: "panflute", x: Number.NaN, z: 4, first_seen: 1, last_seen: 2, first_sequence: 0, last_sequence: 1}
 ]);
@@ -406,9 +471,12 @@ run('live.following=true;state.result=null;');
     trailCalls += 1;
     return new Promise(resolve => { resolveLiveTrail = resolve; });
   };
-  context.reply = frame("trail-session", 1, liveTrailSummary, "trail-world", {x: 1, z: 1, capturedAt: 100, landmarks: [{prefab: "panflute", x: 1, z: 1}]});
+  context.reply = frame("trail-session", 1, liveTrailSummary, "trail-world", {x: 1, z: 1, capturedAt: 100,
+    landmarks: [{prefab: "panflute", x: 1, z: 1}], terrain: {tile_size: 4, tiles: [{x: 4, z: 1, tile: "GRASS"}]}});
   run("applyLiveResult(reply)");
-  context.reply = frame("trail-session", 2, {...liveTrailSummary, frame_count: 2}, "trail-world", {x: 2, z: 1, capturedAt: 101, landmarks: [{prefab: "panflute", x: 1, z: 1}, {prefab: "panflute", x: 2, z: 1}]});
+  context.reply = frame("trail-session", 2, {...liveTrailSummary, frame_count: 2}, "trail-world", {x: 2, z: 1, capturedAt: 101,
+    landmarks: [{prefab: "panflute", x: 1, z: 1}, {prefab: "panflute", x: 2, z: 1}],
+    terrain: {tile_size: 4, tiles: [{x: 4, z: 1, tile: "FOREST"}]}});
   run("applyLiveResult(reply)");
   context.reply = frame("trail-session", 3, liveTrailSummary, "trail-world", {x: 3, z: 1, capturedAt: 102});
   run("applyLiveResult(reply)");
@@ -419,7 +487,7 @@ run('live.following=true;state.result=null;');
   ], [
     remembered("panflute", 1, 1, 0, 1, 99, 100),
     remembered("panflute", 9, 9, 0, 0, 99, 99)
-  ])));
+  ], false, {tile_size: 4, tiles: [terrainCell(4, 1, "MARSH", 1, 99), terrainCell(20, 1, "OCEAN", 0, 99)], truncated: false})));
   await settle();
   const mergedLivePoints = JSON.parse(run("JSON.stringify(trailState.points)"));
   assert.deepEqual(mergedLivePoints.map(point => point.sequence), [0, 1, 2, 3]);
@@ -430,6 +498,11 @@ run('live.following=true;state.result=null;');
     firstSeen: mergedPosition.first_seen, lastSeen: mergedPosition.last_seen}, {first: 0, last: 2, firstSeen: 99, lastSeen: 101},
     "historical and subsequently accepted live sightings merge first/last sequence endpoints");
   assert.ok(mergedLiveLandmarks.some(item => item.x === 2) && mergedLiveLandmarks.some(item => item.x === 9));
+  const mergedLiveTerrain = JSON.parse(run("JSON.stringify(trailState.terrainTiles)"));
+  const terrainAtFour = mergedLiveTerrain.find(item => item.x === 4 && item.z === 1);
+  assert.deepEqual({tile: terrainAtFour.tile, sequence: terrainAtFour.last_sequence}, {tile: "FOREST", sequence: 2},
+    "live tiles with a newer sequence win over stored history at the same coordinate");
+  assert.ok(mergedLiveTerrain.some(item => item.x === 20 && item.tile === "OCEAN"));
   context.reply = frame("trail-session", 3, {...liveTrailSummary, frame_count: 3}, "trail-world", {x: 9, z: 1, capturedAt: 102});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.live.localPoints.length"), 3, "local trail points deduplicate by sequence");
@@ -446,17 +519,22 @@ run('live.following=true;state.result=null;');
     trailCallCounts.set(id, (trailCallCounts.get(id) || 0) + 1);
     return new Promise(resolve => pendingTrails.set(id, resolve));
   };
-  context.reply = frame("same-session", 1, raceA, "race-a", {x: 500, z: 0, capturedAt: 200, landmarks: [{prefab: "panflute", x: 500, z: 0}]});
+  context.reply = frame("same-session", 1, raceA, "race-a", {x: 500, z: 0, capturedAt: 200,
+    landmarks: [{prefab: "panflute", x: 500, z: 0}], terrain: {tile_size: 4, tiles: [{x: 500, z: 0, tile: "GRASS"}]}});
   run("applyLiveResult(reply)");
-  context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 200, landmarks: [{prefab: "panflute", x: 50, z: 0}]});
+  context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 200,
+    landmarks: [{prefab: "panflute", x: 50, z: 0}], terrain: {tile_size: 4, tiles: [{x: 50, z: 0, tile: "MARSH"}]}});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.identity"), "race-b\u0000forest\u0000same-session");
-  pendingTrails.get(raceA.id)(apiResponse(trailPayload(raceA, [trailPoint(0, 1, 500, 0)], [remembered("panflute", 500, 0, 0, 0)])));
+  pendingTrails.get(raceA.id)(apiResponse(trailPayload(raceA, [trailPoint(0, 1, 500, 0)], [remembered("panflute", 500, 0, 0, 0)], false,
+    {tile_size: 4, tiles: [terrainCell(500, 0, "GRASS", 0, 1)], truncated: false})));
   await settle();
   assert.equal(run("trailState.id"), raceB.id, "late world trail responses cannot replace the active world");
   assert.ok(JSON.parse(run("JSON.stringify(trailState.points)")).every(point => point.x !== 500));
   assert.ok(JSON.parse(run("JSON.stringify(trailState.landmarks)")).every(item => item.x !== 500),
     "a late response from another world cannot replace remembered sightings");
+  assert.ok(JSON.parse(run("JSON.stringify(trailState.terrainTiles)")).every(item => item.x !== 500),
+    "a late response from another world cannot replace observed terrain");
   pendingTrails.get(raceB.id)({ok: false, status: 500, json: async () => ({error: "trail unavailable"})});
   await settle();
   assert.ok(element("trailStatus").textContent.includes("trail unavailable"));
@@ -660,6 +738,65 @@ run('live.following=true;state.result=null;');
   assert.ok(element("liveCheckStatus").textContent.includes("重启工具并使用 --ui"), "retry succeeds after a network or validation failure");
   assert.ok(element("liveCheckStatus").textContent.includes("日志路径：未配置"));
   assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "retries also preserve live, observation, plan, replay, and trail state");
+
+  context.fetch = async () => { throw new Error("unexpected terrain-test fetch"); };
+  run('trailState.mode="live";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;trailState.points=[];trailState.error="";trailState.loading=false;trailState.trimmed=false;trailState.requests.clear();trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],localTerrainAvailable:false,storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};trailState.landmarks=[];trailState.landmarksTruncated=false;trailState.landmarkError="";trailState.terrainTiles=[];trailState.terrainAvailable=false;trailState.terrainTruncated=false;trailState.terrainError="";state.liveRecording=null;state.result=null;state.explorations=[];live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;');
+  context.reply = frame("forest-session", 1, null, "forest-world", {x: 4, z: 5, capturedAt: 100,
+    terrain: {tile_size: 4, tiles: [{x: 4, z: 4, tile: "GRASS"}]}});
+  run("applyLiveResult(reply)");
+  assert.equal(run("trailState.live.identity"), "forest-world\u0000forest\u0000forest-session");
+  assert.ok(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")).some(tile => tile.tile === "GRASS"));
+
+  context.reply = frame("cave-session", 1, null, "cave-world", {worldKind: "cave", x: 21, z: 22, capturedAt: 101,
+    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "ROCKY"}]}});
+  context.reply.status = "unsupported_world";
+  context.reply.age_seconds = 0.5;
+  run("applyLiveResult(reply)");
+  assert.equal(run("live.key"), "cave-world\u0000cave\u0000cave-session", "fresh unsupported snapshots advance the live identity");
+  assert.equal(run("live.sequence"), 1);
+  assert.equal(run("trailState.live.identity"), "cave-world\u0000cave\u0000cave-session");
+  assert.equal(run("trailState.live.localPoints.length"), 1, "a world switch drops forest positions from the active trail");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")), [terrainCell(20, 20, "ROCKY", 1, 101)],
+    "the cave becomes the active terrain identity");
+  assert.ok(element("livePosition").textContent.includes("洞穴 · 玩家坐标 X 21.0 / Z 22.0"));
+  assert.equal(run("state.result"), null, "unsupported worlds still do not create direction suggestions");
+
+  context.reply = frame("cave-session", 2, null, "cave-world", {worldKind: "cave", x: 99, z: 99, capturedAt: 102,
+    terrain: {tile_size: 4, tiles: [{x: 24, z: 20, tile: "OCEAN"}]}});
+  context.reply.status = "unsupported_world";
+  context.reply.age_seconds = 8;
+  run("applyLiveResult(reply)");
+  assert.ok(element("liveStatus").textContent.includes("采集已暂停"));
+  assert.ok(element("livePosition").textContent.includes("X 21.0 / Z 22.0"), "expired cave coordinates are not shown as current");
+  assert.equal(run("live.sequence"), 1, "expired unsupported data does not advance the live sequence");
+  assert.equal(run("trailState.live.localPoints.length"), 1);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")), [terrainCell(20, 20, "ROCKY", 1, 101)],
+    "expired unsupported terrain is ignored");
+
+  context.reply = frame("cave-session", 2, null, "cave-world", {worldKind: "cave", x: 22, z: 23, capturedAt: 1000,
+    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "MARSH"}]}});
+  context.reply.status = "unsupported_world";
+  context.reply.age_seconds = 0.4;
+  run("applyLiveResult(reply)");
+  context.reply = frame("cave-session", 3, null, "cave-world", {worldKind: "cave", x: 23, z: 24, capturedAt: 50,
+    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "FOREST"}]}});
+  context.reply.status = "unsupported_world";
+  context.reply.age_seconds = 0.3;
+  run("applyLiveResult(reply)");
+  let caveTiles = JSON.parse(run("JSON.stringify(trailState.live.localTerrain)"));
+  assert.deepEqual({tile: caveTiles[0].tile, sequence: caveTiles[0].last_sequence, seen: caveTiles[0].last_seen},
+    {tile: "FOREST", sequence: 3, seen: 50}, "same-coordinate terrain follows sequence even when capture time moves backwards");
+  assert.equal(run("live.sequence"), 3);
+
+  context.reply = frame("cave-session", 4, null, "cave-world", {worldKind: "cave", x: 24, z: 25, capturedAt: 60,
+    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "GRASS"}, {x: 20, z: 20, tile: "MARSH"}]}});
+  run("applyLiveResult(reply)");
+  caveTiles = JSON.parse(run("JSON.stringify(trailState.live.localTerrain)"));
+  assert.equal(caveTiles[0].tile, "FOREST", "a malformed optional snapshot leaves previously observed terrain intact");
+  assert.ok(run("trailState.terrainError").includes("地皮"));
+  assert.equal(run("trailState.live.localPoints.length"), 4, "malformed terrain does not discard a valid player position");
+  assert.equal(run("state.result.directions[0].direction"), "north", "malformed terrain does not discard current recommendations");
+  assert.ok(element("terrainStatus").textContent.includes("地皮读取失败"));
 
   console.log("Live UI: replay recording, trail rendering and races, and read-only connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

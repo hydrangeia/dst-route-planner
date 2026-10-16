@@ -42,6 +42,8 @@ While live following is active, the tool saves newly received snapshots locally,
 
 The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists the last sighting time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there.
 
+“显示已观测地皮” (show observed tiles) adds the collected terrain beneath the trail, with colors for grass, forest, rock, marsh, water, and other tiles. The layer grows as you move and stays in saved replays; blank areas have not been collected. Caves also support positions, trails, and terrain recording; direction inference is still to come. Turn it off to view just the trail and targets. To update an existing collector, copy the repository's `mods/dst_route_collector` into the game's `mods/` folder again, then re-enter the world.
+
 ## Manual entry and saved records
 
 1. Choose a target.
@@ -64,7 +66,7 @@ Match room/task clues and use task-graph context to rank exploration directions
   ↓
 The page updates suggestions and straight-line distance to a visible target
   ↓
-New snapshots → local replay → trail showing start, latest position, and observed targets
+New snapshots → local replay → trail with observed tiles, latest position, and observed targets
   ↓
 Saved replay → view its trail or download coordinates, clues, and suggestions
   ↓

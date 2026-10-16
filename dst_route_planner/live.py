@@ -17,6 +17,7 @@ LIVE_MARKER = "DST_ROUTE_PLANNER_LIVE_V1 "
 DEFAULT_TAIL_BYTES = 1024 * 1024
 MAX_IDENTIFIER_LENGTH = 128
 MAX_LANDMARKS = 4096
+MAX_TERRAIN_TILES = 256
 FRESHNESS_SECONDS = 5.0
 MAX_CLOCK_SKEW_SECONDS = 2.0
 
@@ -79,7 +80,7 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
         "current",
         "directions",
     }
-    allowed_fields = required_fields | {"landmarks"}
+    allowed_fields = required_fields | {"landmarks", "terrain"}
     missing_fields = required_fields - set(data)
     if missing_fields:
         names = ", ".join(sorted(missing_fields))
@@ -129,6 +130,37 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
             _identifier(landmark["prefab"], f"landmarks[{index}].prefab")
             _finite_number(landmark["x"], f"landmarks[{index}].x")
             _finite_number(landmark["z"], f"landmarks[{index}].z")
+
+    if "terrain" in data:
+        terrain = _mapping(data["terrain"], "terrain")
+        if set(terrain) != {"tile_size", "tiles"}:
+            raise LiveSnapshotError("terrain must contain exactly tile_size and tiles.")
+        tile_size = _finite_number(terrain["tile_size"], "terrain.tile_size")
+        if tile_size != 4:
+            raise LiveSnapshotError("terrain.tile_size must equal 4.")
+        tiles = terrain["tiles"]
+        if not isinstance(tiles, list):
+            raise LiveSnapshotError("terrain.tiles must be an array.")
+        if len(tiles) > MAX_TERRAIN_TILES:
+            raise LiveSnapshotError(
+                f"terrain.tiles may contain at most {MAX_TERRAIN_TILES} entries."
+            )
+        coordinates: set[tuple[int | float, int | float]] = set()
+        for index, item in enumerate(tiles):
+            tile = _mapping(item, f"terrain.tiles[{index}]")
+            if set(tile) != {"x", "z", "tile"}:
+                raise LiveSnapshotError(
+                    f"terrain.tiles[{index}] must contain exactly x, z, and tile."
+                )
+            _finite_number(tile["x"], f"terrain.tiles[{index}].x")
+            _finite_number(tile["z"], f"terrain.tiles[{index}].z")
+            _identifier(tile["tile"], f"terrain.tiles[{index}].tile")
+            coordinate = (tile["x"], tile["z"])
+            if coordinate in coordinates:
+                raise LiveSnapshotError(
+                    f"terrain.tiles contains duplicate coordinate ({tile['x']!r}, {tile['z']!r})."
+                )
+            coordinates.add(coordinate)
 
     return dict(data)
 

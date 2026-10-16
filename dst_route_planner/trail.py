@@ -5,6 +5,7 @@ from typing import Any
 
 
 MAX_TRAIL_LANDMARKS = 500
+MAX_TRAIL_TERRAIN_TILES = 2500
 
 
 class TrailDataError(ValueError):
@@ -12,7 +13,7 @@ class TrailDataError(ValueError):
 
 
 def project_trail(replay: bytes) -> dict[str, Any]:
-    """Project a validated JSONL replay into ordered positions and landmark sightings."""
+    """Project a validated JSONL replay into player positions, terrain, and sightings."""
     lines = replay.splitlines()
     if not lines:
         raise TrailDataError("journal is empty.")
@@ -21,6 +22,8 @@ def project_trail(replay: bytes) -> dict[str, Any]:
         frames = [json.loads(line.decode("utf-8")) for line in lines[1:]]
         landmarks_by_key: dict[tuple[str, int | float, int | float], dict[str, Any]] = {}
         landmarks_truncated = False
+        terrain_by_key: dict[tuple[int | float, int | float], dict[str, Any]] = {}
+        terrain_truncated = False
         for frame in frames:
             snapshot = frame["snapshot"]
             sequence = snapshot["sequence"]
@@ -67,6 +70,34 @@ def project_trail(replay: bytes) -> dict[str, Any]:
                 }
                 landmarks_truncated = True
 
+            terrain = snapshot.get("terrain")
+            if terrain is not None:
+                for tile in terrain["tiles"]:
+                    x = tile["x"]
+                    z = tile["z"]
+                    terrain_by_key[(x, z)] = {
+                        "x": x,
+                        "z": z,
+                        "tile": tile["tile"],
+                        "last_seen": captured_at,
+                        "last_sequence": sequence,
+                    }
+                # Ranking follows capture order, not wall-clock timestamps.
+                # Trim after each frame so memory stays bounded and the result
+                # matches repeated application of the public retention rule.
+                if len(terrain_by_key) > MAX_TRAIL_TERRAIN_TILES:
+                    ranked_tiles = sorted(
+                        terrain_by_key.values(),
+                        key=lambda item: (
+                            -item["last_sequence"], item["x"], item["z"]
+                        ),
+                    )
+                    retained_tiles = ranked_tiles[:MAX_TRAIL_TERRAIN_TILES]
+                    terrain_by_key = {
+                        (item["x"], item["z"]): item for item in retained_tiles
+                    }
+                    terrain_truncated = True
+
         points = [
             {
                 "sequence": frame["snapshot"]["sequence"],
@@ -95,6 +126,16 @@ def project_trail(replay: bytes) -> dict[str, Any]:
                 ),
             ),
             "landmarks_truncated": landmarks_truncated,
+            "terrain": {
+                "tile_size": 4,
+                "tiles": sorted(
+                    terrain_by_key.values(),
+                    key=lambda item: (
+                        -item["last_sequence"], item["x"], item["z"]
+                    ),
+                ),
+                "truncated": terrain_truncated,
+            },
         }
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise TrailDataError("journal could not be projected as a trail.") from exc
