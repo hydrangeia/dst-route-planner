@@ -541,6 +541,110 @@ def test_live_endpoint_returns_error_for_malformed_latest_snapshot(local_server)
     assert listing == {"explorations": []}
 
 
+def test_live_check_api_is_read_only_and_reports_age_for_caves(local_server, monkeypatch) -> None:
+    base_url, server = local_server
+
+    def a_write_or_plan_is_a_failure(*args, **kwargs):
+        raise AssertionError("live-check must only inspect the existing log")
+
+    monkeypatch.setattr(app, "_plan_request", a_write_or_plan_is_a_failure)
+    monkeypatch.setattr(server.exploration_store, "capture", a_write_or_plan_is_a_failure)
+    disabled_status, _, disabled = _get(base_url, "/api/live-check")
+    assert disabled_status == 200
+    assert disabled == {"check_version": 1, "status": "disabled", "log_path": None}
+
+    log = server.record_store.directory.parent / "client check.log"
+    server.live_log = log
+    missing_status, _, missing = _get(base_url, "/api/live-check")
+    assert missing_status == 200
+    assert missing == {
+        "check_version": 1,
+        "status": "missing_log",
+        "log_path": str(log),
+    }
+
+    log.write_text("ordinary client output\n", encoding="utf-8")
+    waiting_bytes = log.read_bytes()
+    waiting_status, _, waiting = _get(base_url, "/api/live-check")
+    assert waiting_status == 200
+    assert waiting == {
+        "check_version": 1,
+        "status": "waiting",
+        "log_path": str(log),
+    }
+    assert log.read_bytes() == waiting_bytes
+
+    _, _, demo = _get(base_url, "/api/demo")
+    cave = _live_snapshot(
+        demo["directions"], world_kind="cave", sequence=9, captured_at=time.time()
+    )
+    cave["position"].update(x=-11, y=2, z=37.5)
+    _write_live_snapshot(log, cave)
+    fresh_bytes = log.read_bytes()
+    fresh_status, _, fresh = _get(base_url, "/api/live-check")
+    assert fresh_status == 200
+    assert fresh["check_version"] == 1
+    assert fresh["status"] == "live"
+    assert fresh["log_path"] == str(log)
+    assert fresh["age_seconds"] <= 5
+    assert fresh["position"] == cave["position"]
+    assert fresh["world_kind"] == "cave"
+    assert fresh["sequence"] == 9
+    assert "world_id" not in fresh
+    assert "session_id" not in fresh
+    assert log.read_bytes() == fresh_bytes
+    assert not server.exploration_store.directory.exists()
+
+    stale_cave = _live_snapshot(
+        demo["directions"], world_kind="cave", captured_at=time.time() - 8
+    )
+    _write_live_snapshot(log, stale_cave)
+    stale_status, _, stale = _get(base_url, "/api/live-check")
+    assert stale_status == 200
+    assert stale["status"] == "stale"
+    assert stale["age_seconds"] > 5
+    assert stale["world_kind"] == "cave"
+    assert stale["position"] == stale_cave["position"]
+
+    future = _live_snapshot(demo["directions"], captured_at=time.time() + 10)
+    _write_live_snapshot(log, future)
+    future_bytes = log.read_bytes()
+    future_status, _, future_result = _get(base_url, "/api/live-check")
+    assert future_status == 200
+    assert future_result["status"] == "error"
+    assert future_result["error"] == "captured_at is ahead of the local clock."
+    assert "position" not in future_result
+    assert log.read_bytes() == future_bytes
+
+    log.write_text(f"{LIVE_MARKER}{{}}\n", encoding="utf-8")
+    invalid_status, _, invalid = _get(base_url, "/api/live-check")
+    assert invalid_status == 200
+    assert invalid["status"] == "error"
+    assert "snapshot" in invalid["error"]
+
+
+def test_live_check_api_distinguishes_unreadable_logs_from_missing_logs(local_server, monkeypatch) -> None:
+    from dst_route_planner import connection
+
+    base_url, server = local_server
+    log = server.record_store.directory.parent / "unreadable.log"
+    log.write_text("existing log", encoding="utf-8")
+    server.live_log = log
+
+    def fail_to_read(path):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(connection, "read_latest_snapshot", fail_to_read)
+    status, _, result = _get(base_url, "/api/live-check")
+    assert status == 200
+    assert result == {
+        "check_version": 1,
+        "status": "error",
+        "log_path": str(log),
+        "error": "permission denied",
+    }
+
+
 def test_exploration_download_rejects_corrupt_and_oversize_files_without_changing_them(
     local_server, monkeypatch
 ) -> None:

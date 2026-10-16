@@ -18,14 +18,21 @@ On Windows, you can also double-click `start_planner.bat`. The page opens in you
 
 ## Connect live observations
 
-Install and enable [`mods/dst_route_collector`](mods/dst_route_collector/README.md) as a client mod, then connect the game's client log:
+Install and enable [`mods/dst_route_collector`](mods/dst_route_collector/README.md) as a client mod, then enter a world. The tool finds the client log automatically on startup. On Windows, double-click `start_planner.bat`, or run:
 
 ```powershell
-$liveLog = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Klei\DoNotStarveTogether\client_log.txt'
-python route_planner.py --ui --live-log "$liveLog"
+python route_planner.py --ui
 ```
 
-Enter a world and check “实时跟随” (live following) on the page. The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring. If your log lives elsewhere, pass its actual path to `--live-log`.
+Select “检查连接” (check connection) on the page to see the file being read and the next step. Once fresh snapshots arrive, check “实时跟随” (live following). The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring.
+
+You can also check the connection from the terminal:
+
+```powershell
+python route_planner.py --check-live
+```
+
+If your log lives elsewhere, use `--live-log "actual/path/client_log.txt"`. Explicit `--live-log auto` uses the same automatic discovery as the default. Leave live following unchecked for manual entry.
 
 Directions use fixed world coordinates: north is `+Z` and east is `+X`. Walkable routes around obstacles will follow as explored-map data is added.
 
@@ -45,7 +52,9 @@ The page includes demo observations and lets you import or export observation JS
 Each save updates the record's current observations; click Save again after making changes.
 
 ```text
-Choose a target; collect player coordinates, tiles, and landmarks each second
+Enable the collector and enter a world → start the tool; locate the log automatically
+  ↓
+Check connection → choose a target; collect player coordinates, tiles, and landmarks each second
   ↓
 Client log → external Python; update the current position and directional clues
   ↓

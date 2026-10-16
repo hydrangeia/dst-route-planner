@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import InputValidationError, direction_observations_from_dict, observation_from_dict
 from dst_route_planner.knowledge import build_forest_default_kb
+from dst_route_planner.connection import inspect_live_log
 from dst_route_planner.live import (
     FRESHNESS_SECONDS,
     LiveSnapshotError,
@@ -307,6 +308,9 @@ class _PlannerHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": str(exc)})
                 return
             self._send_json(200, result)
+            return
+        if path == "/api/live-check":
+            self._send_json(200, inspect_live_log(self.server.live_log))
             return
         if path == "/api/explorations":
             try:

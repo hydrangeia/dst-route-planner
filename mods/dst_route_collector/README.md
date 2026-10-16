@@ -6,16 +6,15 @@
 
 1. 将仓库中的整个 `mods/dst_route_collector` 文件夹复制到 DST 安装目录的 `mods/` 下。
 2. 在游戏的客户端模组列表中启用 DST Route Planner Live Collector，进入一个世界。
-3. 在规划器仓库目录连接客户端日志：
+3. 双击规划器的 `start_planner.bat`，或在仓库目录启动。工具会自动定位客户端日志：
 
 ```powershell
-$clientLog = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Klei\DoNotStarveTogether\client_log.txt'
-python route_planner.py --ui --live-log "$clientLog"
+python route_planner.py --ui
 ```
 
-4. 在网页勾选“实时跟随”，移动角色，确认 X/Z 坐标跟着变化。日志路径不同的情况下，传入实际文件路径。
+4. 在网页点“检查连接”，收到新快照后勾选“实时跟随”。移动角色，确认 X/Z 坐标跟着变化。日志路径不同时，用 `--live-log "实际路径/client_log.txt"` 启动；终端也可用 `python route_planner.py --check-live` 检查。
 
-For English setup: copy this whole folder into the DST installation's `mods/` folder, enable it as a client mod, enter a world, run the command above from the planner checkout, then enable “实时跟随” (live following). Move your character to check that X/Z updates.
+For English setup: copy this whole folder into the DST installation's `mods/` folder, enable it as a client mod, enter a world, run the command above from the planner checkout, then select “检查连接” (check connection) and enable “实时跟随” (live following). The tool locates the client log automatically; use `--live-log "actual/path/client_log.txt"` for another location, or `python route_planner.py --check-live` for a terminal check. Move your character to check that X/Z updates.
 
 ## 采集内容
 

@@ -23,6 +23,8 @@ python route_planner.py --sample-graph --seed 17
 ```powershell
 python route_planner.py --ui --port 8766
 python route_planner.py --ui --no-browser
+python route_planner.py --check-live
+python route_planner.py --ui --live-log "实际路径/client_log.txt"
 ```
 
 默认地址是 `http://127.0.0.1:8765/`。`--port` 可指定本机端口；`--no-browser` 只启动服务并在终端显示地址。网页可以载入排箫示例、导入或下载 JSON 观测，也可以保存命名探索记录。
@@ -72,13 +74,23 @@ python -m pytest -q
 
 ## 实时观测
 
-启用 [`客户端采集器`](../mods/dst_route_collector/README.md) 后，用 `--ui --live-log <客户端日志路径>` 启动，再在页面勾选“实时跟随”。采集器把一秒一份的快照写入游戏日志，Python 读取最近的完整快照，更新坐标和方向建议。
+启用 [`客户端采集器`](../mods/dst_route_collector/README.md) 后，用 `--ui` 启动，点击“检查连接”，收到新快照后再勾选“实时跟随”。采集器把一秒一份的快照写入游戏日志，Python 读取最近的完整快照，更新坐标和方向建议。
 
 实时快照采用独立的 `live_version: 1`，包括 `world_id`、`world_kind`、`session_id`、`sequence`、Unix 时间 `captured_at`、`position: {x,y,z}`、`camera_heading`、`current`、`directions`，以及可选的 `landmarks: [{prefab,x,z}]`。其中观测字段沿用现有的 observation 格式。世界坐标约定北为 `+Z`、东为 `+X`；镜头角度作为独立信息提供。
 
 `GET /api/live?target=panflute&seed=0` 返回连接状态、快照和可用的 `plan`。`plan` 与 `/api/plan` 的结果格式相同。看到所选目标时，`visible_target` 提供最近目标的坐标与直线距离。超过五秒的快照会标记为 `stale`，停止生成实时建议。当前大陆知识库处理 `forest` 世界，其他世界会显示 `unsupported_world`。
 
 这一版根据当前快照排列探索方向。探索轨迹、可通行地图和绕障碍的路径重规划列在 [`TODO.md`](../TODO.md)。采集器的 Lua 接口已对照本地源码，并通过桩环境检查；首次游戏内连通验证还需要启用 mod 后完成。
+
+## 自动定位与连接检查
+
+`--ui` 和 `--check-live` 默认自动定位客户端日志；`--live-log auto` 显式选择同一行为，也可以用 `--live-log <路径>` 指定文件。Windows 使用系统当前的文档目录，包含重定向后的目录；macOS 使用 `~/Documents/Klei/DoNotStarveTogether/client_log.txt`，Linux 使用 `~/.klei/DoNotStarveTogether/client_log.txt`。默认日志位置依据 [Klei 的日志说明](https://support.klei.com/hc/en-us/articles/360029881191-Logs-and-Useful-Information-for-Bug-Reports-for-Don-t-Starve-Together)。
+
+网页的“检查连接”和终端的 `python route_planner.py --check-live` 都会显示所选日志、当前连接状态和下一步操作。检查只读取最新的完整快照；勾选“实时跟随”后才会开始连续记录。
+
+终端检查的退出码：`0` 表示收到新鲜快照，`1` 表示还需启动游戏、启用采集或恢复游戏，`2` 表示文件读取或快照格式出错。洞穴中的新鲜快照也表示采集器已连接，方向推理仍按世界支持情况处理。
+
+`GET /api/live-check` 返回 `check_version: 1`、`status` 和 `log_path`，并在可用时提供 `age_seconds`、`world_kind`、`sequence`、`position`；出错时提供 `error`。状态为 `disabled`、`missing_log`、`waiting`、`live`、`stale` 或 `error`。这个接口不调用规划器，也不追加回放。
 
 ## 连续探索回放
 
@@ -226,6 +238,7 @@ python -m pytest -q
 - `app.py` 提供本地网页服务和方向计算 API，`static/app.html` 是观测录入与结果页面。
 - `records.py` 保存和读取命名探索记录。
 - `live.py` 校验并读取客户端日志中的实时快照，判断数据新鲜度和可见目标距离。
+- `connection.py` 自动定位客户端日志并生成一次连接检查结果。
 - `exploration.py` 保存连续探索回放并提供摘要和下载。
 - `trail.py` 从回放提取世界坐标和轨迹边界。
 - `world_sampler.py` 抽取带锁/钥匙来源记录的 task 连接图，并以 BFS 最短跳数计算图上的 task 接近度。

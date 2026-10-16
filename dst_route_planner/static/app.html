@@ -74,6 +74,9 @@
     .record-list { display: grid; gap: 7px; }
     .live-replay { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 9px; }
     .live-replay .record-context { margin: 0; }
+    .live-check { display: flex; align-items: flex-start; gap: 9px; margin-top: 8px; }
+    .live-check .button { flex: 0 0 auto; min-height: 32px; padding: 6px 10px; font-size: 11px; }
+    .live-check-status { flex: 1 1 auto; min-width: 0; min-height: 32px; padding: 6px 8px; border-radius: 8px; color: var(--muted); background: #f4f7f1; font-size: 11px; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
     .exploration-list .record-item-detail { overflow-wrap: anywhere; }
     .trail-box { margin-top: 12px; padding: 10px 12px; border: 1px solid #e2e8de; border-radius: 11px; background: #fbfcf7; }
     .trail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -259,6 +262,10 @@
       <div id="liveStatus" role="status" aria-live="polite">启用采集器并连接客户端日志后，勾选实时跟随。</div>
       <div id="livePosition" class="record-context"></div>
       <div id="liveTarget" class="record-context"></div>
+      <div class="live-check">
+        <button class="button" id="liveCheckButton" type="button">检查连接</button>
+        <div class="live-check-status" id="liveCheckStatus" role="status" aria-live="polite">手动检查日志路径、采集器和最近快照。</div>
+      </div>
       <div class="live-replay">
         <div id="liveRecordingStatus" class="record-context">实时跟随后，收到的快照会自动保存为回放。</div>
         <a class="button" id="liveReplayLink" hidden download>下载这段回放</a>
@@ -411,7 +418,9 @@
       explorationsStatus: document.getElementById("explorationsStatus"),
       explorationList: document.getElementById("explorationList"),
       trailSvg: document.getElementById("trailSvg"), trailStatus: document.getElementById("trailStatus"),
-      refreshTrail: document.getElementById("refreshTrailButton")
+      refreshTrail: document.getElementById("refreshTrailButton"),
+      liveCheckButton: document.getElementById("liveCheckButton"),
+      liveCheckStatus: document.getElementById("liveCheckStatus")
     };
 
     const live = { following: false, timer: null, controller: null, request: 0, key: null, sequence: 0 };
@@ -421,6 +430,84 @@
       recordingStatus: document.getElementById("liveRecordingStatus"),
       replayLink: document.getElementById("liveReplayLink")
     };
+    const liveCheckState = { requestId: 0, loading: false };
+    const LIVE_CHECK_STATUSES = new Set(["disabled", "missing_log", "waiting", "live", "stale", "error"]);
+    function validateLiveCheckResult(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value) || value.check_version !== 1 ||
+          !LIVE_CHECK_STATUSES.has(value.status) || !Object.prototype.hasOwnProperty.call(value, "log_path")) {
+        throw new Error("连接检查结果格式无法识别。");
+      }
+      if (value.log_path !== null && (typeof value.log_path !== "string" || value.log_path.length > 4096)) {
+        throw new Error("连接检查结果中的日志路径无效。");
+      }
+      if (value.error !== undefined && (typeof value.error !== "string" || value.error.length > 4096)) {
+        throw new Error("连接检查结果中的错误信息无效。");
+      }
+      if (value.age_seconds !== undefined && (typeof value.age_seconds !== "number" || !Number.isFinite(value.age_seconds) || value.age_seconds < 0)) {
+        throw new Error("连接检查结果中的快照时间无效。");
+      }
+      if (value.position !== undefined && (!value.position || typeof value.position !== "object" || Array.isArray(value.position) ||
+          !["x", "y", "z"].every(axis => typeof value.position[axis] === "number" && Number.isFinite(value.position[axis])))) {
+        throw new Error("连接检查结果中的坐标无效。");
+      }
+      if (value.world_kind !== undefined && (typeof value.world_kind !== "string" || !value.world_kind || value.world_kind.length > 100)) {
+        throw new Error("连接检查结果中的世界类型无效。");
+      }
+      if (value.sequence !== undefined && (!Number.isSafeInteger(value.sequence) || value.sequence < 0)) {
+        throw new Error("连接检查结果中的快照序号无效。");
+      }
+      if ((value.status === "live" || value.status === "stale") &&
+          (value.age_seconds === undefined || !value.position || value.world_kind === undefined || value.sequence === undefined)) {
+        throw new Error("连接检查结果缺少快照信息。");
+      }
+      return value;
+    }
+    function formatLiveCheckResult(value) {
+      const path = value.log_path === null ? "未配置" : value.log_path;
+      const pathLine = "日志路径：" + path;
+      const world = value.world_kind === "forest" ? "大陆" : value.world_kind === "cave" ? "洞穴" : value.world_kind;
+      const age = value.age_seconds === undefined ? "" : " · " + value.age_seconds.toFixed(1) + " 秒前";
+      const location = value.position
+        ? " · X " + value.position.x.toFixed(1) + " / Y " + value.position.y.toFixed(1) + " / Z " + value.position.z.toFixed(1)
+        : "";
+      switch (value.status) {
+        case "disabled":
+          return "未启用实时日志读取。请重启工具并使用 --ui，或显式传入 --live-log <日志路径>。\n" + pathLine;
+        case "missing_log":
+          return "未找到日志文件。请先启动 DST，确认所选日志路径后再检查。\n" + pathLine;
+        case "waiting":
+          return "日志已找到，暂未收到快照。请安装并启用客户端采集器，然后进入世界。\n" + pathLine;
+        case "live":
+          return "连接正常 · " + world + "世界 · 玩家位置" + location + age + " · 快照 " + value.sequence + "\n" + pathLine;
+        case "stale":
+          return "已找到日志，但最近快照已过期。请切回 DST 并解除暂停。 · " + world + "世界" + location + age + "\n" + pathLine;
+        case "error":
+          return "读取日志失败：" + (value.error || "未提供错误详情") + "。请确认日志路径正确且当前用户有读取权限后重试。\n" + pathLine;
+      }
+    }
+    async function checkLiveConnection() {
+      if (liveCheckState.loading) return;
+      const requestId = ++liveCheckState.requestId;
+      liveCheckState.loading = true;
+      el.liveCheckButton.disabled = true;
+      el.liveCheckButton.textContent = "检查中…";
+      el.liveCheckStatus.textContent = "正在检查本地日志连接…";
+      try {
+        const response = await fetch("/api/live-check", { headers: { "Accept": "application/json" } });
+        const result = validateLiveCheckResult(await readJsonResponse(response));
+        if (requestId !== liveCheckState.requestId) return;
+        el.liveCheckStatus.textContent = formatLiveCheckResult(result);
+      } catch (error) {
+        if (requestId !== liveCheckState.requestId) return;
+        el.liveCheckStatus.textContent = "连接检查失败：" + error.message + "。请确认本地服务和日志路径后重试。\n日志路径：未能读取";
+      } finally {
+        if (requestId === liveCheckState.requestId) {
+          liveCheckState.loading = false;
+          el.liveCheckButton.disabled = false;
+          el.liveCheckButton.textContent = "检查连接";
+        }
+      }
+    }
     function updateLiveControls() {
       el.grid.querySelectorAll("input, select, button").forEach(control => { control.disabled = live.following; });
       el.diagonal.disabled = live.following;
@@ -852,6 +939,7 @@
         }
       }
     }
+    el.liveCheckButton.addEventListener("click", checkLiveConnection);
     liveEl.follow.addEventListener("change", () => {
       if (!liveEl.follow.checked) { stopLive(); return; }
       cancelStaleRequest();

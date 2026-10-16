@@ -453,5 +453,81 @@ run('live.following=true;state.result=null;');
   assert.equal(run("state.explorations[0].id"), initSummary.id);
   assert.ok(element("explorationList").innerHTML.includes("/api/explorations/" + initSummary.id));
 
-  console.log("Live UI: replay recording plus trail projection, segmentation, merging, races, retries, retention bounds, map independence, history opening, and initialization checks passed");
+  assert.ok(!initCalls.includes("/api/live-check"), "connection diagnostics do not run automatically during initialization");
+
+  run('live.following=true;liveEl.follow.checked=true;liveEl.status.textContent="保持实时指引";liveEl.position.textContent="洞穴 · X 1 / Z 2";liveEl.target.textContent="目标仍在附近";liveEl.recordingStatus.textContent="已自动记录";liveEl.replayLink.href="/api/explorations/"+"a".repeat(64);liveEl.replayLink.hidden=false;state.current={marker:"current"};state.result={directions:[{direction:"north",score:7}]};state.dirs.north.note="保持观测";state.activeRecordId="record-kept";state.activeRecordName="name-kept";state.liveRecording={id:"c".repeat(64),frame_count:4};el.recordName.value="记录名称";el.worldNote.value="世界备注";trailState.mode="history";trailState.id="b".repeat(64);trailState.identity="history-identity";trailState.points=[{sequence:1,captured_at:1,x:1,z:2}];');
+  function liveStateForDiagnostics() {
+    return JSON.parse(run('JSON.stringify({following:live.following,liveStatus:liveEl.status.textContent,position:liveEl.position.textContent,target:liveEl.target.textContent,recording:liveEl.recordingStatus.textContent,replayHref:liveEl.replayLink.href,replayHidden:liveEl.replayLink.hidden,current:state.current,result:state.result,directionNote:state.dirs.north.note,activeRecordId:state.activeRecordId,activeRecordName:state.activeRecordName,recordName:el.recordName.value,worldNote:el.worldNote.value,liveRecording:state.liveRecording,explorationIds:state.explorations.map(item=>item.id),trailMode:trailState.mode,trailId:trailState.id,trailIdentity:trailState.identity,trailPoints:trailState.points})'));
+  }
+  const diagnosticStateBefore = liveStateForDiagnostics();
+  const diagnosticPath = 'C:\\游戏\\存档\\<img src=x onerror=boom>.txt';
+  let diagnosticCalls = 0;
+  context.fetch = async url => {
+    assert.equal(url, "/api/live-check");
+    diagnosticCalls += 1;
+    return apiResponse({
+      check_version: 1, status: "live", log_path: diagnosticPath, age_seconds: 0.8,
+      position: {x: 4, y: 1, z: 9}, world_kind: "cave", sequence: 12
+    });
+  };
+  await element("liveCheckButton").listeners.click();
+  assert.equal(diagnosticCalls, 1, "the check button makes one explicit request");
+  assert.ok(element("liveCheckStatus").textContent.includes("连接正常 · 洞穴世界"));
+  assert.ok(element("liveCheckStatus").textContent.includes("日志路径：" + diagnosticPath));
+  assert.ok(element("liveCheckStatus").textContent.includes("X 4.0 / Y 1.0 / Z 9.0"));
+  assert.equal(element("liveCheckStatus").innerHTML, "", "diagnostic paths render only as text, never as HTML");
+  assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "a diagnostic response does not mutate live, observation, plan, replay, or trail state");
+
+  const statusCases = [
+    {status: "disabled", phrase: "--ui"},
+    {status: "missing_log", phrase: "启动 DST"},
+    {status: "waiting", phrase: "启用客户端采集器"},
+    {status: "stale", phrase: "解除暂停", age_seconds: 8},
+    {status: "error", phrase: "<svg onload=boom>", error: "<svg onload=boom>"}
+  ];
+  for (const item of statusCases) {
+    context.fetch = async () => apiResponse({
+      check_version: 1, status: item.status, log_path: "D:\\游戏\\Player.log",
+      ...(item.age_seconds === undefined ? {} : {
+        age_seconds: item.age_seconds, position: {x: 1, y: 0, z: 2}, world_kind: "forest", sequence: 3
+      }),
+      ...(item.error === undefined ? {} : {error: item.error})
+    });
+    await run("checkLiveConnection()");
+    assert.ok(element("liveCheckStatus").textContent.includes(item.phrase), item.status + " explains its next step or error");
+    assert.ok(element("liveCheckStatus").textContent.includes("日志路径：D:\\游戏\\Player.log"), item.status + " displays the selected path");
+    assert.equal(element("liveCheckStatus").innerHTML, "", "all diagnostic text remains unparsed HTML");
+    assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "diagnostic status " + item.status + " leaves other UI state unchanged");
+  }
+
+  let resolveDiagnostic;
+  let serializedCalls = 0;
+  context.fetch = url => {
+    assert.equal(url, "/api/live-check");
+    serializedCalls += 1;
+    return new Promise(resolve => { resolveDiagnostic = resolve; });
+  };
+  const pendingDiagnostic = run("checkLiveConnection()");
+  assert.equal(element("liveCheckButton").disabled, true, "the button is disabled while a check runs");
+  await run("checkLiveConnection()");
+  assert.equal(serializedCalls, 1, "overlapping checks are serialized");
+  resolveDiagnostic(apiResponse({check_version: 1, status: "waiting", log_path: "D:\\waiting.log"}));
+  await pendingDiagnostic;
+  assert.equal(element("liveCheckButton").disabled, false, "the button is re-enabled after a check");
+  assert.ok(element("liveCheckStatus").textContent.includes("暂未收到快照"));
+
+  context.fetch = async () => apiResponse({check_version: 2, status: "waiting", log_path: "D:\\invalid.log"});
+  await run("checkLiveConnection()");
+  assert.ok(element("liveCheckStatus").textContent.includes("格式无法识别"), "invalid response reports a readable format error");
+  context.fetch = async () => { throw new Error("offline <b>"); };
+  await run("checkLiveConnection()");
+  assert.ok(element("liveCheckStatus").textContent.includes("offline <b>"), "network failure appears as plain text");
+  assert.equal(element("liveCheckButton").disabled, false, "a failed check leaves retry enabled");
+  context.fetch = async () => apiResponse({check_version: 1, status: "disabled", log_path: null});
+  await run("checkLiveConnection()");
+  assert.ok(element("liveCheckStatus").textContent.includes("重启工具并使用 --ui"), "retry succeeds after a network or validation failure");
+  assert.ok(element("liveCheckStatus").textContent.includes("日志路径：未配置"));
+  assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "retries also preserve live, observation, plan, replay, and trail state");
+
+  console.log("Live UI: replay recording, trail rendering and races, and read-only connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

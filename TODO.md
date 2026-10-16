@@ -22,6 +22,7 @@
 
 采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
 
+- [x] 启动时自动定位客户端日志，提供网页和终端的一次连接检查，显示读取路径与下一步操作。 / Locate the client log automatically on startup and provide page/terminal connection checks with the selected path and next steps.
 - [ ] 在游戏中验证日志输出、坐标方向和地标采集，记录一次完整探索过程。 / Verify log output, coordinate directions, and landmark capture in game, and record a complete exploration run.
 - [x] 实时跟随时记录连续坐标、观测和方向建议，按世界与会话保存本机 JSONL 回放，并支持重启后下载。 / Record successive positions, observations, and suggestions during live following, save local JSONL replays per world/session, and download them after restarting.
 - [x] 显示实时探索轨迹、起点和最新位置，并能打开已保存回放的轨迹；采集间隔与位置跳变处分段。 / Show live trails with start/latest positions, open trails from saved replays, and split lines at capture gaps and position jumps.

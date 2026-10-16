@@ -18,14 +18,21 @@ Windows 用户也可以双击 `start_planner.bat` 启动。页面在本机浏览
 
 ## 连接实时观测
 
-把 [`mods/dst_route_collector`](mods/dst_route_collector/README.md) 安装为客户端 mod 并启用，然后连接游戏的客户端日志：
+把 [`mods/dst_route_collector`](mods/dst_route_collector/README.md) 安装为客户端 mod 并启用，进入一个世界。工具启动时会自动定位客户端日志；Windows 用户直接双击 `start_planner.bat`，或运行：
 
 ```powershell
-$liveLog = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Klei\DoNotStarveTogether\client_log.txt'
-python route_planner.py --ui --live-log "$liveLog"
+python route_planner.py --ui
 ```
 
-进入世界后，在网页勾选“实时跟随”。采集器每秒提供坐标和周围线索，页面自动计算方向；看到目标时显示直线距离。移动一下，确认坐标跟着变化，就可以开始探索。日志在其他位置时，把 `--live-log` 改成实际路径。
+在网页点“检查连接”，查看正在读取的文件和下一步提示；收到新快照后，勾选“实时跟随”。采集器每秒提供坐标和周围线索，页面自动计算方向；看到目标时显示直线距离。移动一下，确认坐标跟着变化，就可以开始探索。
+
+也可以在终端单独检查连接：
+
+```powershell
+python route_planner.py --check-live
+```
+
+日志存放在其他位置时，用 `--live-log "实际路径/client_log.txt"` 指定文件。`--live-log auto` 与默认的自动定位相同。手动录入时保持“实时跟随”未勾选即可。
 
 方向使用固定世界坐标：北为 `+Z`，东为 `+X`。具体绕障碍的行走路径会随着已探索地图的接入继续实现。
 
@@ -45,7 +52,9 @@ python route_planner.py --ui --live-log "$liveLog"
 每次保存都会更新这条记录的当前观测；修改后再点“保存”即可。
 
 ```text
-选择目标，游戏内采集玩家坐标、地皮与地标（每秒）
+启用采集器、进入世界 → 启动工具，自动定位日志
+  ↓
+检查连接 → 选择目标，实时采集玩家坐标、地皮与地标（每秒）
   ↓
 客户端日志 → 外置 Python，更新当前位置与各方向线索
   ↓

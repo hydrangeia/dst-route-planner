@@ -5,6 +5,11 @@ import json
 import sys
 from pathlib import Path
 
+from dst_route_planner.connection import (
+    LiveLogDiscoveryError,
+    inspect_live_log,
+    resolve_live_log_path,
+)
 from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import load_direction_observations, observation_from_dict
 from dst_route_planner.knowledge import build_forest_default_kb
@@ -250,27 +255,111 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0, help="Random seed for repeatable task graph sampling (default: 0).")
     parser.add_argument("--sample-graph", action="store_true", help="Print a sampled mainland task connection graph as JSON and exit.")
     parser.add_argument("--ui", action="store_true", help="Start the local browser interface.")
+    parser.add_argument("--check-live", action="store_true", help="Check the client collector connection once and exit.")
     parser.add_argument("--port", type=_port_number, default=8765, help="Local interface port (default: 8765).")
     parser.add_argument("--no-browser", action="store_true", help="Start the interface without opening a browser.")
-    parser.add_argument("--live-log", type=Path, help="Read live snapshots from a client log file.")
+    parser.add_argument(
+        "--live-log",
+        type=Path,
+        default=Path("auto"),
+        help="Client log path, or auto (default: auto).",
+    )
     return parser
 
 
+def _report_live_check(result: dict) -> int:
+    path = result.get("log_path")
+    print(f"Client log: {path if path is not None else '(disabled)'}")
+    status = result.get("status")
+
+    if status in {"live", "stale"}:
+        position = result["position"]
+        age = result["age_seconds"]
+        kind = result.get("world_kind", "unknown")
+        label = "connected" if status == "live" else "stale snapshot"
+        print(
+            f"Live check: {label} (age {age:.1f}s; {kind}; "
+            f"position x={float(position['x']):g}, y={float(position['y']):g}, "
+            f"z={float(position['z']):g})."
+        )
+        if status == "live":
+            print("Next: start the interface with --ui and enable live following.")
+            return 0
+        print("Next: return to DST and unpause live collection to refresh the snapshot.")
+        return 1
+
+    messages = {
+        "disabled": (
+            "Live check: disabled.",
+            "Next: pass --live-log PATH or use --live-log auto.",
+        ),
+        "missing_log": (
+            "Live check: client log not found.",
+            "Next: start DST once to create the client log, then check again.",
+        ),
+        "waiting": (
+            "Live check: no collector snapshot found yet.",
+            "Next: enable the client collector mod and enter a world.",
+        ),
+        "error": (
+            f"Live check: error: {result.get('error', 'the client log could not be read.')}",
+            "Next: check that the log is readable and its latest collector line is valid.",
+        ),
+    }
+    message, next_step = messages.get(
+        status,
+        ("Live check: error: unknown status.", "Next: check the client log and try again."),
+    )
+    print(message)
+    print(next_step)
+    if status == "error" or status not in {"disabled", "missing_log", "waiting"}:
+        return 2
+    return 1
+
+
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.ui and args.check_live:
+        parser.error("--ui and --check-live cannot be used together.")
+    if args.check_live and (
+        args.list_targets
+        or args.sample_graph
+        or args.demo
+        or args.observe_json is not None
+        or args.current_json is not None
+    ):
+        parser.error("--check-live cannot be combined with other planner modes or observations.")
+
     if args.ui:
         from dst_route_planner.app import run_app
 
         try:
+            live_log = resolve_live_log_path(args.live_log)
             run_app(
                 port=args.port,
                 open_browser=not args.no_browser,
-                live_log=args.live_log,
+                live_log=live_log,
             )
+        except LiveLogDiscoveryError as error:
+            print(f"Unable to resolve the client log: {error}", file=sys.stderr)
+            return 2
         except OSError as error:
             print(f"Unable to start the local interface: {error}", file=sys.stderr)
             return 2
         return 0
+    if args.check_live:
+        try:
+            live_log = resolve_live_log_path(args.live_log)
+        except LiveLogDiscoveryError as error:
+            return _report_live_check(
+                {
+                    "status": "error",
+                    "log_path": "auto (unavailable)",
+                    "error": str(error),
+                }
+            )
+        return _report_live_check(inspect_live_log(live_log))
     kb = build_forest_default_kb()
     if args.sample_graph:
         graph = build_random_task_graph(kb, seed=args.seed)
