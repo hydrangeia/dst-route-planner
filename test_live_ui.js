@@ -22,13 +22,17 @@ vm.runInContext(source, context);
 function run(code) { return vm.runInContext(code, context); }
 function apiResponse(payload) { return {ok: true, json: async () => payload}; }
 function trailPoint(sequence, capturedAt, x, z) { return {sequence, captured_at: capturedAt, x, z}; }
-function trailPayload(summary, points) {
+function remembered(prefab, x, z, firstSequence, lastSequence, firstSeen = firstSequence, lastSeen = lastSequence) {
+  return {prefab, x, z, first_seen: firstSeen, last_seen: lastSeen, first_sequence: firstSequence, last_sequence: lastSequence};
+}
+function trailPayload(summary, points, landmarks = undefined, landmarksTruncated = false) {
   const xs = points.map(point => point.x), zs = points.map(point => point.z);
   return {
     trail_version: 1, id: summary.id, world_id: summary.world_id,
     world_kind: summary.world_kind, session_id: summary.session_id,
     frame_count: points.length, points,
-    bounds: points.length ? {min_x: Math.min(...xs), max_x: Math.max(...xs), min_z: Math.min(...zs), max_z: Math.max(...zs)} : null
+    bounds: points.length ? {min_x: Math.min(...xs), max_x: Math.max(...xs), min_z: Math.min(...zs), max_z: Math.max(...zs)} : null,
+    ...(landmarks === undefined ? {} : {landmarks, landmarks_truncated: landmarksTruncated})
   };
 }
 run('state.options={targets:["panflute","moonbase"],tile_types:["GRASS"],prefabs:["grass"],directions:DIRS.slice()}; live.following=true;');
@@ -59,6 +63,7 @@ function frame(session = "one", sequence = 1, recording = null, worldId = "world
     visible_target: {x: 12, z: 34, distance: 4}
   };
   if (recording) result.recording = recording;
+  if (Object.prototype.hasOwnProperty.call(trail, "landmarks")) result.snapshot.landmarks = trail.landmarks;
   return result;
 }
 const projection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:10,z:0},{sequence:3,captured_at:3,x:0,z:10}])");
@@ -69,6 +74,16 @@ assert.ok(Math.abs((projection.points[1].x - projection.points[0].x) - (projecti
 assert.equal(run("projectTrailCoordinates([]).points.length"), 0);
 assert.equal(run("projectTrailCoordinates([{sequence:1,captured_at:1,x:-1e308,z:0},{sequence:2,captured_at:2,x:1e308,z:0}]).error"), true,
   "extreme finite coordinates fail cleanly instead of producing invalid SVG values");
+const landmarkProjection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0}],[{prefab:'panflute',x:100,z:0}])");
+assert.equal(landmarkProjection.ranges.max_x, 100, "displayed target positions expand map bounds");
+assert.ok(landmarkProjection.landmarks[0].x > landmarkProjection.points[0].x, "target markers share the map's world projection");
+assert.equal(run("landmarkRelativeLabel({x:0,z:20},{x:0,z:0})"), "北 · 直线距离 20.0");
+assert.equal(run("landmarkRelativeLabel({x:20,z:0},{x:0,z:0})"), "东 · 直线距离 20.0");
+assert.equal(run("landmarkRelativeLabel({x:0,z:0},{x:0,z:0})"), "同一位置 · 直线距离 0.0");
+for (const [x, z, heading] of [[1, 1, "东北"], [1, -1, "东南"], [-1, -1, "西南"], [-1, 1, "西北"], [0, -5, "南"], [-5, 0, "西"]]) {
+  const bearing = run("landmarkRelativeLabel(" + JSON.stringify({x, z}) + ",{x:0,z:0})");
+  assert.ok(bearing.startsWith(heading + " · 直线距离 "), heading + " bearing uses +Z north and +X east");
+}
 const stationaryProjection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:7,z:-4},{sequence:2,captured_at:2,x:7,z:-4}])");
 assert.deepEqual(
   {x: stationaryProjection.points[0].x, y: stationaryProjection.points[0].y},
@@ -91,7 +106,111 @@ run('trailState.points=[{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_
 assert.equal((element("trailSvg").innerHTML.match(/class="trail-isolated"/g) || []).length, 3,
   "samples on either side of breaks remain visible as isolated points");
 run('trailState.points=[];trailState.mode="idle";renderTrail()');
+run('trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:""};trailState.mode="idle";state.liveRecording=null;');
+context.liveLandmarkFrame = frame("sight-session", 4, null, "sight-world", {
+  capturedAt: 100, x: 0, z: 0,
+  landmarks: [
+    {prefab: "panflute", x: 10, z: 20}, {prefab: "panflute", x: 10, z: 20},
+    {prefab: "panflute", x: 11, z: 20}, {prefab: "moonbase", x: 10, z: 20}
+  ]
+}).snapshot;
+run("recordLiveTrailSnapshot(liveLandmarkFrame)");
+context.liveLandmarkFrame = frame("sight-session", 5, null, "sight-world", {
+  capturedAt: 105, x: 1, z: 0,
+  landmarks: [{prefab: "panflute", x: 10, z: 20}]
+}).snapshot;
+run("recordLiveTrailSnapshot(liveLandmarkFrame)");
+let localSightings = JSON.parse(run("JSON.stringify(trailState.live.localLandmarks)"));
+assert.equal(localSightings.length, 3, "exact prefab and coordinate repeats deduplicate while different locations remain separate");
+const repeatedSighting = localSightings.find(item => item.prefab === "panflute" && item.x === 10);
+assert.deepEqual({first: repeatedSighting.first_sequence, last: repeatedSighting.last_sequence,
+  firstSeen: repeatedSighting.first_seen, lastSeen: repeatedSighting.last_seen}, {first: 4, last: 5, firstSeen: 100, lastSeen: 105});
+context.liveLandmarkFrame = frame("new-session", 1, null, "sight-world", {
+  capturedAt: 200, x: 2, z: 0, landmarks: [{prefab: "panflute", x: 99, z: 100}]
+}).snapshot;
+run("recordLiveTrailSnapshot(liveLandmarkFrame)");
+localSightings = JSON.parse(run("JSON.stringify(trailState.live.localLandmarks)"));
+assert.equal(localSightings.length, 1, "a new session does not carry remembered positions across sessions");
+assert.equal(localSightings[0].x, 99);
+run('trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:""};');
+context.capSnapshot = {
+  world_id: "cap-world", world_kind: "forest", session_id: "cap-session", sequence: 3, captured_at: 300,
+  position: {x: 0, y: 0, z: 0},
+  landmarks: Array.from({length: 501}, (_, x) => ({prefab: "panflute", x, z: 0}))
+};
+run("recordLiveTrailSnapshot(capSnapshot)");
+const cappedLocalSightings = JSON.parse(run("JSON.stringify(trailState.live.localLandmarks)"));
+assert.equal(cappedLocalSightings.length, 500, "live aggregation keeps at most 500 unique positions");
+assert.equal(Math.min(...cappedLocalSightings.map(item => item.x)), 0);
+assert.equal(Math.max(...cappedLocalSightings.map(item => item.x)), 499,
+  "one-frame live overflow keeps the same deterministic first 500 as the backend");
+assert.equal(run("trailState.live.landmarksTruncated"), true);
+
 const validationSummary = replaySummary("9".repeat(64), {worldId: "validate-world", session: "validate-session"});
+context.validationSummary = validationSummary;
+context.validationPayload = trailPayload(validationSummary, []);
+const legacyTrail = JSON.parse(JSON.stringify(run("validateTrailPayload(validationPayload, validationSummary)")));
+assert.deepEqual(legacyTrail.landmarks, [], "version 1 historical trails without optional landmarks remain supported");
+assert.equal(legacyTrail.landmarksTruncated, false);
+const malformedLandmarkPayload = trailPayload(validationSummary, [trailPoint(1, 10, 2, 3)], [
+  {prefab: "panflute", x: Number.NaN, z: 4, first_seen: 1, last_seen: 2, first_sequence: 0, last_sequence: 1}
+]);
+context.validationPayload = malformedLandmarkPayload;
+const malformedOptional = JSON.parse(JSON.stringify(run("validateTrailPayload(validationPayload, validationSummary)")));
+assert.equal(malformedOptional.points.length, 1, "invalid optional landmark data does not discard the player trail");
+assert.ok(malformedOptional.landmarkError.includes("格式无法识别"));
+context.malformedOptional = malformedOptional;
+run('state.result={directions:[{direction:"north"}]};liveEl.target.textContent="排箫已在附近 · 直线距离 4.0";trailState.error="";trailState.points=malformedOptional.points;trailState.landmarkError=malformedOptional.landmarkError;renderTrail()');
+assert.ok(element("seenLandmarksStatus").textContent.includes("读取失败"));
+assert.ok(!element("trailStatus").textContent.includes("读取失败"), "an optional landmark error stays in its own panel");
+assert.equal(run("state.result.directions[0].direction"), "north");
+assert.ok(element("liveTarget").textContent.includes("排箫已在附近"), "remembered sightings do not replace the current visible-target message");
+const sameFrameSightings = Array.from({length: 501}, (_, x) => ({
+  prefab: "panflute", x, z: 0, first_seen: 10, last_seen: 10, first_sequence: 4, last_sequence: 4
+}));
+context.validationPayload = trailPayload(validationSummary, [], sameFrameSightings, false);
+const cappedSightings = JSON.parse(JSON.stringify(run("validateTrailPayload(validationPayload, validationSummary)")));
+assert.equal(cappedSightings.landmarks.length, 500);
+assert.deepEqual(cappedSightings.landmarks.map(item => item.x).sort((a, b) => a - b).slice(0, 2), [0, 1]);
+assert.equal(Math.max(...cappedSightings.landmarks.map(item => item.x)), 499,
+  "same-frame overflow retains the deterministic first 500 by prefab/x/z");
+assert.equal(cappedSightings.landmarksTruncated, true);const mixedPrefabOverflow = Array.from({length: 499}, (_, x) => remembered("a", x, 0, 1, 1, 4, 4))
+  .concat(Array.from({length: 3}, (_, x) => remembered("B", x, 10, 1, 1, 4, 4)));
+context.validationPayload = trailPayload(validationSummary, [], mixedPrefabOverflow, false);
+const mixedPrefabCapped = JSON.parse(JSON.stringify(run("validateTrailPayload(validationPayload, validationSummary)")));
+assert.equal(mixedPrefabCapped.landmarks.length, 500);
+assert.equal(mixedPrefabCapped.landmarks.filter(item => item.prefab === "B").length, 3,
+  "ordinal prefab ordering matches the backend for mixed-case same-frame overflow");
+assert.equal(mixedPrefabCapped.landmarks.filter(item => item.prefab === "a").length, 497);
+assert.equal(Math.max(...mixedPrefabCapped.landmarks.filter(item => item.prefab === "a").map(item => item.x)), 496);
+assert.equal(mixedPrefabCapped.landmarksTruncated, true);
+
+run('state.target="panflute";trailState.mode="history";trailState.error="";trailState.landmarkError="";trailState.landmarksTruncated=false;trailState.points=[{sequence:8,captured_at:Date.now()/1000,x:0,z:0}];trailState.landmarks=[{prefab:"panflute",x:0,z:20,first_seen:Date.now()/1000-5,last_seen:Date.now()/1000-5,first_sequence:1,last_sequence:2},{prefab:"panflute",x:20,z:0,first_seen:Date.now()/1000-10,last_seen:Date.now()/1000-10,first_sequence:0,last_sequence:1},{prefab:"moonbase",x:500,z:500,first_seen:1,last_seen:2,first_sequence:1,last_sequence:2}];renderTrail()');
+assert.ok(element("seenLandmarksStatus").textContent.includes("显示最近 2 / 2 处"));
+assert.ok(element("seenLandmarksList").innerHTML.includes("panflute"));
+assert.ok(!element("seenLandmarksList").innerHTML.includes("moonbase"), "the sightings list filters by the selected target");
+assert.ok(element("seenLandmarksList").innerHTML.includes("最近看到"));
+assert.ok(element("seenLandmarksList").innerHTML.includes("相对最新观测：北"));
+assert.equal((element("trailSvg").innerHTML.match(/class="trail-landmark-marker"/g) || []).length, 3);
+assert.ok(element("trailSvg").innerHTML.includes("已见目标"));
+let targetChangeFetches = 0;
+context.fetch = async () => { targetChangeFetches += 1; throw new Error("target change must not fetch"); };
+element("targetSelect").value = "moonbase";
+element("targetSelect").listeners.change();
+assert.equal(targetChangeFetches, 0, "changing target immediately rerenders stored sightings without fetching a trail");
+assert.ok(element("seenLandmarksList").innerHTML.includes("moonbase"));
+assert.ok(!element("seenLandmarksList").innerHTML.includes("panflute"));
+element("targetSelect").value = "pigking";
+element("targetSelect").listeners.change();
+assert.ok(element("seenLandmarksStatus").textContent.includes("暂未记录目标"));
+context.injectedLandmark = remembered('<img src=x onerror=boom>', 1, 2, 1, 1, 1, 1);
+run('state.target="<img src=x onerror=boom>";trailState.landmarks=[injectedLandmark];renderTrail()');
+assert.ok(element("seenLandmarksList").innerHTML.includes("&lt;img"));
+assert.ok(!element("seenLandmarksList").innerHTML.includes("<img"), "untrusted prefab names are escaped in the sightings list");
+assert.ok(!element("trailSvg").innerHTML.includes("<img"), "untrusted prefab names never enter SVG markup");
+element("targetSelect").value = "panflute";
+element("targetSelect").listeners.change();
+
 for (const field of ["id", "world_id", "world_kind", "session_id"]) {
   const payload = trailPayload(validationSummary, []);
   payload[field] = "wrong-" + field;
@@ -279,7 +398,7 @@ run('live.following=true;state.result=null;');
 
   const liveTrailId = "1".repeat(64);
   const liveTrailSummary = replaySummary(liveTrailId, {worldId: "trail-world", session: "trail-session", frames: 3});
-  run(`trailState.mode="idle";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;trailState.points=[];trailState.error="";trailState.loading=false;trailState.trimmed=false;trailState.requests.clear();trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false};state.liveRecording=null;state.explorations=[${JSON.stringify(liveTrailSummary)}];state.explorationIdsSeen.add("${liveTrailId}");live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;resumeLiveTrailView();`);
+  run(`trailState.mode="idle";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;trailState.points=[];trailState.error="";trailState.loading=false;trailState.trimmed=false;trailState.requests.clear();trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:""};trailState.landmarks=[];trailState.landmarksTruncated=false;trailState.landmarkError="";state.liveRecording=null;state.explorations=[${JSON.stringify(liveTrailSummary)}];state.explorationIdsSeen.add("${liveTrailId}");live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;resumeLiveTrailView();`);
   let resolveLiveTrail;
   let trailCalls = 0;
   context.fetch = url => {
@@ -287,9 +406,9 @@ run('live.following=true;state.result=null;');
     trailCalls += 1;
     return new Promise(resolve => { resolveLiveTrail = resolve; });
   };
-  context.reply = frame("trail-session", 1, liveTrailSummary, "trail-world", {x: 1, z: 1, capturedAt: 100});
+  context.reply = frame("trail-session", 1, liveTrailSummary, "trail-world", {x: 1, z: 1, capturedAt: 100, landmarks: [{prefab: "panflute", x: 1, z: 1}]});
   run("applyLiveResult(reply)");
-  context.reply = frame("trail-session", 2, {...liveTrailSummary, frame_count: 2}, "trail-world", {x: 2, z: 1, capturedAt: 101});
+  context.reply = frame("trail-session", 2, {...liveTrailSummary, frame_count: 2}, "trail-world", {x: 2, z: 1, capturedAt: 101, landmarks: [{prefab: "panflute", x: 1, z: 1}, {prefab: "panflute", x: 2, z: 1}]});
   run("applyLiveResult(reply)");
   context.reply = frame("trail-session", 3, liveTrailSummary, "trail-world", {x: 3, z: 1, capturedAt: 102});
   run("applyLiveResult(reply)");
@@ -297,11 +416,20 @@ run('live.following=true;state.result=null;');
   assert.equal(run("trailState.live.localPoints.length"), 3);
   resolveLiveTrail(apiResponse(trailPayload(liveTrailSummary, [
     trailPoint(0, 99, 0, 0), trailPoint(2, 101, 222, 222)
+  ], [
+    remembered("panflute", 1, 1, 0, 1, 99, 100),
+    remembered("panflute", 9, 9, 0, 0, 99, 99)
   ])));
   await settle();
   const mergedLivePoints = JSON.parse(run("JSON.stringify(trailState.points)"));
   assert.deepEqual(mergedLivePoints.map(point => point.sequence), [0, 1, 2, 3]);
   assert.deepEqual({x: mergedLivePoints[2].x, z: mergedLivePoints[2].z}, {x: 2, z: 1}, "accepted local points win duplicate sequences");
+  const mergedLiveLandmarks = JSON.parse(run("JSON.stringify(trailState.landmarks)"));
+  const mergedPosition = mergedLiveLandmarks.find(item => item.prefab === "panflute" && item.x === 1);
+  assert.deepEqual({first: mergedPosition.first_sequence, last: mergedPosition.last_sequence,
+    firstSeen: mergedPosition.first_seen, lastSeen: mergedPosition.last_seen}, {first: 0, last: 2, firstSeen: 99, lastSeen: 101},
+    "historical and subsequently accepted live sightings merge first/last sequence endpoints");
+  assert.ok(mergedLiveLandmarks.some(item => item.x === 2) && mergedLiveLandmarks.some(item => item.x === 9));
   context.reply = frame("trail-session", 3, {...liveTrailSummary, frame_count: 3}, "trail-world", {x: 9, z: 1, capturedAt: 102});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.live.localPoints.length"), 3, "local trail points deduplicate by sequence");
@@ -318,15 +446,17 @@ run('live.following=true;state.result=null;');
     trailCallCounts.set(id, (trailCallCounts.get(id) || 0) + 1);
     return new Promise(resolve => pendingTrails.set(id, resolve));
   };
-  context.reply = frame("same-session", 1, raceA, "race-a", {x: 500, z: 0, capturedAt: 200});
+  context.reply = frame("same-session", 1, raceA, "race-a", {x: 500, z: 0, capturedAt: 200, landmarks: [{prefab: "panflute", x: 500, z: 0}]});
   run("applyLiveResult(reply)");
-  context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 200});
+  context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 200, landmarks: [{prefab: "panflute", x: 50, z: 0}]});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.identity"), "race-b\u0000forest\u0000same-session");
-  pendingTrails.get(raceA.id)(apiResponse(trailPayload(raceA, [trailPoint(0, 1, 500, 0)])));
+  pendingTrails.get(raceA.id)(apiResponse(trailPayload(raceA, [trailPoint(0, 1, 500, 0)], [remembered("panflute", 500, 0, 0, 0)])));
   await settle();
   assert.equal(run("trailState.id"), raceB.id, "late world trail responses cannot replace the active world");
   assert.ok(JSON.parse(run("JSON.stringify(trailState.points)")).every(point => point.x !== 500));
+  assert.ok(JSON.parse(run("JSON.stringify(trailState.landmarks)")).every(item => item.x !== 500),
+    "a late response from another world cannot replace remembered sightings");
   pendingTrails.get(raceB.id)({ok: false, status: 500, json: async () => ({error: "trail unavailable"})});
   await settle();
   assert.ok(element("trailStatus").textContent.includes("trail unavailable"));
@@ -346,7 +476,7 @@ run('live.following=true;state.result=null;');
   context.fetch = async url => {
     if (url !== "/api/explorations/" + raceB.id + "/trail") throw new Error("unexpected fetch " + url);
     trailCallCounts.set(raceB.id, trailCallCounts.get(raceB.id) + 1);
-    return apiResponse(trailPayload(raceB, [trailPoint(0, 199, 49, 0)]));
+    return apiResponse(trailPayload(raceB, [trailPoint(0, 199, 49, 0)], [remembered("panflute", 49, 0, 0, 0)]));
   };
   run("refreshSelectedTrail()");
   await settle();
@@ -360,7 +490,7 @@ run('live.following=true;state.result=null;');
     return apiResponse(trailPayload(newerRaceB, [
       trailPoint(0, 199, 49, 0), trailPoint(1, 200, 50, 0),
       trailPoint(2, 201, 51, 0), trailPoint(3, 202, 52, 0)
-    ]));
+    ], [remembered("panflute", 49, 0, 0, 2, 199, 201)]));
   };
   run(`state.explorations=[${JSON.stringify(newerRaceB)}];renderExplorations();live.following=true;liveEl.follow.checked=true;`);
   const trailButton = {dataset: {explorationId: raceB.id}};
@@ -373,6 +503,8 @@ run('live.following=true;state.result=null;');
   assert.equal(trailCallCounts.get(raceB.id), 4, "opening a replay refreshes cached trail data when its frame count advanced");
   assert.equal(run("trailState.points.length"), 4);
   assert.ok(element("trailStatus").textContent.includes("历史回放"));
+  assert.ok(JSON.parse(run("JSON.stringify(trailState.landmarks)")).some(item => item.prefab === "panflute" && item.x === 49),
+    "saved history opens remembered target positions");
   const liveIdentityBeforeResume = run("trailState.live.identity");
   context.fetch = async url => {
     if (!url.startsWith("/api/live?")) throw new Error("unexpected fetch " + url);
@@ -425,7 +557,7 @@ run('live.following=true;state.result=null;');
   await settle();
   assert.equal(run("trailState.points.length"), 0, "stopping invalidates a pending historical trail response");
 
-  run('trailState.mode="idle";trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false};state.liveRecording=null;');
+  run('trailState.mode="idle";trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:""};trailState.landmarks=[];trailState.landmarksTruncated=false;trailState.landmarkError="";state.liveRecording=null;');
   run(`for(let i=0;i<10002;i++){recordLiveTrailSnapshot({world_id:"bound-world",world_kind:"forest",session_id:"bound-session",sequence:i,captured_at:i,position:{x:i,z:0}});}`);
   assert.equal(run("trailState.live.localPoints.length"), 10000);
   assert.equal(run("trailState.live.localPoints[0].sequence"), 0, "trimming retains the original point");

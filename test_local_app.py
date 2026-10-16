@@ -721,6 +721,36 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             {"sequence": 3, "captured_at": captured_times[2], "x": 8.25, "z": -20},
         ],
         "bounds": {"min_x": -12, "max_x": 8.25, "min_z": -20, "max_z": 3.5},
+        "landmarks": [
+            {
+                "prefab": "panflute",
+                "x": 1,
+                "z": 1,
+                "first_seen": captured_times[0],
+                "last_seen": captured_times[2],
+                "first_sequence": 1,
+                "last_sequence": 3,
+            },
+            {
+                "prefab": "panflute",
+                "x": 3,
+                "z": 4,
+                "first_seen": captured_times[0],
+                "last_seen": captured_times[2],
+                "first_sequence": 1,
+                "last_sequence": 3,
+            },
+            {
+                "prefab": "pigking",
+                "x": 0,
+                "z": 2,
+                "first_seen": captured_times[0],
+                "last_seen": captured_times[2],
+                "first_sequence": 1,
+                "last_sequence": 3,
+            },
+        ],
+        "landmarks_truncated": False,
     }
     assert trail["id"] != other_summary["id"]
     other_status, _, isolated_trail = _get(
@@ -736,9 +766,15 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             "z": 600,
         }
     ]
+    assert isolated_trail["landmarks_truncated"] is False
+    assert {item["prefab"] for item in isolated_trail["landmarks"]} == {
+        "panflute",
+        "pigking",
+    }
+    assert isolated_trail["landmarks"][0]["first_sequence"] == 1
+    assert isolated_trail["landmarks"][0]["last_sequence"] == 1
     assert "private_plan_detail" not in json.dumps(trail)
     assert "directions" not in trail
-    assert "landmarks" not in trail
 
     journal_path = server.exploration_store._journal_path(summary["id"])
     complete_journal = journal_path.read_bytes()
@@ -789,6 +825,8 @@ def test_exploration_trail_api_handles_empty_invalid_missing_and_bad_journals(
     assert empty["frame_count"] == 0
     assert empty["points"] == []
     assert empty["bounds"] is None
+    assert empty["landmarks"] == []
+    assert empty["landmarks_truncated"] is False
 
     _, _, demo = _get(base_url, "/api/demo")
     snapshot = _live_snapshot(demo["directions"])

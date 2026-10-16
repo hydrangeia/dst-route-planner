@@ -93,6 +93,16 @@
     .trail-svg .trail-empty { fill: #728075; font: 12px "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif; }
     .trail-status { min-height: 17px; margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.45; text-align: center; }
     .trail-note { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
+    .trail-svg .trail-landmark-marker { fill: #fffdf6; stroke: #8a5426; stroke-width: 1.8; }
+    .trail-svg .trail-landmark-number { fill: #75491f; font: 700 8px "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif; pointer-events: none; }
+    .seen-landmarks { margin-top: 7px; padding-top: 7px; border-top: 1px solid #e8ede5; }
+    .seen-landmarks-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .seen-landmarks-head h4 { margin: 0; color: #53665a; font-size: 11px; }
+    .seen-landmarks-note, .seen-landmarks-status { color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .seen-landmarks-list { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+    .seen-landmark-item { display: grid; grid-template-columns: 19px minmax(0, 1fr); gap: 5px; align-items: start; color: #53665a; font-size: 10px; line-height: 1.4; }
+    .seen-landmark-number { display: inline-grid; width: 17px; height: 17px; place-items: center; border: 1px solid #a77a4c; border-radius: 50%; color: #75491f; background: #fffdf6; font-size: 9px; font-weight: 700; }
+    .seen-landmark-detail { display: block; color: var(--muted); overflow-wrap: anywhere; }
     .record-item-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; }
     .record-item-actions .button { min-height: 34px; padding: 6px 9px; font-size: 11px; }
     .record-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #e2e8de; border-radius: 10px; background: #fff; }
@@ -276,6 +286,11 @@
         <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="img" aria-label="玩家已观测位置轨迹"></svg>
         <div class="trail-status" id="trailStatus" role="status" aria-live="polite">勾选实时跟随后，会显示收到的位置。</div>
         <p class="trail-note">按观测位置连线；采集中断或坐标跳变处断开。</p>
+        <div class="seen-landmarks" aria-label="已见目标">
+          <div class="seen-landmarks-head"><h4>已见目标</h4><span class="seen-landmarks-note">相对最新观测 · 最近看到</span></div>
+          <div class="seen-landmarks-status" id="seenLandmarksStatus" role="status" aria-live="polite">选择目标，回看最近见到的位置。</div>
+          <ol class="seen-landmarks-list" id="seenLandmarksList"></ol>
+        </div>
       </div>
       <div class="records-head"><h3>已保存回放</h3><button class="button" id="refreshExplorationsButton" type="button">刷新回放</button></div>
       <div class="records-status" id="explorationsStatus" role="status" aria-live="polite">正在读取探索回放…</div>
@@ -419,6 +434,8 @@
       explorationList: document.getElementById("explorationList"),
       trailSvg: document.getElementById("trailSvg"), trailStatus: document.getElementById("trailStatus"),
       refreshTrail: document.getElementById("refreshTrailButton"),
+      seenLandmarksStatus: document.getElementById("seenLandmarksStatus"),
+      seenLandmarksList: document.getElementById("seenLandmarksList"),
       liveCheckButton: document.getElementById("liveCheckButton"),
       liveCheckStatus: document.getElementById("liveCheckStatus")
     };
@@ -535,7 +552,9 @@
     const trailState = {
       mode: "idle", revision: 0, id: null, identity: null, summary: null,
       points: [], error: "", loading: false, trimmed: false, requests: new Map(),
-      live: { identity: null, id: null, localPoints: [], storedPoints: [], trimmed: false }
+      landmarks: [], landmarksTruncated: false, landmarkError: "",
+      live: { identity: null, id: null, localPoints: [], storedPoints: [], trimmed: false,
+        localLandmarks: [], storedLandmarks: [], landmarksTruncated: false, landmarkError: "" }
     };
     function normalizeTrailPoint(value) {
       if (!value || typeof value !== "object" || !Number.isSafeInteger(value.sequence) || value.sequence < 0 ||
@@ -568,6 +587,71 @@
       if (limited.trimmed) trailState.trimmed = true;
       return limited.points;
     }
+    function normalizeTrailLandmark(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          typeof value.prefab !== "string" || !value.prefab || value.prefab.length > 128 ||
+          typeof value.x !== "number" || !Number.isFinite(value.x) ||
+          typeof value.z !== "number" || !Number.isFinite(value.z) ||
+          typeof value.first_seen !== "number" || !Number.isFinite(value.first_seen) ||
+          typeof value.last_seen !== "number" || !Number.isFinite(value.last_seen) ||
+          !Number.isSafeInteger(value.first_sequence) || value.first_sequence < 0 ||
+          !Number.isSafeInteger(value.last_sequence) || value.last_sequence < value.first_sequence) return null;
+      return {prefab: value.prefab, x: value.x, z: value.z, first_seen: value.first_seen,
+        last_seen: value.last_seen, first_sequence: value.first_sequence, last_sequence: value.last_sequence};
+    }
+    function trailLandmarkKey(value) { return JSON.stringify([value.prefab, value.x, value.z]); }
+    const MAX_TRAIL_LANDMARKS = 500;
+    function mergeTrailLandmarks(first, second, firstTruncated = false, secondTruncated = false) {
+      const byPosition = new Map();
+      for (const value of [...(first || []), ...(second || [])]) {
+        const landmark = normalizeTrailLandmark(value);
+        if (!landmark) continue;
+        const key = trailLandmarkKey(landmark);
+        const existing = byPosition.get(key);
+        if (!existing) { byPosition.set(key, landmark); continue; }
+        const earliest = landmark.first_sequence < existing.first_sequence ? landmark : existing;
+        const latest = landmark.last_sequence >= existing.last_sequence ? landmark : existing;
+        byPosition.set(key, {...existing, first_seen: earliest.first_seen, first_sequence: earliest.first_sequence,
+          last_seen: latest.last_seen, last_sequence: latest.last_sequence});
+      }
+      const ordered = [...byPosition.values()].sort((a, b) =>
+        b.last_sequence - a.last_sequence || (a.prefab < b.prefab ? -1 : a.prefab > b.prefab ? 1 : 0) || a.x - b.x || a.z - b.z);
+      const trimmed = !!firstTruncated || !!secondTruncated || ordered.length > MAX_TRAIL_LANDMARKS;
+      return {landmarks: trimmed && ordered.length > MAX_TRAIL_LANDMARKS
+        ? ordered.slice(0, MAX_TRAIL_LANDMARKS) : ordered, trimmed};
+    }
+    function validateTrailLandmarks(value) {
+      const hasLandmarks = Object.prototype.hasOwnProperty.call(value, "landmarks");
+      const hasTruncated = Object.prototype.hasOwnProperty.call(value, "landmarks_truncated");
+      if (!hasLandmarks && !hasTruncated) return {landmarks: [], trimmed: false, error: ""};
+      if (hasLandmarks && !Array.isArray(value.landmarks)) {
+        return {landmarks: [], trimmed: false, error: "地标列表格式无法识别。"};
+      }
+      if (hasTruncated && typeof value.landmarks_truncated !== "boolean") {
+        return {landmarks: [], trimmed: false, error: "地标截断状态格式无法识别。"};
+      }
+      const normalized = (value.landmarks || []).map(normalizeTrailLandmark);
+      if (normalized.some(item => !item)) return {landmarks: [], trimmed: false, error: "地标位置格式无法识别。"};
+      const limited = mergeTrailLandmarks([], normalized, false, value.landmarks_truncated || false);
+      return {landmarks: limited.landmarks, trimmed: limited.trimmed, error: ""};
+    }
+    function normalizeSnapshotLandmarks(snapshot) {
+      if (!Object.prototype.hasOwnProperty.call(snapshot, "landmarks")) return {present: false, landmarks: []};
+      if (!Array.isArray(snapshot.landmarks) || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < 0 ||
+          typeof snapshot.captured_at !== "number" || !Number.isFinite(snapshot.captured_at)) {
+        throw new Error("实时地标快照格式无法识别。");
+      }
+      const landmarks = snapshot.landmarks.map(value => {
+        if (!value || typeof value !== "object" || Array.isArray(value) ||
+            typeof value.prefab !== "string" || !value.prefab || value.prefab.length > 128 ||
+            typeof value.x !== "number" || !Number.isFinite(value.x) ||
+            typeof value.z !== "number" || !Number.isFinite(value.z)) return null;
+        return {prefab: value.prefab, x: value.x, z: value.z, first_seen: snapshot.captured_at,
+          last_seen: snapshot.captured_at, first_sequence: snapshot.sequence, last_sequence: snapshot.sequence};
+      });
+      if (landmarks.some(item => !item)) throw new Error("实时地标位置格式无法识别。");
+      return {present: true, landmarks};
+    }
     function validateTrailPayload(value, summary) {
       if (!value || typeof value !== "object" || Array.isArray(value) || value.trail_version !== 1 ||
           value.id !== summary.id || value.world_id !== summary.world_id ||
@@ -587,17 +671,26 @@
       const unique = [...new Map(points.map(point => [point.sequence, point])).values()]
         .sort((a, b) => a.sequence - b.sequence);
       const limited = limitTrailPoints(unique);
+      const landmarks = validateTrailLandmarks(value);
       return { id: value.id, world_id: value.world_id, world_kind: value.world_kind,
         session_id: value.session_id, frame_count: value.frame_count, bounds: value.bounds,
-        points: limited.points, trimmed: limited.trimmed || unique.length !== points.length };
+        points: limited.points, trimmed: limited.trimmed || unique.length !== points.length,
+        landmarks: landmarks.landmarks, landmarksTruncated: landmarks.trimmed, landmarkError: landmarks.error };
     }
-    function projectTrailCoordinates(points) {
+    function projectTrailCoordinates(points, landmarks = []) {
       const width = 360, height = 220;
       const plot = { left: 34, right: 326, top: 25, bottom: 190 };
-      if (!Array.isArray(points) || !points.length) {
-        return { width, height, scale: 0, ranges: null, points: [] };
+      const playerPoints = Array.isArray(points) ? points : [];
+      const landmarkPoints = Array.isArray(landmarks) ? landmarks : [];
+      const coordinates = [...playerPoints, ...landmarkPoints];
+      if (!coordinates.length) {
+        return { width, height, scale: 0, ranges: null, points: [], landmarks: [] };
       }
-      const xs = points.map(point => point.x), zs = points.map(point => point.z);
+      if (coordinates.some(point => !point || typeof point.x !== "number" || !Number.isFinite(point.x) ||
+          typeof point.z !== "number" || !Number.isFinite(point.z))) {
+        return { width, height, scale: 0, ranges: null, points: [], landmarks: [], error: true };
+      }
+      const xs = coordinates.map(point => point.x), zs = coordinates.map(point => point.z);
       const minX = Math.min(...xs), maxX = Math.max(...xs), minZ = Math.min(...zs), maxZ = Math.max(...zs);
       const spanX = Math.max(maxX - minX, 0), spanZ = Math.max(maxZ - minZ, 0);
       const padX = Math.max(spanX * 0.12, 8), padZ = Math.max(spanZ * 0.12, 8);
@@ -605,15 +698,18 @@
       const scale = Math.min((plot.right - plot.left) / rangeX, (plot.bottom - plot.top) / rangeZ);
       const centerX = (minX + maxX) / 2, centerZ = (minZ + maxZ) / 2;
       const screenX = (plot.left + plot.right) / 2, screenY = (plot.top + plot.bottom) / 2;
-      const projected = points.map(point => ({ sequence: point.sequence,
-        x: screenX + (point.x - centerX) * scale,
-        y: screenY - (point.z - centerZ) * scale }));
-      if (![rangeX, rangeZ, scale, centerX, centerZ, ...projected.flatMap(point => [point.x, point.y])].every(Number.isFinite) || scale <= 0) {
-        return { width, height, scale: 0, ranges: null, points: [], error: true };
+      const project = point => ({x: screenX + (point.x - centerX) * scale, y: screenY - (point.z - centerZ) * scale});
+      const projected = playerPoints.map(point => ({sequence: point.sequence, ...project(point)}));
+      const projectedLandmarks = landmarkPoints.map((point, index) => ({number: index + 1, ...project(point)}));
+      if (![rangeX, rangeZ, scale, centerX, centerZ,
+        ...projected.flatMap(point => [point.x, point.y]),
+        ...projectedLandmarks.flatMap(point => [point.x, point.y])].every(Number.isFinite) || scale <= 0) {
+        return { width, height, scale: 0, ranges: null, points: [], landmarks: [], error: true };
       }
       return {
         width, height, scale,
-        ranges: { min_x: minX, max_x: maxX, min_z: minZ, max_z: maxZ }, points: projected
+        ranges: { min_x: minX, max_x: maxX, min_z: minZ, max_z: maxZ },
+        points: projected, landmarks: projectedLandmarks
       };
     }
     function splitTrailSegments(points) {
@@ -630,20 +726,72 @@
       if (segment.length) segments.push(segment);
       return segments;
     }
+    function selectedTrailLandmarks() {
+      return trailState.landmarks.filter(item => item.prefab === state.target)
+        .sort((a, b) => b.last_sequence - a.last_sequence || a.x - b.x || a.z - b.z)
+        .slice(0, 10);
+    }
+    function landmarkSeenLabel(capturedAt) {
+      const age = Math.max(0, Date.now() / 1000 - capturedAt);
+      if (age < 60) return Math.floor(age) + " 秒前";
+      if (age < 3600) return Math.floor(age / 60) + " 分钟前";
+      if (age < 86400) return Math.floor(age / 3600) + " 小时前";
+      const date = new Date(capturedAt * 1000);
+      return Number.isFinite(date.getTime()) ? date.toLocaleString() : "时间未知";
+    }
+    function landmarkRelativeLabel(landmark, latest) {
+      if (!latest) return "暂无最新玩家观测";
+      const dx = landmark.x - latest.x, dz = landmark.z - latest.z;
+      const distance = Math.hypot(dx, dz);
+      if (!Number.isFinite(distance)) return "坐标范围过大";
+      if (distance < 1e-9) return "同一位置 · 直线距离 0.0";
+      const headings = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"];
+      const angle = (Math.atan2(dx, dz) * 180 / Math.PI + 360) % 360;
+      return headings[Math.round(angle / 45) % 8] + " · " + "直线距离 " + distance.toFixed(1);
+    }
+    function renderSeenLandmarks(displayed) {
+      const all = trailState.landmarks.filter(item => item.prefab === state.target)
+        .sort((a, b) => b.last_sequence - a.last_sequence || a.x - b.x || a.z - b.z);
+      const target = TARGETS[state.target] || state.target || "当前目标";
+      const latest = trailState.points.length ? trailState.points[trailState.points.length - 1] : null;
+      const details = displayed.map((item, index) => {
+        const location = "世界坐标 X " + trailCoordinate(item.x) + " / Z " + trailCoordinate(item.z);
+        const relation = landmarkRelativeLabel(item, latest);
+        return '<li class="seen-landmark-item"><span class="seen-landmark-number">' + (index + 1) +
+          '</span><span>' + esc(TARGETS[item.prefab] || item.prefab) + ' <code>' + esc(item.prefab) + '</code>' +
+          '<span class="seen-landmark-detail">' + location + ' · 最近看到 ' + esc(landmarkSeenLabel(item.last_seen)) +
+          ' · 相对最新观测：' + esc(relation) + '</span></span></li>';
+      }).join("");
+      el.seenLandmarksList.innerHTML = details;
+      if (trailState.landmarkError) {
+        el.seenLandmarksStatus.textContent = "已见地标读取失败：" + trailState.landmarkError +
+          (all.length ? "；仍显示本地已记录的位置。" : "；没有可显示的位置。");
+      } else if (!all.length) {
+        el.seenLandmarksStatus.textContent = "暂未记录目标「" + target +
+          "」的位置。";
+      } else {
+        el.seenLandmarksStatus.textContent = "目标「" + target + "」 · 显示最近 " + displayed.length + " / " +
+          all.length + " 处" +
+          (trailState.landmarksTruncated ? " · 较早位置可能已省略，最多保留 500 处。" : "");
+      }
+    }
     function trailCoordinate(value) { return Number(value).toFixed(1); }
     function trailSvgPoint(point) { return point.x.toFixed(2) + "," + point.y.toFixed(2); }
     function renderTrail() {
       const points = trailState.points;
-      const projection = projectTrailCoordinates(points);
-      let svg = '<title id="trailSvgTitle">玩家已观测位置轨迹</title>';
+      const displayedLandmarks = selectedTrailLandmarks();
+      renderSeenLandmarks(displayedLandmarks);
+      const projection = projectTrailCoordinates(points, displayedLandmarks);
+      let svg = '<title id="trailSvgTitle">玩家已观测轨迹与已见目标位置</title>';
       svg += '<line class="trail-grid" x1="34" x2="326" y1="107.5" y2="107.5"/><line class="trail-grid" x1="180" x2="180" y1="25" y2="190"/>';
       svg += '<g class="trail-direction"><path d="M18 55V25m0 0-5 8m5-8 5 8M18 66h31m0 0-8-5m8 5-8 5"/></g>';
       svg += '<text class="trail-text" x="28" y="31">+Z 北</text><text class="trail-text" x="53" y="69">+X 东</text>';
       svg += '<circle class="trail-first" cx="127" cy="207" r="4"/><text class="trail-text" x="135" y="210">起点</text>';
       svg += '<circle class="trail-latest" cx="190" cy="207" r="4"/><text class="trail-text" x="198" y="210">最新位置</text>';
+      svg += '<path class="trail-landmark-marker" d="M250 201l6 6-6 6-6-6z"/><text class="trail-landmark-number" x="250" y="210" text-anchor="middle">1</text><text class="trail-text" x="261" y="210">已见目标</text>';
       if (projection.error) {
         svg += '<text class="trail-empty" x="180" y="119" text-anchor="middle">坐标范围过大，暂时无法显示</text>';
-      } else if (!points.length) {
+      } else if (!points.length && !displayedLandmarks.length) {
         svg += '<text class="trail-empty" x="180" y="119" text-anchor="middle">' +
           (trailState.error ? '轨迹暂时无法显示' : '还没有可绘制的坐标') + '</text>';
       } else {
@@ -660,9 +808,19 @@
           });
           svg += '<path class="trail-route" d="' + commands.join(" ") + '"/>';
         }
-        const first = projection.points[0], latest = projection.points[projection.points.length - 1];
-        svg += '<circle class="trail-first" cx="' + first.x.toFixed(2) + '" cy="' + first.y.toFixed(2) + '" r="6"><title>最早观测位置</title></circle>';
-        svg += '<circle class="trail-latest" cx="' + latest.x.toFixed(2) + '" cy="' + latest.y.toFixed(2) + '" r="4"><title>最近观测位置</title></circle>';
+        if (points.length) {
+          const first = projection.points[0], latest = projection.points[projection.points.length - 1];
+          svg += '<circle class="trail-first" cx="' + first.x.toFixed(2) + '" cy="' + first.y.toFixed(2) + '" r="6"><title>最早观测位置</title></circle>';
+          svg += '<circle class="trail-latest" cx="' + latest.x.toFixed(2) + '" cy="' + latest.y.toFixed(2) + '" r="4"><title>最近观测位置</title></circle>';
+        }
+        for (const landmark of projection.landmarks) {
+          svg += '<path class="trail-landmark-marker" d="M' + landmark.x.toFixed(2) + " " + (landmark.y - 7).toFixed(2) +
+            "L" + (landmark.x + 7).toFixed(2) + " " + landmark.y.toFixed(2) +
+            "L" + landmark.x.toFixed(2) + " " + (landmark.y + 7).toFixed(2) +
+            "L" + (landmark.x - 7).toFixed(2) + " " + landmark.y.toFixed(2) + 'Z"/>' +
+            '<text class="trail-landmark-number" x="' + landmark.x.toFixed(2) + '" y="' + (landmark.y + 3).toFixed(2) +
+            '" text-anchor="middle">' + landmark.number + '</text>';
+        }
       }
       el.trailSvg.innerHTML = svg;
       if (projection.error) {
@@ -673,7 +831,7 @@
         el.trailStatus.textContent = "轨迹读取失败：" + trailState.error + (points.length ? " · 已显示本地收到的位置" : "");
         return;
       }
-      if (!points.length) {
+      if (!points.length && !displayedLandmarks.length) {
         el.trailStatus.textContent = trailState.loading ? "正在读取探索轨迹…"
           : trailState.mode === "history" ? "这段回放还没有坐标。"
           : trailState.mode === "idle" ? "勾选实时跟随后，会显示收到的位置。" : "正在等待可绘制的位置。";
@@ -682,8 +840,8 @@
       const ranges = projection.ranges;
       const prefix = trailState.mode === "history" ? "历史回放 · "
         : trailState.mode === "idle" ? "实时跟随已暂停 · " : "实时观测 · ";
-      el.trailStatus.textContent = prefix + points.length + " 个位置 · X " +
-        trailCoordinate(ranges.min_x) + "–" + trailCoordinate(ranges.max_x) +
+      el.trailStatus.textContent = (points.length ? prefix + points.length + " 个位置" : prefix + "无玩家坐标") +
+        " · X " + trailCoordinate(ranges.min_x) + "–" + trailCoordinate(ranges.max_x) +
         " / Z " + trailCoordinate(ranges.min_z) + "–" + trailCoordinate(ranges.max_z) +
         (trailState.trimmed ? " · 仅保留起点和最近 9999 个位置" : "") +
         (trailState.loading ? " · 正在更新" : "");
@@ -698,8 +856,9 @@
       const identity = explorationReplayIdentity(summary);
       let request = trailState.requests.get(summary.id);
       if (request && request.identity !== identity) return { identity, error: "回放身份不匹配。", promise: Promise.resolve(null) };
-      const needsRefresh = request && (options.force || !!request.error ||
-        (!!request.payload && summary.frame_count > request.payload.frame_count));
+      const historyAdvanced = options.history && request && request.payload &&
+        summary.frame_count > request.payload.frame_count;
+      const needsRefresh = request && (options.force || (options.history && (!!request.error || historyAdvanced)));
       if (needsRefresh) {
         trailState.requests.delete(summary.id);
         request = null;
@@ -728,7 +887,7 @@
       return request;
     }
     function loadTrailForSelection(summary, revision, mode, options = {}) {
-      const request = trailRequest(summary, options);
+      const request = trailRequest(summary, {...options, history: mode === "history"});
       trailState.loading = !request.payload && !request.error;
       if (trailState.loading) renderTrail();
       request.promise.then(payload => {
@@ -743,12 +902,31 @@
         if (mode === "live") {
           trailState.live.storedPoints = payload.points;
           trailState.live.trimmed = trailState.live.trimmed || payload.trimmed;
+          trailState.live.storedLandmarks = payload.landmarks;
+          trailState.live.landmarksTruncated = trailState.live.landmarksTruncated || payload.landmarksTruncated;
+          trailState.live.landmarkError = payload.landmarkError;
           trailState.trimmed = trailState.live.trimmed;
+          const mergedLandmarks = mergeTrailLandmarks(payload.landmarks, trailState.live.localLandmarks,
+            payload.landmarksTruncated, trailState.live.landmarksTruncated);
+          trailState.landmarks = mergedLandmarks.landmarks;
+          trailState.landmarksTruncated = mergedLandmarks.trimmed;
+          trailState.landmarkError = trailState.live.landmarkError;
           trailState.points = mergeTrailPoints(payload.points, trailState.live.localPoints);
         } else {
           const liveMatch = trailState.live.id === summary.id && trailState.live.identity === trailState.identity;
           trailState.trimmed = payload.trimmed || (liveMatch && trailState.live.trimmed);
+          const mergedLandmarks = mergeTrailLandmarks(payload.landmarks,
+            liveMatch ? trailState.live.localLandmarks : [],
+            payload.landmarksTruncated, liveMatch && trailState.live.landmarksTruncated);
+          trailState.landmarks = mergedLandmarks.landmarks;
+          trailState.landmarksTruncated = mergedLandmarks.trimmed;
+          trailState.landmarkError = payload.landmarkError || (liveMatch ? trailState.live.landmarkError : "");
           trailState.points = liveMatch ? mergeTrailPoints(payload.points, trailState.live.localPoints) : payload.points;
+          if (liveMatch) {
+            trailState.live.storedPoints = payload.points;
+            trailState.live.storedLandmarks = payload.landmarks;
+            trailState.live.landmarksTruncated = payload.landmarksTruncated;
+          }
         }
         renderTrail();
       });
@@ -771,6 +949,11 @@
       trailState.error = "";
       trailState.loading = false;
       trailState.trimmed = liveTrail.trimmed;
+      const mergedLandmarks = mergeTrailLandmarks(liveTrail.storedLandmarks, liveTrail.localLandmarks,
+        liveTrail.landmarksTruncated, liveTrail.landmarksTruncated);
+      trailState.landmarks = mergedLandmarks.landmarks;
+      trailState.landmarksTruncated = mergedLandmarks.trimmed;
+      trailState.landmarkError = liveTrail.landmarkError;
       trailState.points = mergeTrailPoints(liveTrail.storedPoints, liveTrail.localPoints);
       trailState.revision += 1;
       renderTrail();
@@ -788,12 +971,30 @@
         liveTrail.localPoints = [];
         liveTrail.storedPoints = [];
         liveTrail.trimmed = false;
+        liveTrail.localLandmarks = [];
+        liveTrail.storedLandmarks = [];
+        liveTrail.landmarksTruncated = false;
+        liveTrail.landmarkError = "";
       }
       const summary = state.liveRecording && explorationReplayIdentity(state.liveRecording) === identity
         ? state.liveRecording : null;
       if (summary && summary.id && liveTrail.id !== summary.id) {
         liveTrail.id = summary.id;
         liveTrail.storedPoints = [];
+        liveTrail.storedLandmarks = [];
+        liveTrail.landmarksTruncated = false;
+      }
+      try {
+        const snapshotLandmarks = normalizeSnapshotLandmarks(snapshot);
+        if (snapshotLandmarks.present && snapshotLandmarks.landmarks.length) {
+          const merged = mergeTrailLandmarks(liveTrail.localLandmarks, snapshotLandmarks.landmarks,
+            liveTrail.landmarksTruncated, false);
+          liveTrail.localLandmarks = merged.landmarks;
+          liveTrail.landmarksTruncated = merged.trimmed;
+        }
+        liveTrail.landmarkError = "";
+      } catch (error) {
+        liveTrail.landmarkError = error && error.message ? error.message : "地标快照格式无法识别。";
       }
       const added = point ? insertTrailPoint(liveTrail.localPoints, point) : false;
       const limitedLocal = limitTrailPoints(liveTrail.localPoints);
@@ -819,6 +1020,11 @@
           trailState.points = limitedView.points;
         }
       }
+      const mergedLandmarks = mergeTrailLandmarks(liveTrail.storedLandmarks, liveTrail.localLandmarks,
+        liveTrail.landmarksTruncated, liveTrail.landmarksTruncated);
+      trailState.landmarks = mergedLandmarks.landmarks;
+      trailState.landmarksTruncated = mergedLandmarks.trimmed;
+      trailState.landmarkError = liveTrail.landmarkError;
       renderTrail();
       if (selectionChanged && trailState.summary) loadTrailForSelection(trailState.summary, trailState.revision, "live");
     }
@@ -836,6 +1042,11 @@
       trailState.trimmed = false;
       const liveMatch = trailState.live.id === normalized.id && trailState.live.identity === trailState.identity;
       trailState.trimmed = liveMatch && trailState.live.trimmed;
+      const mergedLandmarks = mergeTrailLandmarks([], liveMatch ? trailState.live.localLandmarks : [],
+        false, liveMatch && trailState.live.landmarksTruncated);
+      trailState.landmarks = mergedLandmarks.landmarks;
+      trailState.landmarksTruncated = mergedLandmarks.trimmed;
+      trailState.landmarkError = liveMatch ? trailState.live.landmarkError : "";
       trailState.points = liveMatch ? mergeTrailPoints(trailState.live.storedPoints, trailState.live.localPoints) : [];
       renderTrail();
       loadTrailForSelection(normalized, trailState.revision, "history");
@@ -1804,7 +2015,7 @@
       cancelStaleRequest();
     }
 
-    el.target.addEventListener("change", () => { state.target = el.target.value; cancelStaleRequest(); });
+    el.target.addEventListener("change", () => { state.target = el.target.value; cancelStaleRequest(); renderTrail(); });
     el.seed.addEventListener("input", () => { state.seed = el.seed.value; cancelStaleRequest(); });
     el.diagonal.addEventListener("change", () => {
       state.showDiagonals = el.diagonal.checked; cancelStaleRequest(); renderCards();

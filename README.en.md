@@ -40,6 +40,8 @@ While live following is active, the tool saves newly received snapshots locally,
 
 “探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review that exploration; this pauses live following. Check live following again to return to the current session. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
 
+The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists the last sighting time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there.
+
 ## Manual entry and saved records
 
 1. Choose a target.
@@ -62,7 +64,7 @@ Match room/task clues and use task-graph context to rank exploration directions
   ↓
 The page updates suggestions and straight-line distance to a visible target
   ↓
-New snapshots → local replay → trail showing start and latest positions
+New snapshots → local replay → trail showing start, latest position, and observed targets
   ↓
 Saved replay → view its trail or download coordinates, clues, and suggestions
   ↓
