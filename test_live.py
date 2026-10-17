@@ -171,6 +171,24 @@ def test_snapshot_validation_accepts_legacy_empty_and_populated_terrain() -> Non
     )
     assert validate_snapshot(populated)["terrain"] == populated["terrain"]
 
+    with_connections = _snapshot(
+        terrain={
+            "tile_size": 4,
+            "tiles": [
+                {
+                    "x": 0,
+                    "z": 0,
+                    "tile": "GRASS",
+                    "passable": True,
+                    "connections": {"east": True, "north": False},
+                },
+                {"x": 4, "z": 0, "tile": "FOREST", "passable": True},
+                {"x": 0, "z": 4, "tile": "ROCKY", "passable": True, "connections": {}},
+            ],
+        }
+    )
+    assert validate_snapshot(with_connections)["terrain"] == with_connections["terrain"]
+
     adjacent_large_coordinates = _snapshot(
         terrain={
             "tile_size": 4,
@@ -198,7 +216,7 @@ def test_snapshot_validation_accepts_legacy_empty_and_populated_terrain() -> Non
         ({"tile_size": 4, "tiles": [{"x": 0, "z": 0}]}, "contain x, z, and tile"),
         (
             {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "extra": 1}]},
-            "only optional passable",
+            "only optional passable or connections",
         ),
         ({"tile_size": 4, "tiles": [{"x": True, "z": 0, "tile": "GRASS"}]}, r"terrain.tiles\[0\].x"),
         ({"tile_size": 4, "tiles": [{"x": 0, "z": float("nan"), "tile": "GRASS"}]}, r"terrain.tiles\[0\].z"),
@@ -219,6 +237,46 @@ def test_snapshot_validation_accepts_legacy_empty_and_populated_terrain() -> Non
         (
             {"tile_size": 4, "tiles": [{"x": 1, "z": 2, "tile": "GRASS"}, {"x": 1.0, "z": 2, "tile": "FOREST"}]},
             "duplicate coordinate",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "connections": None}]},
+            r"connections must be an object",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "connections": []}]},
+            r"connections must be an object",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "connections": {"west": True}}]},
+            r"only east and north",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "connections": {"east": 1}}]},
+            r"connections.east must be a boolean",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "passable": False, "connections": {"east": False}}]},
+            r"connections requires passable=true on this tile",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "connections": {"east": True}}, {"x": 4, "z": 0, "tile": "FOREST", "passable": True}]},
+            r"connections requires passable=true on this tile",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "passable": True, "connections": {"east": False}}]},
+            r"connections.east requires a distinct neighboring tile",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "passable": True, "connections": {"east": True}}, {"x": 4, "z": 0, "tile": "FOREST"}]},
+            r"connections.east requires a distinct neighboring tile",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "passable": True, "connections": {"east": False}}, {"x": 4, "z": 0, "tile": "FOREST", "passable": False}]},
+            r"connections.east requires a distinct neighboring tile",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 1e100, "z": 0, "tile": "GRASS", "passable": True, "connections": {"east": True}}]},
+            r"connections.east requires a distinct neighboring tile",
         ),
     ],
 )

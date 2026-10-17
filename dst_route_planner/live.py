@@ -149,10 +149,10 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
         for index, item in enumerate(tiles):
             tile = _mapping(item, f"terrain.tiles[{index}]")
             required_tile_fields = {"x", "z", "tile"}
-            allowed_tile_fields = required_tile_fields | {"passable"}
+            allowed_tile_fields = required_tile_fields | {"passable", "connections"}
             if not required_tile_fields <= set(tile) or set(tile) - allowed_tile_fields:
                 raise LiveSnapshotError(
-                    f"terrain.tiles[{index}] must contain x, z, and tile, with only optional passable."
+                    f"terrain.tiles[{index}] must contain x, z, and tile, with only optional passable or connections."
                 )
             _finite_number(tile["x"], f"terrain.tiles[{index}].x")
             _finite_number(tile["z"], f"terrain.tiles[{index}].z")
@@ -161,12 +161,53 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
                 raise LiveSnapshotError(
                     f"terrain.tiles[{index}].passable must be a boolean."
                 )
+            if "connections" in tile:
+                connections = tile["connections"]
+                if not isinstance(connections, Mapping):
+                    raise LiveSnapshotError(
+                        f"terrain.tiles[{index}].connections must be an object."
+                    )
+                if any(
+                    type(direction) is not str or direction not in {"east", "north"}
+                    for direction in connections
+                ):
+                    raise LiveSnapshotError(
+                        f"terrain.tiles[{index}].connections may contain only east and north."
+                    )
+                for direction, connected in connections.items():
+                    if type(connected) is not bool:
+                        raise LiveSnapshotError(
+                            f"terrain.tiles[{index}].connections.{direction} must be a boolean."
+                        )
             coordinate = (tile["x"], tile["z"])
             if coordinate in coordinates:
                 raise LiveSnapshotError(
                     f"terrain.tiles contains duplicate coordinate ({tile['x']!r}, {tile['z']!r})."
                 )
             coordinates.add(coordinate)
+
+        # Resolve references only after every tile has passed its shape,
+        # value, and duplicate-coordinate checks.
+        tile_by_coordinate = {(tile["x"], tile["z"]): tile for tile in tiles}
+        for index, tile in enumerate(tiles):
+            connections = tile.get("connections")
+            if not connections:
+                continue
+            if tile.get("passable") is not True:
+                raise LiveSnapshotError(
+                    f"terrain.tiles[{index}].connections requires passable=true on this tile."
+                )
+            x = tile["x"]
+            z = tile["z"]
+            for direction in connections:
+                neighbor_coordinate = (
+                    (x + 4, z) if direction == "east" else (x, z + 4)
+                )
+                neighbor = tile_by_coordinate.get(neighbor_coordinate)
+                if neighbor is None or neighbor is tile or neighbor.get("passable") is not True:
+                    raise LiveSnapshotError(
+                        f"terrain.tiles[{index}].connections.{direction} requires a distinct neighboring tile with passable=true."
+                    )
 
     return dict(data)
 

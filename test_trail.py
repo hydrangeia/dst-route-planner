@@ -239,16 +239,34 @@ def test_project_trail_uses_sequence_for_latest_tile_and_time_when_clock_moves_b
             [(1, 300, 0, 0), (2, 100, 1, 0), (3, 50, 2, 0)],
             terrain_by_frame=[
                 [
-                    {"x": 1, "z": 2, "tile": "GRASS", "passable": True},
+                    {
+                        "x": 1,
+                        "z": 2,
+                        "tile": "GRASS",
+                        "passable": True,
+                        "connections": {"east": True, "north": False},
+                    },
                     {"x": -1, "z": 0, "tile": "MARSH", "passable": False},
                 ],
                 [
-                    {"x": 1, "z": 2, "tile": "FOREST", "passable": False},
+                    {
+                        "x": 1,
+                        "z": 2,
+                        "tile": "FOREST",
+                        "passable": False,
+                        "connections": {"east": False},
+                    },
                     {"x": 3, "z": 4, "tile": "ROCKY"},
                 ],
                 [
                     {"x": 1, "z": 2, "tile": "DECIDUOUS"},
-                    {"x": 5, "z": 6, "tile": "GRASS", "passable": True},
+                    {
+                        "x": 5,
+                        "z": 6,
+                        "tile": "GRASS",
+                        "passable": True,
+                        "connections": {"north": False},
+                    },
                 ],
             ],
         )
@@ -265,6 +283,7 @@ def test_project_trail_uses_sequence_for_latest_tile_and_time_when_clock_moves_b
                 "last_seen": 50,
                 "last_sequence": 3,
                 "passable": True,
+                "connections": {"north": False},
             },
             {"x": 3, "z": 4, "tile": "ROCKY", "last_seen": 100, "last_sequence": 2},
             {
@@ -279,6 +298,8 @@ def test_project_trail_uses_sequence_for_latest_tile_and_time_when_clock_moves_b
         "truncated": False,
     }
     assert "passable" not in trail["terrain"]["tiles"][0]
+    assert "connections" not in trail["terrain"]["tiles"][0]
+    assert trail["terrain"]["tiles"][1]["connections"] == {"north": False}
     assert trail["terrain"]["tiles"][3]["passable"] is False
 
 

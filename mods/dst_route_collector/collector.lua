@@ -121,7 +121,84 @@ local function visible_tile_center(player, map, tx, ty)
     return nil
 end
 
-local function sample_terrain(player, map, x, z)
+local function add_terrain_connections(world, tiles)
+    local pathfinder = world.Pathfinder
+    if pathfinder == nil or pathfinder.IsClear == nil then
+        return
+    end
+
+    local tiles_by_x = {}
+    for _, tile in ipairs(tiles) do
+        local column = tiles_by_x[tile.x]
+        if column == nil then
+            column = {}
+            tiles_by_x[tile.x] = column
+        end
+        column[tile.z] = tile
+    end
+
+    local function check_connection(first, second)
+        if first.passable ~= true or second.passable ~= true then
+            return nil
+        end
+
+        local options = { ignorewalls = false, ignorecreep = true }
+        local forward_ok, forward = pcall(
+            pathfinder.IsClear,
+            pathfinder,
+            first.x,
+            0,
+            first.z,
+            second.x,
+            0,
+            second.z,
+            options
+        )
+        local backward_ok, backward = pcall(
+            pathfinder.IsClear,
+            pathfinder,
+            second.x,
+            0,
+            second.z,
+            first.x,
+            0,
+            first.z,
+            options
+        )
+        if forward_ok and backward_ok
+            and type(forward) == "boolean" and type(backward) == "boolean" then
+            return forward and backward
+        end
+        return nil
+    end
+
+    for _, tile in ipairs(tiles) do
+        local connections = {}
+        local east_column = tiles_by_x[tile.x + TILE_SIZE]
+        local east = east_column ~= nil and east_column[tile.z] or nil
+        if east ~= nil then
+            local clear = check_connection(tile, east)
+            if clear ~= nil then
+                connections.east = clear
+            end
+        end
+
+        local north_column = tiles_by_x[tile.x]
+        local north = north_column ~= nil and north_column[tile.z + TILE_SIZE] or nil
+        if north ~= nil then
+            local clear = check_connection(tile, north)
+            if clear ~= nil then
+                connections.north = clear
+            end
+        end
+
+        if next(connections) ~= nil then
+            tile.connections = connections
+        end
+    end
+end
+
+local function sample_terrain(world, player, map, x, z)
     if map.GetTileCenterPoint == nil then
         return nil
     end
@@ -177,6 +254,7 @@ local function sample_terrain(player, map, x, z)
         end
         return left.z < right.z
     end)
+    add_terrain_connections(world, tiles)
     return { tile_size = TILE_SIZE, tiles = tiles }
 end
 
@@ -347,7 +425,7 @@ local function sample(world, player, sequence, world_id, session_id)
         directions = direction_observations,
     }
 
-    local terrain = sample_terrain(player, map, x, z)
+    local terrain = sample_terrain(world, player, map, x, z)
     if terrain ~= nil then
         snapshot.terrain = terrain
     end

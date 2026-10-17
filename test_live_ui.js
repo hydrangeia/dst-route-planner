@@ -26,9 +26,9 @@ function trailPoint(sequence, capturedAt, x, z) { return {sequence, captured_at:
 function remembered(prefab, x, z, firstSequence, lastSequence, firstSeen = firstSequence, lastSeen = lastSequence) {
   return {prefab, x, z, first_seen: firstSeen, last_seen: lastSeen, first_sequence: firstSequence, last_sequence: lastSequence};
 }
-function terrainCell(x, z, tile, lastSequence, lastSeen = lastSequence, passable) {
+function terrainCell(x, z, tile, lastSequence, lastSeen = lastSequence, passable, connections) {
   return {x, z, tile, last_seen: lastSeen, last_sequence: lastSequence,
-    ...(arguments.length < 6 ? {} : {passable})};
+    ...(arguments.length < 6 ? {} : {passable}), ...(arguments.length < 7 ? {} : {connections})};
 }
 function trailPayload(summary, points, landmarks = undefined, landmarksTruncated = false, terrain = undefined) {
   const xs = points.map(point => point.x), zs = points.map(point => point.z);
@@ -98,13 +98,17 @@ assert.deepEqual(
 );
 run('trailState.points=[];trailState.error="";renderTrail()');
 assert.ok(element("trailSvg").innerHTML.includes("还没有可绘制的坐标"));
+assert.ok(element("terrainConnectionStatus").textContent.includes("0.4.0"), "missing connection data prompts the collector update");
 run('trailState.points=[{sequence:1,captured_at:1,x:7,z:-4},{sequence:2,captured_at:2,x:7,z:-4}];renderTrail()');
 assert.ok(element("trailSvg").innerHTML.includes('class="trail-route"'));
 assert.ok(element("trailSvg").innerHTML.includes('class="trail-first"'));
 assert.ok(element("trailSvg").innerHTML.includes('class="trail-latest"'));
 assert.ok(element("trailSvg").innerHTML.includes("起点") && element("trailSvg").innerHTML.includes("最新位置"));
 assert.equal(element("terrainToggle").checked, true, "observed terrain is on by default");
+assert.equal(element("terrainConnectionToggle").checked, false, "neighbor checks are off by default");
 assert.ok(appHtml.includes('id="terrainLegend"') && appHtml.includes('aria-label="地皮图例"'), "the map has a named terrain legend");
+assert.ok(appHtml.includes('id="terrainConnectionLegend"') && appHtml.includes('aria-label="邻格检查图例"'), "neighbor checks have a named legend");
+assert.ok(appHtml.includes("显示邻格检查"), "the independent neighbor-check switch has the requested label");
 for (const label of ["草地", "森林", "岩地", "沼泽", "水域", "其他"]) assert.ok(appHtml.includes(">" + label + "</span>"), "legend includes " + label);
 assert.ok(appHtml.includes(".terrain-water { background: #83b9c9; fill: #83b9c9; }"), "SVG terrain classes define fill colors");
 assert.ok(appHtml.includes("斜线：格中心不可通行"), "terrain legend explains the blocked-center slash");
@@ -128,9 +132,45 @@ const mergedNewerKnown = JSON.parse(run(`JSON.stringify(mergeTrailTerrain([{x:1,
 assert.equal(mergedNewerKnown[0].passable, false, "a newer terrain sequence replaces the full tile and preserves false");
 const mergedNewerUnknown = JSON.parse(run(`JSON.stringify(mergeTrailTerrain([{x:1,z:2,tile:"GRASS",last_seen:1,last_sequence:1,passable:false}],[{x:1,z:2,tile:"FOREST",last_seen:2,last_sequence:2}]).tiles)`));
 assert.ok(!Object.hasOwn(mergedNewerUnknown[0], "passable"), "a newer unknown tile clears old passability instead of inheriting it");
+const storedConnections = JSON.parse(run(`JSON.stringify(normalizeStoredTerrainTile({x:1,z:2,tile:"GRASS",last_seen:3,last_sequence:4,connections:{east:true,north:false}}))`));
+assert.deepEqual(storedConnections.connections, {east: true, north: false}, "stored normalization preserves false connection results");
+const storedUnknownConnections = JSON.parse(run(`JSON.stringify(normalizeStoredTerrainTile({x:1,z:2,tile:"GRASS",last_seen:3,last_sequence:4}))`));
+assert.ok(!Object.hasOwn(storedUnknownConnections, "connections"), "unknown stored connections stay omitted");
+for (const invalidConnections of [null, [], {east: 1}, {west: true}, {north: "true"}]) {
+  const encoded = JSON.stringify(invalidConnections);
+  assert.equal(run(`normalizeStoredTerrainTile({x:1,z:2,tile:"GRASS",last_seen:3,last_sequence:4,connections:${encoded}})`), null,
+    "stored normalization rejects malformed connection dictionaries");
+  const invalidSaved = run(`validateTrailTerrain({tile_size:4,tiles:[{x:1,z:2,tile:"GRASS",last_seen:3,last_sequence:4,connections:${encoded}}],truncated:false})`);
+  assert.ok(invalidSaved.error.includes("地皮"), "malformed saved connections stay a terrain-panel error");
+  assert.equal(run(`(()=>{try{normalizeSnapshotTerrain({sequence:4,captured_at:3,terrain:{tile_size:4,tiles:[{x:0,z:0,tile:"GRASS",connections:${encoded}}]}});return ""}catch(error){return error.message}})()`),
+    "实时地皮位置格式无法识别。", "live normalization rejects malformed connection dictionaries");
+}
+const mergedNewerConnections = JSON.parse(run(`JSON.stringify(mergeTrailTerrain([{x:1,z:2,tile:"GRASS",last_seen:1,last_sequence:1,connections:{east:true,north:false}}],[{x:1,z:2,tile:"MARSH",last_seen:2,last_sequence:2,connections:{east:false}}]).tiles)`));
+assert.deepEqual(mergedNewerConnections[0].connections, {east: false}, "a newer connection dictionary replaces the whole old dictionary");
+const mergedNoConnections = JSON.parse(run(`JSON.stringify(mergeTrailTerrain([{x:1,z:2,tile:"GRASS",last_seen:1,last_sequence:1,connections:{east:true}}],[{x:1,z:2,tile:"FOREST",last_seen:2,last_sequence:2}]).tiles)`));
+assert.ok(!Object.hasOwn(mergedNoConnections[0], "connections"), "a newer tile without connections clears the older dictionary");
+const normalizedConnectionSnapshot = JSON.parse(run(`JSON.stringify(normalizeSnapshotTerrain({sequence:4,captured_at:3,terrain:{tile_size:4,tiles:[{x:0,z:0,tile:"GRASS",connections:{east:false,north:true}},{x:4,z:0,tile:"ROCKY",connections:{east:true}},{x:8,z:0,tile:"MARSH"}]}}))`));
+assert.deepEqual(normalizedConnectionSnapshot.tiles.map(tile => tile.connections), [{east:false,north:true},{east:true},undefined],
+  "live normalization preserves false and omitted connection directions");
 const terrainProjection = run('projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:4,z:0}],[],[{x:0,z:0,tile:"GRASS"},{x:4,z:0,tile:"OCEAN"},{x:8,z:0,tile:"OTHER"}])');
 assert.ok(Math.abs((terrainProjection.points[1].x - terrainProjection.points[0].x) - 4 * terrainProjection.scale) < 1e-9,
   "terrain cells and player positions use the same X/Z scale");
+const projectedConnectionMap = run('projectTrailCoordinates([],[],[{x:0,z:0,tile:"GRASS",passable:true,connections:{east:true,north:false}},{x:4,z:0,tile:"GRASS",passable:true},{x:0,z:4,tile:"GRASS",passable:true}])');
+assert.deepEqual(JSON.parse(JSON.stringify(projectedConnectionMap.terrain[0].connections)), {east: true, north: false},
+  "terrain projection preserves connection results");
+context.projectedConnectionMap = projectedConnectionMap;
+const projectedEdges = JSON.parse(run("JSON.stringify(projectTerrainConnections(projectedConnectionMap.terrain))"));
+assert.equal(projectedEdges.edges.length, 2, "east and north checks each create one neighbor edge");
+for (const edge of projectedEdges.edges) {
+  const delta = edge.direction === "east" ? Math.abs(edge.x2 - edge.x1) : Math.abs(edge.y2 - edge.y1);
+  assert.ok(Math.abs(delta - 4 * projectedConnectionMap.scale) < 1e-9, "neighbor edges use the same four-unit map scale");
+}
+context.hugeConnectionProjection = run('projectTrailCoordinates([],[],[{x:1e20,z:0,tile:"GRASS",passable:true,connections:{east:true}}])');
+context.hugeConnectionProjection.error = false;
+context.hugeConnectionProjection.terrain = context.hugeConnectionProjection.terrain || [];
+context.projectedConnectionMap = context.hugeConnectionProjection;
+const noSelfConnection = JSON.parse(run("JSON.stringify(projectTerrainConnections(projectedConnectionMap.terrain))"));
+assert.equal(noSelfConnection.edges.length, 0, "large coordinates that cannot represent an eastward step do not create self-edges");
 run('trailState.mode="live";trailState.points=[{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:4,z:0}];trailState.terrainTiles=[{x:0,z:0,tile:"GRASS",last_seen:1,last_sequence:1,passable:false},{x:4,z:0,tile:"OCEAN",last_seen:2,last_sequence:2,passable:true},{x:8,z:0,tile:"<img&x>",last_seen:3,last_sequence:3}];trailState.terrainAvailable=true;trailState.terrainTruncated=false;trailState.terrainError="";renderTrail()');
 const terrainSvg = element("trailSvg").innerHTML;
 assert.equal((terrainSvg.match(/class="terrain-cell/g) || []).length, 3);
@@ -160,8 +200,53 @@ assert.ok(element("terrainStatus").textContent.includes("3 格") && element("ter
 element("terrainToggle").checked = true;
 element("terrainToggle").listeners.change();
 assert.equal(element("terrainLegend").hidden, false, "turning terrain back on restores its legend");
+const connectionFixture = [
+  terrainCell(0, 0, "GRASS", 1, 1, true, {east: true, north: false}),
+  terrainCell(4, 0, "GRASS", 1, 1, true), terrainCell(0, 4, "GRASS", 1, 1, true),
+  terrainCell(8, 0, "ROCKY", 1, 1, false, {north: true}), terrainCell(8, 4, "GRASS", 1, 1, true),
+  terrainCell(16, 0, "GRASS", 1, 1, true, {east: false}),
+  terrainCell(24, 0, "GRASS", 1, 1, true, {east: true}),
+  {x: 32, z: 0, tile: "GRASS", last_seen: 1, last_sequence: 1, connections: {east: true}},
+  terrainCell(36, 0, "GRASS", 1, 1, true)
+];
+context.connectionFixture = connectionFixture;
+run('trailState.mode="history";trailState.points=[{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:4,z:4}];trailState.terrainTiles=connectionFixture;trailState.terrainAvailable=true;trailState.terrainTruncated=false;trailState.terrainError="";renderTrail()');
+element("terrainToggle").checked = false;
+element("terrainToggle").listeners.change();
+element("terrainConnectionToggle").checked = true;
+element("terrainConnectionToggle").listeners.change();
+let connectionSvg = element("trailSvg").innerHTML;
+assert.equal((connectionSvg.match(/class="terrain-connection terrain-connection-passable"/g) || []).length, 1,
+  "only the east check with two passable observed tiles renders as passable");
+assert.equal((connectionSvg.match(/class="terrain-connection terrain-connection-blocked"/g) || []).length, 1,
+  "false north connection renders a distinct blocked edge");
+assert.ok(!connectionSvg.includes('class="terrain-cell'), "neighbor checks can show while terrain colors are hidden");
+assert.ok(connectionSvg.indexOf('class="terrain-connection') < connectionSvg.indexOf('class="trail-route"'),
+  "neighbor edges draw under the player's trail");
+assert.equal(element("terrainConnectionLegend").hidden, false, "enabling neighbor checks shows its legend");
+assert.ok(element("terrainConnectionStatus").textContent.includes("通过 1 / 受阻 1") &&
+  element("terrainConnectionStatus").textContent.includes("当前可显示 2 条"),
+  "neighbor status counts currently displayable checked edges");
+assert.ok(connectionSvg.includes("邻格直连检查 · 通过") && connectionSvg.includes("邻格直连检查 · 受阻"));
+connectionFixture[1].passable = false;
+run("renderTrail()");
+assert.equal((element("trailSvg").innerHTML.match(/class="terrain-connection terrain-connection-passable"/g) || []).length, 0,
+  "a neighbor updated to blocked suppresses its edge");
+delete connectionFixture[1].passable;
+run("renderTrail()");
+assert.equal((element("trailSvg").innerHTML.match(/class="terrain-connection terrain-connection-passable"/g) || []).length, 0,
+  "a neighbor updated to unknown suppresses its edge");
+connectionFixture[1].passable = true;
+element("terrainConnectionToggle").checked = false;
+element("terrainConnectionToggle").listeners.change();
+assert.ok(!element("trailSvg").innerHTML.includes('class="terrain-connection'), "the neighbor-check toggle hides checked edges");
+assert.equal(element("terrainConnectionLegend").hidden, true, "the neighbor-check toggle hides its legend");
+element("terrainToggle").checked = true;
+element("terrainToggle").listeners.change();
 run('trailState.mode="history";trailState.points=[{sequence:1,captured_at:1,x:0,z:0}];trailState.terrainTiles=[{x:0,z:0,tile:"GRASS",last_seen:1,last_sequence:1}];trailState.terrainAvailable=true;trailState.terrainTruncated=false;trailState.terrainError="";renderTrail()');
 assert.ok(!element("trailSvg").innerHTML.includes("terrain-blocked"), "legacy replay tiles without passability stay unknown");
+assert.ok(!element("trailSvg").innerHTML.includes("terrain-connection"), "legacy replay tiles without connections stay unknown");
+assert.ok(element("terrainConnectionStatus").textContent.includes("0.4.0"), "legacy replay without connection checks prompts the collector update");
 assert.ok(element("trailSvg").innerHTML.includes("未采集通行状态"), "legacy replay SVG title identifies unknown passability");
 assert.ok(element("terrainStatus").textContent.includes("已知 0") && element("terrainStatus").textContent.includes("未知 1"),
   "legacy replay status counts passability as unknown");
@@ -528,13 +613,15 @@ run('live.following=true;state.result=null;');
     return new Promise(resolve => { resolveLiveTrail = resolve; });
   };
   context.reply = frame("trail-session", 1, liveTrailSummary, "trail-world", {x: 1, z: 1, capturedAt: 100,
-    landmarks: [{prefab: "panflute", x: 1, z: 1}], terrain: {tile_size: 4, tiles: [{x: 4, z: 1, tile: "GRASS"}]}});
+    landmarks: [{prefab: "panflute", x: 1, z: 1}], terrain: {tile_size: 4, tiles: [{x: 4, z: 1, tile: "GRASS", passable: true, connections: {east: true}}]}});
   run("applyLiveResult(reply)");
   context.reply = frame("trail-session", 2, {...liveTrailSummary, frame_count: 2}, "trail-world", {x: 2, z: 1, capturedAt: 101,
     landmarks: [{prefab: "panflute", x: 1, z: 1}, {prefab: "panflute", x: 2, z: 1}],
-    terrain: {tile_size: 4, tiles: [{x: 4, z: 1, tile: "FOREST", passable: true}]}});
+    terrain: {tile_size: 4, tiles: [{x: 4, z: 1, tile: "FOREST", passable: true, connections: {east: false}}]}});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.live.localTerrain[0].passable"), true, "live trail retains passable=true");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain[0].connections)")), {east: false},
+    "live trail retains false connection checks and drops omitted directions");
   context.reply = frame("trail-session", 3, liveTrailSummary, "trail-world", {x: 3, z: 1, capturedAt: 102,
     terrain: {tile_size: 4, tiles: [{x: 4, z: 1, tile: "ROCKY"}]}});
   run("applyLiveResult(reply)");
@@ -545,7 +632,7 @@ run('live.following=true;state.result=null;');
   ], [
     remembered("panflute", 1, 1, 0, 1, 99, 100),
     remembered("panflute", 9, 9, 0, 0, 99, 99)
-  ], false, {tile_size: 4, tiles: [terrainCell(4, 1, "MARSH", 1, 99, false), terrainCell(20, 1, "OCEAN", 0, 99)], truncated: false})));
+  ], false, {tile_size: 4, tiles: [terrainCell(4, 1, "MARSH", 1, 99, false, {east: true, north: false}), terrainCell(20, 1, "OCEAN", 0, 99)], truncated: false})));
   await settle();
   const mergedLivePoints = JSON.parse(run("JSON.stringify(trailState.points)"));
   assert.deepEqual(mergedLivePoints.map(point => point.sequence), [0, 1, 2, 3]);
@@ -562,6 +649,8 @@ run('live.following=true;state.result=null;');
     "newer local terrain wins over stored history at the same coordinate");
   assert.ok(!Object.hasOwn(terrainAtFour, "passable"),
     "newer local unknown passability clears an older stored blocked result during merging");
+  assert.ok(!Object.hasOwn(terrainAtFour, "connections"),
+    "newer local terrain without connections clears an older stored dictionary during merging");
   assert.ok(mergedLiveTerrain.some(item => item.x === 20 && item.tile === "OCEAN"));
   context.reply = frame("trail-session", 3, {...liveTrailSummary, frame_count: 3}, "trail-world", {x: 9, z: 1, capturedAt: 102});
   run("applyLiveResult(reply)");
@@ -580,14 +669,14 @@ run('live.following=true;state.result=null;');
     return new Promise(resolve => pendingTrails.set(id, resolve));
   };
   context.reply = frame("same-session", 1, raceA, "race-a", {x: 500, z: 0, capturedAt: 200,
-    landmarks: [{prefab: "panflute", x: 500, z: 0}], terrain: {tile_size: 4, tiles: [{x: 500, z: 0, tile: "GRASS", passable: false}]}});
+    landmarks: [{prefab: "panflute", x: 500, z: 0}], terrain: {tile_size: 4, tiles: [{x: 500, z: 0, tile: "GRASS", passable: false, connections: {east: true}}]}});
   run("applyLiveResult(reply)");
   context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 200,
-    landmarks: [{prefab: "panflute", x: 50, z: 0}], terrain: {tile_size: 4, tiles: [{x: 50, z: 0, tile: "MARSH", passable: false}]}});
+    landmarks: [{prefab: "panflute", x: 50, z: 0}], terrain: {tile_size: 4, tiles: [{x: 50, z: 0, tile: "MARSH", passable: false, connections: {east: false}}]}});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.identity"), "race-b\u0000forest\u0000same-session");
   pendingTrails.get(raceA.id)(apiResponse(trailPayload(raceA, [trailPoint(0, 1, 500, 0)], [remembered("panflute", 500, 0, 0, 0)], false,
-    {tile_size: 4, tiles: [terrainCell(500, 0, "GRASS", 0, 1)], truncated: false})));
+    {tile_size: 4, tiles: [terrainCell(500, 0, "GRASS", 0, 1, false, {east: true})], truncated: false})));
   await settle();
   assert.equal(run("trailState.id"), raceB.id, "late world trail responses cannot replace the active world");
   assert.ok(JSON.parse(run("JSON.stringify(trailState.points)")).every(point => point.x !== 500));
@@ -595,6 +684,8 @@ run('live.following=true;state.result=null;');
     "a late response from another world cannot replace remembered sightings");
   assert.ok(JSON.parse(run("JSON.stringify(trailState.terrainTiles)")).every(item => item.x !== 500),
     "a late response from another world cannot replace observed terrain");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.terrainTiles[0].connections)")), {east: false},
+    "a late response cannot replace the active world's connection checks");
   pendingTrails.get(raceB.id)({ok: false, status: 500, json: async () => ({error: "trail unavailable"})});
   await settle();
   assert.ok(element("trailStatus").textContent.includes("trail unavailable"));
@@ -615,7 +706,7 @@ run('live.following=true;state.result=null;');
     if (url !== "/api/explorations/" + raceB.id + "/trail") throw new Error("unexpected fetch " + url);
     trailCallCounts.set(raceB.id, trailCallCounts.get(raceB.id) + 1);
     return apiResponse(trailPayload(raceB, [trailPoint(0, 199, 49, 0)], [remembered("panflute", 49, 0, 0, 0)], false,
-      {tile_size: 4, tiles: [terrainCell(50, 0, "MARSH", 0, 199, true)], truncated: false}));
+      {tile_size: 4, tiles: [terrainCell(50, 0, "MARSH", 0, 199, true, {east: true})], truncated: false}));
   };
   run("refreshSelectedTrail()");
   await settle();
@@ -623,6 +714,8 @@ run('live.following=true;state.result=null;');
   assert.equal(run("trailState.error"), "");
   assert.equal(run("trailState.terrainTiles[0].passable"), false,
     "newer local blocked terrain wins over stored history in the live view");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.terrainTiles[0].connections)")), {east: false},
+    "newer local connection results win over stored history in the live view");
 
   const newerRaceB = {...raceB, frame_count: 4};
   context.fetch = async url => {
@@ -632,7 +725,7 @@ run('live.following=true;state.result=null;');
       trailPoint(0, 199, 49, 0), trailPoint(1, 200, 50, 0),
       trailPoint(2, 201, 51, 0), trailPoint(3, 202, 52, 0)
     ], [remembered("panflute", 49, 0, 0, 2, 199, 201)], false,
-      {tile_size: 4, tiles: [terrainCell(50, 0, "MARSH", 0, 199, true)], truncated: false}));
+      {tile_size: 4, tiles: [terrainCell(50, 0, "MARSH", 0, 199, true, {east: true})], truncated: false}));
   };
   run(`state.explorations=[${JSON.stringify(newerRaceB)}];renderExplorations();live.following=true;liveEl.follow.checked=true;`);
   const trailButton = {dataset: {explorationId: raceB.id}};
@@ -644,6 +737,8 @@ run('live.following=true;state.result=null;');
   await settle();
   assert.equal(run("trailState.terrainTiles.find(tile => tile.x === 50).passable"), false,
     "historical trail merging preserves the newer local blocked check over saved terrain");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.terrainTiles.find(tile => tile.x === 50).connections)")), {east: false},
+    "historical trail merging preserves the newer local connection results over saved terrain");
   assert.equal(trailCallCounts.get(raceB.id), 4, "opening a replay refreshes cached trail data when its frame count advanced");
   assert.equal(run("trailState.points.length"), 4);
   assert.ok(element("trailStatus").textContent.includes("历史回放"));
@@ -808,14 +903,16 @@ run('live.following=true;state.result=null;');
   context.fetch = async () => { throw new Error("unexpected terrain-test fetch"); };
   run('trailState.mode="live";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;trailState.points=[];trailState.error="";trailState.loading=false;trailState.trimmed=false;trailState.requests.clear();trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],localTerrainAvailable:false,storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};trailState.landmarks=[];trailState.landmarksTruncated=false;trailState.landmarkError="";trailState.terrainTiles=[];trailState.terrainAvailable=false;trailState.terrainTruncated=false;trailState.terrainError="";state.liveRecording=null;state.result=null;state.explorations=[];live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;');
   context.reply = frame("forest-session", 1, null, "forest-world", {x: 4, z: 5, capturedAt: 100,
-    terrain: {tile_size: 4, tiles: [{x: 4, z: 4, tile: "GRASS", passable: true}]}});
+    terrain: {tile_size: 4, tiles: [{x: 4, z: 4, tile: "GRASS", passable: true, connections: {east: false, north: true}}]}});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.live.identity"), "forest-world\u0000forest\u0000forest-session");
   assert.equal(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")).find(tile => tile.tile === "GRASS").passable, true,
     "live snapshots preserve passable=true");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain[0].connections)")), {east: false, north: true},
+    "live snapshots preserve false connection checks");
 
   context.reply = frame("cave-session", 1, null, "cave-world", {worldKind: "cave", x: 21, z: 22, capturedAt: 101,
-    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "ROCKY", passable: false}]}});
+    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "ROCKY", passable: false, connections: {north: false}}]}});
   context.reply.status = "unsupported_world";
   context.reply.age_seconds = 0.5;
   run("applyLiveResult(reply)");
@@ -823,8 +920,8 @@ run('live.following=true;state.result=null;');
   assert.equal(run("live.sequence"), 1);
   assert.equal(run("trailState.live.identity"), "cave-world\u0000cave\u0000cave-session");
   assert.equal(run("trailState.live.localPoints.length"), 1, "a world switch drops forest positions from the active trail");
-  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")), [terrainCell(20, 20, "ROCKY", 1, 101, false)],
-    "the cave becomes the active terrain identity and preserves passable=false");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")), [terrainCell(20, 20, "ROCKY", 1, 101, false, {north: false})],
+    "the cave becomes the active terrain identity and preserves passability and connections");
   assert.ok(element("livePosition").textContent.includes("洞穴 · 玩家坐标 X 21.0 / Z 22.0"));
   assert.equal(run("state.result"), null, "unsupported worlds still do not create direction suggestions");
 
@@ -837,11 +934,11 @@ run('live.following=true;state.result=null;');
   assert.ok(element("livePosition").textContent.includes("X 21.0 / Z 22.0"), "expired cave coordinates are not shown as current");
   assert.equal(run("live.sequence"), 1, "expired unsupported data does not advance the live sequence");
   assert.equal(run("trailState.live.localPoints.length"), 1);
-  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")), [terrainCell(20, 20, "ROCKY", 1, 101, false)],
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localTerrain)")), [terrainCell(20, 20, "ROCKY", 1, 101, false, {north: false})],
     "expired unsupported terrain is ignored");
 
   context.reply = frame("cave-session", 2, null, "cave-world", {worldKind: "cave", x: 22, z: 23, capturedAt: 1000,
-    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "MARSH", passable: true}]}});
+    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "MARSH", passable: true, connections: {north: true, east: false}}]}});
   context.reply.status = "unsupported_world";
   context.reply.age_seconds = 0.4;
   run("applyLiveResult(reply)");
@@ -854,10 +951,11 @@ run('live.following=true;state.result=null;');
   assert.deepEqual({tile: caveTiles[0].tile, sequence: caveTiles[0].last_sequence, seen: caveTiles[0].last_seen},
     {tile: "FOREST", sequence: 3, seen: 50}, "same-coordinate terrain follows sequence even when capture time moves backwards");
   assert.ok(!Object.hasOwn(caveTiles[0], "passable"), "a newer live tile without passability clears the prior true value");
+  assert.ok(!Object.hasOwn(caveTiles[0], "connections"), "a newer live tile without connections clears the prior dictionary");
   assert.equal(run("live.sequence"), 3);
 
   context.reply = frame("cave-session", 4, null, "cave-world", {worldKind: "cave", x: 24, z: 25, capturedAt: 60,
-    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "GRASS", passable: null}, {x: 20, z: 20, tile: "MARSH"}]}});
+    terrain: {tile_size: 4, tiles: [{x: 20, z: 20, tile: "GRASS", passable: false, connections: null}, {x: 20, z: 20, tile: "MARSH"}]}});
   run("applyLiveResult(reply)");
   caveTiles = JSON.parse(run("JSON.stringify(trailState.live.localTerrain)"));
   assert.equal(caveTiles[0].tile, "FOREST", "a malformed optional snapshot leaves previously observed terrain intact");

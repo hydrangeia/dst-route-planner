@@ -686,7 +686,14 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
     terrain_by_frame = [
         [
             {"x": 1, "z": 1, "tile": "GRASS", "passable": False},
-            {"x": 4, "z": 4, "tile": "FOREST", "passable": True},
+            {
+                "x": 4,
+                "z": 4,
+                "tile": "FOREST",
+                "passable": True,
+                "connections": {"east": False},
+            },
+            {"x": 8, "z": 4, "tile": "GRASS", "passable": True},
         ],
         [
             {"x": 1, "z": 1, "tile": "FOREST"},
@@ -801,6 +808,15 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
                     "last_seen": captured_times[0],
                     "last_sequence": 1,
                     "passable": True,
+                    "connections": {"east": False},
+                },
+                {
+                    "x": 8,
+                    "z": 4,
+                    "tile": "GRASS",
+                    "last_seen": captured_times[0],
+                    "last_sequence": 1,
+                    "passable": True,
                 },
             ],
             "truncated": False,
@@ -887,6 +903,9 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             {"tile_size": 4, "tiles": tiles} for tiles in terrain_by_frame
         ]
         assert downloaded_terrain[0]["tiles"][0]["passable"] is False
+        assert downloaded_terrain[0]["tiles"][1]["connections"] == {"east": False}
+        assert "connections" not in downloaded_terrain[1]["tiles"][0]
+        assert "connections" not in downloaded_terrain[2]["tiles"][0]
         assert "passable" not in downloaded_terrain[1]["tiles"][0]
         assert "passable" not in downloaded_terrain[2]["tiles"][0]
         isolated_status, _, restarted_isolated_trail = _get(

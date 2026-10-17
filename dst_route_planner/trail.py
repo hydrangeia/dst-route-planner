@@ -88,8 +88,10 @@ def project_trail(replay: bytes) -> dict[str, Any]:
                     }
                     if "passable" in tile:
                         projected_tile["passable"] = tile["passable"]
-                    # Replace the entire cell snapshot: an omitted passable
-                    # value on a newer observation clears an older known value.
+                    if "connections" in tile:
+                        projected_tile["connections"] = dict(tile["connections"])
+                    # Replace the entire cell snapshot: omitted passable or
+                    # connections on a newer observation clears older values.
                     terrain_by_key[key] = projected_tile
                 # Ranking follows capture order, not wall-clock timestamps.
                 # Trim after each frame so memory stays bounded and the result

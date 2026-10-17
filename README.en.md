@@ -44,6 +44,8 @@ The trail also marks where the selected target was previously seen. “已见目
 
 “显示已观测地皮” (show observed tiles) adds the collected terrain beneath the trail, with colors for grass, forest, rock, marsh, water, and other tiles. The layer grows as you move and stays in saved replays; blank areas have not been collected. Caves also support positions, trails, and terrain recording; direction inference is still to come. Hatching marks tile centers that fail the ground-terrain check. Hover over a tile to see its passability; missing checks are shown as unknown. Turn the layer off to view just the trail and targets. To update an existing collector, copy the repository's `mods/dst_route_collector` into the game's `mods/` folder again, then re-enter the world.
 
+Enable “显示邻格检查” (show neighbor checks) to view checked connections between observed neighboring tiles. The legend distinguishes clear and blocked connections in both live maps and saved replays; connections without a result stay blank.
+
 ## Manual entry and saved records
 
 1. Choose a target.
@@ -59,6 +61,8 @@ Each save updates the record's current observations; click Save again after maki
 Enable the collector and enter a world → start the tool; locate the log automatically
   ↓
 Check connection → choose a target; collect coordinates, tiles, landmarks, and ground passability each second
+  ↓
+Collector: observed neighboring tiles → check the connection in both directions
   ↓
 Client log → external Python; update the current position and directional clues
   ↓

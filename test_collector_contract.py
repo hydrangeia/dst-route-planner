@@ -47,6 +47,8 @@ def _make_stub(
     has_tile_center_api: bool = True,
     has_passability_api: bool = True,
     passability_mode: str = "boolean",
+    has_pathfinder_api: bool = True,
+    pathfinder_mode: str = "true",
 ):
     lines: list[str] = []
     sim_callbacks = []
@@ -102,11 +104,36 @@ def _make_stub(
 
         function make_world(world_id, world_kind, omit_center_api)
             local map = make_map()
+            local pathfinder_reads = {}
+            local pathfinder = {
+                IsClear = function(self, ax, ay, az, bx, by, bz, options)
+                    pathfinder_reads[#pathfinder_reads + 1] = {
+                        ax = ax,
+                        ay = ay,
+                        az = az,
+                        bx = bx,
+                        by = by,
+                        bz = bz,
+                        options = options,
+                    }
+                    if self.mode == "error" then error("pathfinder unavailable") end
+                    if self.mode == "nil" then return nil end
+                    if self.mode == "nonboolean" then return "unknown" end
+                    if self.mode == "forward_nil" and (ax < bx or az < bz) then return nil end
+                    if self.mode == "reverse_nil" and (ax > bx or az > bz) then return nil end
+                    if self.mode == "reverse_false" then return ax < bx or az < bz end
+                    if self.mode == "forward_false" then return ax > bx or az > bz end
+                    return true
+                end,
+                reads = pathfinder_reads,
+            }
             if omit_center_api then map.GetTileCenterPoint = nil end
             return {
                 worldprefab = world_kind,
                 meta = { session_identifier = world_id },
                 Map = map,
+                Pathfinder = pathfinder,
+                pathfinder_reads = pathfinder_reads,
                 DoPeriodicTask = function(self, period, callback)
                     self.period = period
                     self.callback = callback
@@ -181,6 +208,9 @@ def _make_stub(
     world["Map"]["passability_mode"] = passability_mode
     if not has_passability_api:
         world["Map"]["IsPassableAtPoint"] = None
+    world["Pathfinder"]["mode"] = pathfinder_mode
+    if not has_pathfinder_api:
+        world["Pathfinder"] = None
     g["TheWorld"] = world
     if player_present:
         g["ThePlayer"] = lua.globals().make_player(0, 0, 0, visibility_mode)
@@ -395,6 +425,115 @@ def test_terrain_passability_failure_or_unknown_keeps_snapshot_and_omits_status(
     assert all("passable" not in tile for tile in terrain_tiles)
     reads = _from_lua(runtime["world"]["Map"]["passability_reads"])
     assert len(reads) == (len(terrain_tiles) if expect_reads else 0)
+    assert _from_lua(runtime["world"]["pathfinder_reads"]) == []
+    validate_snapshot(snapshot)
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+@pytest.mark.parametrize(
+    ("pathfinder_mode", "expected_clear"),
+    [("true", True), ("reverse_false", False), ("forward_false", False)],
+)
+def test_terrain_connections_require_bidirectional_clear_checks_and_use_neighbor_centers(
+    pathfinder_mode: str, expected_clear: bool
+) -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub(visibility_mode="point", pathfinder_mode=pathfinder_mode)
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+
+    tiles = snapshot["terrain"]["tiles"]
+    by_position = {(tile["x"], tile["z"]): tile for tile in tiles}
+    west_tile = by_position[(-1, 1)]
+    east_tile = by_position[(3, 1)]
+    assert west_tile["passable"] is True
+    assert east_tile["passable"] is True
+    assert west_tile["connections"]["east"] is expected_clear
+
+    reads = _from_lua(runtime["world"]["pathfinder_reads"])
+    assert reads
+    assert len(reads) % 2 == 0
+    assert len(reads) // 2 <= 2 * len(tiles)
+    checked_pairs = set()
+    for index in range(0, len(reads), 2):
+        forward, reverse = reads[index : index + 2]
+        assert (forward["ax"], forward["ay"], forward["az"]) == (
+            reverse["bx"],
+            reverse["by"],
+            reverse["bz"],
+        )
+        assert (forward["bx"], forward["by"], forward["bz"]) == (
+            reverse["ax"],
+            reverse["ay"],
+            reverse["az"],
+        )
+        assert forward["ay"] == forward["by"] == reverse["ay"] == reverse["by"] == 0
+        assert (forward["bx"] - forward["ax"], forward["bz"] - forward["az"]) in {
+            (4, 0),
+            (0, 4),
+        }
+        pair = ((forward["ax"], forward["az"]), (forward["bx"], forward["bz"]))
+        assert pair not in checked_pairs
+        checked_pairs.add(pair)
+        for read in (forward, reverse):
+            assert read["options"] == {"ignorewalls": False, "ignorecreep": True}
+            start = by_position[(read["ax"], read["az"])]
+            end = by_position[(read["bx"], read["bz"])]
+            assert start["passable"] is True
+            assert end["passable"] is True
+
+    target_pair_reads = [
+        read
+        for read in reads
+        if {(read["ax"], read["az"]), (read["bx"], read["bz"])}
+        == {(-1, 1), (3, 1)}
+    ]
+    assert len(target_pair_reads) == 2
+    assert (target_pair_reads[0]["ax"], target_pair_reads[0]["az"]) == (-1, 1)
+    assert (target_pair_reads[0]["bx"], target_pair_reads[0]["bz"]) == (3, 1)
+    assert (target_pair_reads[1]["ax"], target_pair_reads[1]["az"]) == (3, 1)
+    assert (target_pair_reads[1]["bx"], target_pair_reads[1]["bz"]) == (-1, 1)
+
+    # Cells that were not sampled, including hidden, outside-radius, and
+    # non-passable cells, cannot be Pathfinder endpoints.
+    assert not any(read["ax"] == 7 or read["bx"] == 7 for read in reads)
+    validate_snapshot(snapshot)
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_terrain_connections_are_omitted_without_pathfinder_api() -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub(visibility_mode="point", has_pathfinder_api=False)
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+
+    assert all("connections" not in tile for tile in snapshot["terrain"]["tiles"])
+    assert _from_lua(runtime["world"]["pathfinder_reads"]) == []
+    validate_snapshot(snapshot)
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+@pytest.mark.parametrize(
+    "pathfinder_mode",
+    ["error", "nil", "nonboolean", "forward_nil", "reverse_nil"],
+)
+def test_terrain_connections_keep_unknown_when_pathfinder_fails_or_returns_nonboolean(
+    pathfinder_mode: str,
+) -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub(visibility_mode="point", pathfinder_mode=pathfinder_mode)
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+
+    assert all("connections" not in tile for tile in snapshot["terrain"]["tiles"])
+    reads = _from_lua(runtime["world"]["pathfinder_reads"])
+    assert reads and len(reads) % 2 == 0
     validate_snapshot(snapshot)
 
 

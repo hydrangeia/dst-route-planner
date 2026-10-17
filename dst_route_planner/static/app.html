@@ -105,8 +105,16 @@
     .terrain-other { background: #c8cbc3; fill: #c8cbc3; }
     .trail-svg .terrain-cell { stroke: rgb(255 255 255 / 72%); stroke-width: .45; }
     .trail-svg .terrain-blocked { fill: none; stroke: #4e3028; stroke-width: 1.8; stroke-linecap: round; pointer-events: none; }
+    .trail-svg .terrain-connection { fill: none; stroke-linecap: round; pointer-events: none; }
+    .trail-svg .terrain-connection-passable { stroke: #2f8490; }
+    .trail-svg .terrain-connection-blocked { stroke: #b65c43; }
     .terrain-blocked-swatch { display: inline-block; width: 14px; height: 12px; background: linear-gradient(135deg, transparent 44%, #4e3028 45%, #4e3028 55%, transparent 56%); }
-    .terrain-legend[hidden] { display: none; }
+    .terrain-legend[hidden], .terrain-connection-legend[hidden] { display: none; }
+    .terrain-connection-legend { display: flex; flex-wrap: wrap; gap: 6px 11px; color: #53665a; font-size: 10px; }
+    .terrain-connection-legend span { display: inline-flex; align-items: center; gap: 4px; }
+    .terrain-connection-swatch { display: inline-block; width: 15px; height: 0; border-top: 1.5px solid; }
+    .terrain-connection-passable-swatch { border-color: #2f8490; }
+    .terrain-connection-blocked-swatch { border-color: #b65c43; border-top-style: dashed; }
     .terrain-status { min-height: 16px; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
     .trail-note { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
     .trail-svg .trail-landmark-marker { fill: #fffdf6; stroke: #8a5426; stroke-width: 1.8; }
@@ -301,6 +309,7 @@
         <div class="trail-head"><h3>探索轨迹</h3><button class="button" id="refreshTrailButton" type="button">刷新轨迹</button></div>
         <div class="terrain-tools">
           <label class="toggle-label"><input id="terrainToggle" type="checkbox" checked><span>显示已观测地皮</span></label>
+          <label class="toggle-label"><input id="terrainConnectionToggle" type="checkbox"><span>显示邻格检查</span></label>
           <div class="terrain-legend" id="terrainLegend" aria-label="地皮图例">
             <span><i class="terrain-swatch terrain-grass"></i>草地</span>
             <span><i class="terrain-swatch terrain-forest"></i>森林</span>
@@ -310,10 +319,15 @@
             <span><i class="terrain-swatch terrain-other"></i>其他</span>
             <span class="terrain-blocked-legend"><i class="terrain-blocked-swatch"></i>斜线：格中心不可通行</span>
           </div>
+          <div class="terrain-connection-legend" id="terrainConnectionLegend" aria-label="邻格检查图例" hidden>
+            <span><i class="terrain-connection-swatch terrain-connection-passable-swatch"></i>通过</span>
+            <span><i class="terrain-connection-swatch terrain-connection-blocked-swatch"></i>受阻</span>
+          </div>
         </div>
-        <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="img" aria-label="玩家已观测位置轨迹与地皮"></svg>
+        <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="img" aria-label="玩家轨迹、地皮与邻格直连检查"></svg>
         <div class="trail-status" id="trailStatus" role="status" aria-live="polite">勾选实时跟随后，会显示收到的位置。</div>
         <div class="terrain-status" id="terrainStatus" role="status" aria-live="polite">尚未收到地皮数据。</div>
+        <div class="terrain-status" id="terrainConnectionStatus" role="status" aria-live="polite">未收到邻格检查数据；实时采集请使用 0.4.0 采集器。</div>
         <p class="trail-note">按观测位置连线；采集中断或坐标跳变处断开。</p>
         <div class="seen-landmarks" aria-label="已见目标">
           <div class="seen-landmarks-head"><h4>已见目标</h4><span class="seen-landmarks-note">相对最新观测 · 最近看到</span></div>
@@ -464,6 +478,9 @@
       trailSvg: document.getElementById("trailSvg"), trailStatus: document.getElementById("trailStatus"),
       terrainToggle: document.getElementById("terrainToggle"), terrainStatus: document.getElementById("terrainStatus"),
       terrainLegend: document.getElementById("terrainLegend"),
+      terrainConnectionToggle: document.getElementById("terrainConnectionToggle"),
+      terrainConnectionLegend: document.getElementById("terrainConnectionLegend"),
+      terrainConnectionStatus: document.getElementById("terrainConnectionStatus"),
       refreshTrail: document.getElementById("refreshTrailButton"),
       seenLandmarksStatus: document.getElementById("seenLandmarksStatus"),
       seenLandmarksList: document.getElementById("seenLandmarksList"),
@@ -702,6 +719,15 @@
       return Object.prototype.hasOwnProperty.call(TERRAIN_CATEGORIES, tile) ? TERRAIN_CATEGORIES[tile] : "other";
     }
     function terrainCoordinateKey(tile) { return JSON.stringify([tile.x, tile.z]); }
+    function normalizeTerrainConnections(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      const connections = {};
+      for (const direction of Object.keys(value)) {
+        if ((direction !== "east" && direction !== "north") || typeof value[direction] !== "boolean") return null;
+        connections[direction] = value[direction];
+      }
+      return connections;
+    }
     function normalizeStoredTerrainTile(value) {
       if (!value || typeof value !== "object" || Array.isArray(value) ||
           typeof value.x !== "number" || !Number.isFinite(value.x) ||
@@ -710,8 +736,12 @@
           typeof value.last_seen !== "number" || !Number.isFinite(value.last_seen) ||
           !Number.isSafeInteger(value.last_sequence) || value.last_sequence < 0 ||
           (Object.prototype.hasOwnProperty.call(value, "passable") && typeof value.passable !== "boolean")) return null;
+      const hasConnections = Object.prototype.hasOwnProperty.call(value, "connections");
+      const connections = hasConnections ? normalizeTerrainConnections(value.connections) : null;
+      if (hasConnections && connections === null) return null;
       return {x: value.x, z: value.z, tile: value.tile, last_seen: value.last_seen, last_sequence: value.last_sequence,
-        ...(Object.prototype.hasOwnProperty.call(value, "passable") ? {passable: value.passable} : {})};
+        ...(Object.prototype.hasOwnProperty.call(value, "passable") ? {passable: value.passable} : {}),
+        ...(hasConnections ? {connections} : {})};
     }
     function compareTerrainTiles(a, b) {
       return b.last_sequence - a.last_sequence || (a.x < b.x ? -1 : a.x > b.x ? 1 : 0) ||
@@ -761,8 +791,12 @@
             typeof tile.z !== "number" || !Number.isFinite(tile.z) ||
             typeof tile.tile !== "string" || !tile.tile.trim() || tile.tile.length > 128 ||
             (Object.prototype.hasOwnProperty.call(tile, "passable") && typeof tile.passable !== "boolean")) return null;
+        const hasConnections = Object.prototype.hasOwnProperty.call(tile, "connections");
+        const connections = hasConnections ? normalizeTerrainConnections(tile.connections) : null;
+        if (hasConnections && connections === null) return null;
         return {x: tile.x, z: tile.z, tile: tile.tile, last_seen: snapshot.captured_at, last_sequence: snapshot.sequence,
-          ...(Object.prototype.hasOwnProperty.call(tile, "passable") ? {passable: tile.passable} : {})};
+          ...(Object.prototype.hasOwnProperty.call(tile, "passable") ? {passable: tile.passable} : {}),
+          ...(hasConnections ? {connections} : {})};
       });
       if (tiles.some(tile => !tile)) throw new Error("实时地皮位置格式无法识别。");
       const seen = new Set();
@@ -831,7 +865,7 @@
       const project = point => ({x: screenX + (point.x - centerX) * scale, y: screenY - (point.z - centerZ) * scale});
       const projected = playerPoints.map(point => ({sequence: point.sequence, ...project(point)}));
       const projectedLandmarks = landmarkPoints.map((point, index) => ({number: index + 1, ...project(point)}));
-      const projectedTerrain = mapTiles.map(tile => ({tile: tile.tile, passable: tile.passable,
+      const projectedTerrain = mapTiles.map(tile => ({tile: tile.tile, passable: tile.passable, connections: tile.connections,
         worldX: tile.x, worldZ: tile.z, ...project(tile)}));
       if (![rangeX, rangeZ, scale, centerX, centerZ,
         ...projected.flatMap(point => [point.x, point.y]),
@@ -844,6 +878,28 @@
         ranges: { min_x: minX, max_x: maxX, min_z: minZ, max_z: maxZ },
         points: projected, landmarks: projectedLandmarks, terrain: projectedTerrain
       };
+    }
+    function projectTerrainConnections(projectedTerrain) {
+      const terrain = Array.isArray(projectedTerrain) ? projectedTerrain : [];
+      const byCoordinate = new Map(terrain.map(tile => [JSON.stringify([tile.worldX, tile.worldZ]), tile]));
+      const edges = [];
+      let recordedChecks = 0;
+      for (const tile of terrain) {
+        for (const [direction, dx, dz, label] of [["east", TERRAIN_TILE_SIZE, 0, "东"], ["north", 0, TERRAIN_TILE_SIZE, "北"]]) {
+          const result = tile.connections && tile.connections[direction];
+          if (typeof result !== "boolean") continue;
+          recordedChecks += 1;
+          if (tile.passable !== true) continue;
+          const nextX = tile.worldX + dx, nextZ = tile.worldZ + dz;
+          if ((direction === "east" && nextX === tile.worldX) ||
+              (direction === "north" && nextZ === tile.worldZ) ||
+              !Number.isFinite(nextX) || !Number.isFinite(nextZ)) continue;
+          const neighbor = byCoordinate.get(JSON.stringify([nextX, nextZ]));
+          if (!neighbor || neighbor.passable !== true) continue;
+          edges.push({x1: tile.x, y1: tile.y, x2: neighbor.x, y2: neighbor.y, passed: result, direction, label});
+        }
+      }
+      return {edges, recordedChecks};
     }
     function splitTrailSegments(points) {
       const segments = [];
@@ -910,7 +966,7 @@
     }
     function trailCoordinate(value) { return Number(value).toFixed(1); }
     function trailSvgPoint(point) { return point.x.toFixed(2) + "," + point.y.toFixed(2); }
-    function renderTerrainStatus() {
+    function renderTerrainStatus(projection) {
       const count = trailState.terrainTiles.length;
       const known = trailState.terrainTiles.filter(tile => typeof tile.passable === "boolean").length;
       const passable = trailState.terrainTiles.filter(tile => tile.passable === true).length;
@@ -935,6 +991,25 @@
       } else {
         el.terrainStatus.textContent = "尚未收到地皮数据。";
       }
+      renderTerrainConnectionStatus(projection);
+    }
+    function renderTerrainConnectionStatus(projection) {
+      const hidden = !el.terrainConnectionToggle.checked;
+      if (el.terrainConnectionLegend) el.terrainConnectionLegend.hidden = hidden;
+      const terrain = projection && !projection.error ? projection.terrain : [];
+      const checks = projectTerrainConnections(terrain);
+      const passed = checks.edges.filter(edge => edge.passed).length;
+      const blocked = checks.edges.length - passed;
+      if (trailState.terrainError) {
+        el.terrainConnectionStatus.textContent = "邻格检查读取失败：" + trailState.terrainError;
+      } else if (projection && projection.error) {
+        el.terrainConnectionStatus.textContent = "坐标范围过大，暂时无法显示邻格检查。";
+      } else if (!trailState.terrainTiles.length || checks.recordedChecks === 0) {
+        el.terrainConnectionStatus.textContent = "未收到邻格检查数据；实时采集请使用 0.4.0 采集器。";
+      } else {
+        el.terrainConnectionStatus.textContent = "邻格直连检查 · 通过 " + passed + " / 受阻 " + blocked +
+          " · 当前可显示 " + checks.edges.length + " 条已检查边" + (hidden ? " · 当前已隐藏" : "");
+      }
     }
     function renderTrail() {
       const points = trailState.points;
@@ -942,7 +1017,9 @@
       renderSeenLandmarks(displayedLandmarks);
       const projection = projectTrailCoordinates(points, displayedLandmarks, trailState.terrainTiles);
       const terrainVisible = el.terrainToggle.checked;
-      let svg = '<title id="trailSvgTitle">玩家轨迹、地皮中心地形通行检查与已见目标位置</title>';
+      const connectionsVisible = el.terrainConnectionToggle.checked;
+      const terrainConnections = projection.error ? {edges: [], recordedChecks: 0} : projectTerrainConnections(projection.terrain);
+      let svg = '<title id="trailSvgTitle">玩家轨迹、地皮中心地形通行检查、邻格直连检查与已见目标位置</title>';
       if (terrainVisible && !projection.error) {
         const cellSize = TERRAIN_TILE_SIZE * projection.scale;
         for (const tile of projection.terrain) {
@@ -962,6 +1039,18 @@
           }
         }
       }
+      if (connectionsVisible && !projection.error) {
+        const cellSize = TERRAIN_TILE_SIZE * projection.scale;
+        const stroke = Math.min(1.6, cellSize * 0.08);
+        for (const edge of terrainConnections.edges) {
+          const lineClass = edge.passed ? "terrain-connection-passable" : "terrain-connection-blocked";
+          const dash = Math.min(2.4, cellSize * 0.22), gap = Math.min(1.8, cellSize * 0.16);
+          const style = "stroke-width:" + stroke + "px" + (edge.passed ? "" : ";stroke-dasharray:" + dash + "px " + gap + "px");
+          svg += '<line class="terrain-connection ' + lineClass + '" x1="' + edge.x1 + '" y1="' + edge.y1 +
+            '" x2="' + edge.x2 + '" y2="' + edge.y2 + '" style="' + style + '"><title>' + edge.label +
+            ' · 邻格直连检查 · ' + (edge.passed ? "通过" : "受阻") + '</title></line>';
+        }
+      }
       svg += '<line class="trail-grid" x1="34" x2="326" y1="107.5" y2="107.5"/><line class="trail-grid" x1="180" x2="180" y1="25" y2="190"/>';
       svg += '<g class="trail-direction"><path d="M18 55V25m0 0-5 8m5-8 5 8M18 66h31m0 0-8-5m8 5-8 5"/></g>';
       svg += '<text class="trail-text" x="28" y="31">+Z 北</text><text class="trail-text" x="53" y="69">+X 东</text>';
@@ -970,7 +1059,8 @@
       svg += '<path class="trail-landmark-marker" d="M250 201l6 6-6 6-6-6z"/><text class="trail-landmark-number" x="250" y="210" text-anchor="middle">1</text><text class="trail-text" x="261" y="210">已见目标</text>';
       if (projection.error) {
         svg += '<text class="trail-empty" x="180" y="119" text-anchor="middle">坐标范围过大，暂时无法显示</text>';
-      } else if (!points.length && !displayedLandmarks.length && !(terrainVisible && projection.terrain.length)) {
+      } else if (!points.length && !displayedLandmarks.length && !(terrainVisible && projection.terrain.length) &&
+          !(connectionsVisible && terrainConnections.edges.length)) {
         svg += '<text class="trail-empty" x="180" y="119" text-anchor="middle">' +
           (trailState.error ? '轨迹暂时无法显示' : '还没有可绘制的坐标') + '</text>';
       } else {
@@ -1005,19 +1095,20 @@
       el.trailSvg.innerHTML = svg;
       if (projection.error) {
         el.trailStatus.textContent = "坐标范围过大，轨迹暂时无法显示。";
-        renderTerrainStatus();
+        renderTerrainStatus(projection);
         return;
       }
       if (trailState.error) {
         el.trailStatus.textContent = "轨迹读取失败：" + trailState.error + (points.length ? " · 已显示本地收到的位置" : "");
-        renderTerrainStatus();
+        renderTerrainStatus(projection);
         return;
       }
-      if (!points.length && !displayedLandmarks.length && !(terrainVisible && projection.terrain.length)) {
+      if (!points.length && !displayedLandmarks.length && !(terrainVisible && projection.terrain.length) &&
+          !(connectionsVisible && terrainConnections.edges.length)) {
         el.trailStatus.textContent = trailState.loading ? "正在读取探索轨迹…"
           : trailState.mode === "history" ? "这段回放还没有坐标。"
           : trailState.mode === "idle" ? "勾选实时跟随后，会显示收到的位置。" : "正在等待可绘制的位置。";
-        renderTerrainStatus();
+        renderTerrainStatus(projection);
         return;
       }
       const ranges = projection.ranges;
@@ -1028,7 +1119,7 @@
         " / Z " + trailCoordinate(ranges.min_z) + "–" + trailCoordinate(ranges.max_z) +
         (trailState.trimmed ? " · 仅保留起点和最近 9999 个位置" : "") +
         (trailState.loading ? " · 正在更新" : "");
-      renderTerrainStatus();
+      renderTerrainStatus(projection);
     }
     function currentTrailSelection(revision, mode, summary, request) {
       if (trailState.revision !== revision || trailState.mode !== mode || trailState.id !== summary.id ||
@@ -2308,6 +2399,7 @@
     el.refreshExplorations.addEventListener("click", () => refreshExplorations());
     el.refreshTrail.addEventListener("click", refreshSelectedTrail);
     el.terrainToggle.addEventListener("change", renderTrail);
+    el.terrainConnectionToggle.addEventListener("change", renderTrail);
     el.recordList.addEventListener("click", event => {
       const button = event.target.closest("button.record-open[data-record-id]");
       if (button) openRecord(button.dataset.recordId);
