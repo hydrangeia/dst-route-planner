@@ -684,13 +684,20 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
     _, _, demo = _get(base_url, "/api/demo")
     points = [(-12, 3.5), (-12, 3.5), (8.25, -20)]
     terrain_by_frame = [
-        [{"x": 1, "z": 1, "tile": "GRASS"}],
+        [
+            {"x": 1, "z": 1, "tile": "GRASS", "passable": False},
+            {"x": 4, "z": 4, "tile": "FOREST", "passable": True},
+        ],
         [
             {"x": 1, "z": 1, "tile": "FOREST"},
-            {"x": 2, "z": 2, "tile": "MARSH"},
+            {"x": 2, "z": 2, "tile": "MARSH", "passable": False},
         ],
-        [{"x": 1, "z": 1, "tile": "DECIDUOUS"}],
+        [
+            {"x": 1, "z": 1, "tile": "DECIDUOUS"},
+        ],
     ]
+    live_log = server.record_store.directory.parent / "client.log"
+    server.live_log = live_log
     captured_times = []
     summary = None
     for sequence, (x, z) in enumerate(points, start=1):
@@ -701,12 +708,14 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         )
         snapshot["position"].update(x=x, z=z)
         snapshot["terrain"] = {"tile_size": 4, "tiles": terrain_by_frame[sequence - 1]}
-        summary = server.exploration_store.capture(
-            snapshot,
-            target="panflute",
-            seed=0,
-            plan={"private_plan_detail": "must not be exposed"},
+        _write_live_snapshot(live_log, snapshot)
+        live_status, _, live_response = _get(
+            base_url, "/api/live?target=panflute&seed=0"
         )
+        assert live_status == 200
+        assert live_response["status"] == "live"
+        summary = live_response["recording"]
+        assert summary["frame_count"] == sequence
     other_session = _live_snapshot(
         demo["directions"], world_id="world-abc", session_id="another-session"
     )
@@ -715,9 +724,12 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         "tile_size": 4,
         "tiles": [{"x": 99, "z": -4, "tile": "ROCKY"}],
     }
-    other_summary = server.exploration_store.capture(
-        other_session, target="panflute", seed=0
+    _write_live_snapshot(live_log, other_session)
+    other_live_status, _, other_live_response = _get(
+        base_url, "/api/live?target=panflute&seed=0"
     )
+    assert other_live_status == 200
+    other_summary = other_live_response["recording"]
 
     trail_status, _, trail = _get(base_url, f"/api/explorations/{summary['id']}/trail")
     assert trail_status == 200
@@ -780,6 +792,15 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
                     "tile": "MARSH",
                     "last_seen": captured_times[1],
                     "last_sequence": 2,
+                    "passable": False,
+                },
+                {
+                    "x": 4,
+                    "z": 4,
+                    "tile": "FOREST",
+                    "last_seen": captured_times[0],
+                    "last_sequence": 1,
+                    "passable": True,
                 },
             ],
             "truncated": False,
@@ -859,9 +880,15 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         assert download_status == 200
         assert download_headers.get_content_type() == "application/x-ndjson"
         downloaded_frames = [json.loads(line) for line in downloaded.splitlines()][1:]
-        assert [frame["snapshot"]["terrain"] for frame in downloaded_frames] == [
+        downloaded_terrain = [
+            frame["snapshot"]["terrain"] for frame in downloaded_frames
+        ]
+        assert downloaded_terrain == [
             {"tile_size": 4, "tiles": tiles} for tiles in terrain_by_frame
         ]
+        assert downloaded_terrain[0]["tiles"][0]["passable"] is False
+        assert "passable" not in downloaded_terrain[1]["tiles"][0]
+        assert "passable" not in downloaded_terrain[2]["tiles"][0]
         isolated_status, _, restarted_isolated_trail = _get(
             restarted_url, f"/api/explorations/{other_summary['id']}/trail"
         )

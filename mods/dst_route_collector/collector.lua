@@ -146,7 +146,22 @@ local function sample_terrain(player, map, x, z)
                     local name = TILE_NAMES[tile]
                     if name ~= nil and name ~= "INVALID" and tile ~= invalid_tile
                         and #tiles < MAX_TERRAIN_TILES then
-                        table.insert(tiles, { x = center_x, z = center_z, tile = name })
+                        local sampled_tile = { x = center_x, z = center_z, tile = name }
+                        if map.IsPassableAtPoint ~= nil then
+                            local ok, passable = pcall(
+                                map.IsPassableAtPoint,
+                                map,
+                                center_x,
+                                0,
+                                center_z,
+                                false,
+                                true
+                            )
+                            if ok and type(passable) == "boolean" then
+                                sampled_tile.passable = passable
+                            end
+                        end
+                        table.insert(tiles, sampled_tile)
                     end
                 end
             end

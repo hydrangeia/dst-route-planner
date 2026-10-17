@@ -16,7 +16,7 @@ python route_planner.py --ui
 
 For English setup: copy this whole folder into the DST installation's `mods/` folder, enable it as a client mod, enter a world, run the command above from the planner checkout, then select “检查连接” (check connection) and enable “实时跟随” (live following). The tool locates the client log automatically; use `--live-log "actual/path/client_log.txt"` for another location, or `python route_planner.py --check-live` for a terminal check. Move your character to check that X/Z updates.
 
-更新已有采集器时，重新复制这个文件夹并覆盖原文件，再重新进入世界。0.2.0 版开始提供地皮底图数据。 / To update an existing installation, copy this folder over the previous files and re-enter the world. Version 0.2.0 adds terrain-layer data.
+更新已有采集器时，重新复制这个文件夹并覆盖原文件，再重新进入世界。0.3.0 版新增地形通行检查。 / To update an existing installation, copy this folder over the previous files and re-enter the world. Version 0.3.0 adds ground-passability checks.
 
 ## 采集内容
 
@@ -25,6 +25,8 @@ For English setup: copy this whole folder into the DST installation's `mods/` fo
 采集器结合实体可见状态与玩家地图探索状态筛选线索，记录 prefab 数量。地皮本身不足以判断房间连接，因此连接线索留给后续地图推理。看到已登记目标时，同时输出目标坐标，用于显示直线距离。
 
 采集器还会枚举半径 16 单位内、地图已揭示格的中心与地皮类型，通过 `terrain: {tile_size:4,tiles:[{x,z,tile}]}` 发送给外置工具，绘制并保存地皮底图。格中心由游戏 API 提供，每格边长 4 世界单位；无地皮数据时省略这个字段。 / The collector also sends centers and types of nearby revealed tiles within 16 world units, using the optional `terrain` field above. Tile centers come from the game API; each tile is 4 world units wide. The external tool draws and saves this layer.
+
+每格可选的 `passable` 布尔值来自 `Map:IsPassableAtPoint(x,0,z,false,true)`：只检查格中心地面地形，排除水和船平台。没有可用结果时省略该字段，外置工具显示未知；墙体与实体碰撞等检查留给路径采集。 / Each tile may include a boolean `passable` from the ground-terrain check at its center, excluding water and boat platforms. An unavailable result is omitted and shown as unknown. Walls and entity collisions will be added with path sampling.
 
 每秒输出一行 `DST_ROUTE_PLANNER_LIVE_V1 ` 加标准 JSON。Python 读取最近完整的一行；超过五秒没有新快照时，网页暂停实时建议。游戏日志的实际写入和缓冲还需要完成首次游戏内连通验证，记录在根目录 TODO 中。
 
@@ -38,6 +40,8 @@ For English setup: copy this whole folder into the DST installation's `mods/` fo
 - `components/autoterraformer.lua:116`：世界坐标转换为地皮索引。
 - `constants.lua:17`、`components/map.lua:447`：地皮边长 `TILE_SCALE = 4`。
 - `debugcommands.lua:298-300`：按地皮索引检查地图可见性，读取格中心世界坐标。
+- `entityscript.lua:1818-1820`、`components/componentutil.lua:1104-1107`：地形通行 API 的水与船平台参数。
+- `actions.lua:168-184`：地面、船平台与水面的通行区别。
 - `prefabs/compass.lua:23`：读取镜头角度。
 - `worldgen_main.lua:473`、`mainfunctions.lua:1120`：世界会话及世界类型。
 - `modutil.lua:340`、`gamelogic.lua:967`：世界载入后的初始化回调。

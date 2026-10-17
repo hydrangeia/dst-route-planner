@@ -160,7 +160,14 @@ def test_snapshot_validation_accepts_legacy_empty_and_populated_terrain() -> Non
     assert validate_snapshot(empty)["terrain"] == {"tile_size": 4, "tiles": []}
 
     populated = _snapshot(
-        terrain={"tile_size": 4.0, "tiles": [{"x": -2.5, "z": 3, "tile": "DECIDUOUS"}]}
+        terrain={
+            "tile_size": 4.0,
+            "tiles": [
+                {"x": -2.5, "z": 3, "tile": "DECIDUOUS"},
+                {"x": 1, "z": 2, "tile": "GRASS", "passable": True},
+                {"x": 3, "z": 4, "tile": "ROCKY", "passable": False},
+            ],
+        }
     )
     assert validate_snapshot(populated)["terrain"] == populated["terrain"]
 
@@ -188,15 +195,27 @@ def test_snapshot_validation_accepts_legacy_empty_and_populated_terrain() -> Non
             {"tile_size": 4, "tiles": [{"x": index, "z": 0, "tile": "GRASS"} for index in range(257)]},
             "at most 256",
         ),
-        ({"tile_size": 4, "tiles": [{"x": 0, "z": 0}]}, "exactly x, z, and tile"),
+        ({"tile_size": 4, "tiles": [{"x": 0, "z": 0}]}, "contain x, z, and tile"),
         (
             {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "extra": 1}]},
-            "exactly x, z, and tile",
+            "only optional passable",
         ),
         ({"tile_size": 4, "tiles": [{"x": True, "z": 0, "tile": "GRASS"}]}, r"terrain.tiles\[0\].x"),
         ({"tile_size": 4, "tiles": [{"x": 0, "z": float("nan"), "tile": "GRASS"}]}, r"terrain.tiles\[0\].z"),
         ({"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": " "}]}, r"terrain.tiles\[0\].tile"),
         ({"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "T" * 129}]}, "at most 128"),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "passable": None}]},
+            r"terrain.tiles\[0\]\.passable must be a boolean",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "passable": 0}]},
+            r"terrain.tiles\[0\]\.passable must be a boolean",
+        ),
+        (
+            {"tile_size": 4, "tiles": [{"x": 0, "z": 0, "tile": "GRASS", "passable": "false"}]},
+            r"terrain.tiles\[0\]\.passable must be a boolean",
+        ),
         (
             {"tile_size": 4, "tiles": [{"x": 1, "z": 2, "tile": "GRASS"}, {"x": 1.0, "z": 2, "tile": "FOREST"}]},
             "duplicate coordinate",

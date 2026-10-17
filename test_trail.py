@@ -239,14 +239,17 @@ def test_project_trail_uses_sequence_for_latest_tile_and_time_when_clock_moves_b
             [(1, 300, 0, 0), (2, 100, 1, 0), (3, 50, 2, 0)],
             terrain_by_frame=[
                 [
-                    {"x": 1, "z": 2, "tile": "GRASS"},
-                    {"x": -1, "z": 0, "tile": "MARSH"},
+                    {"x": 1, "z": 2, "tile": "GRASS", "passable": True},
+                    {"x": -1, "z": 0, "tile": "MARSH", "passable": False},
                 ],
                 [
-                    {"x": 1, "z": 2, "tile": "FOREST"},
+                    {"x": 1, "z": 2, "tile": "FOREST", "passable": False},
                     {"x": 3, "z": 4, "tile": "ROCKY"},
                 ],
-                [{"x": 1, "z": 2, "tile": "DECIDUOUS"}],
+                [
+                    {"x": 1, "z": 2, "tile": "DECIDUOUS"},
+                    {"x": 5, "z": 6, "tile": "GRASS", "passable": True},
+                ],
             ],
         )
     )
@@ -255,11 +258,28 @@ def test_project_trail_uses_sequence_for_latest_tile_and_time_when_clock_moves_b
         "tile_size": 4,
         "tiles": [
             {"x": 1, "z": 2, "tile": "DECIDUOUS", "last_seen": 50, "last_sequence": 3},
+            {
+                "x": 5,
+                "z": 6,
+                "tile": "GRASS",
+                "last_seen": 50,
+                "last_sequence": 3,
+                "passable": True,
+            },
             {"x": 3, "z": 4, "tile": "ROCKY", "last_seen": 100, "last_sequence": 2},
-            {"x": -1, "z": 0, "tile": "MARSH", "last_seen": 300, "last_sequence": 1},
+            {
+                "x": -1,
+                "z": 0,
+                "tile": "MARSH",
+                "last_seen": 300,
+                "last_sequence": 1,
+                "passable": False,
+            },
         ],
         "truncated": False,
     }
+    assert "passable" not in trail["terrain"]["tiles"][0]
+    assert trail["terrain"]["tiles"][3]["passable"] is False
 
 
 def test_project_trail_caps_terrain_at_2500_by_latest_sequence_then_coordinates() -> None:

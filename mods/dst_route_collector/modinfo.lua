@@ -1,7 +1,7 @@
 name = "DST Route Planner Live Collector"
-description = "Prints nearby revealed tiles and visible landmarks for DST Route Planner."
+description = "Prints nearby revealed tiles, terrain checks, and visible landmarks for DST Route Planner."
 author = "DST Route Planner contributors"
-version = "0.2.0"
+version = "0.3.0"
 api_version = 10
 dst_compatible = true
 client_only_mod = true

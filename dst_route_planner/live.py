@@ -148,13 +148,19 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
         coordinates: set[tuple[int | float, int | float]] = set()
         for index, item in enumerate(tiles):
             tile = _mapping(item, f"terrain.tiles[{index}]")
-            if set(tile) != {"x", "z", "tile"}:
+            required_tile_fields = {"x", "z", "tile"}
+            allowed_tile_fields = required_tile_fields | {"passable"}
+            if not required_tile_fields <= set(tile) or set(tile) - allowed_tile_fields:
                 raise LiveSnapshotError(
-                    f"terrain.tiles[{index}] must contain exactly x, z, and tile."
+                    f"terrain.tiles[{index}] must contain x, z, and tile, with only optional passable."
                 )
             _finite_number(tile["x"], f"terrain.tiles[{index}].x")
             _finite_number(tile["z"], f"terrain.tiles[{index}].z")
             _identifier(tile["tile"], f"terrain.tiles[{index}].tile")
+            if "passable" in tile and type(tile["passable"]) is not bool:
+                raise LiveSnapshotError(
+                    f"terrain.tiles[{index}].passable must be a boolean."
+                )
             coordinate = (tile["x"], tile["z"])
             if coordinate in coordinates:
                 raise LiveSnapshotError(

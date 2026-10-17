@@ -42,7 +42,7 @@ While live following is active, the tool saves newly received snapshots locally,
 
 The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists the last sighting time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there.
 
-“显示已观测地皮” (show observed tiles) adds the collected terrain beneath the trail, with colors for grass, forest, rock, marsh, water, and other tiles. The layer grows as you move and stays in saved replays; blank areas have not been collected. Caves also support positions, trails, and terrain recording; direction inference is still to come. Turn it off to view just the trail and targets. To update an existing collector, copy the repository's `mods/dst_route_collector` into the game's `mods/` folder again, then re-enter the world.
+“显示已观测地皮” (show observed tiles) adds the collected terrain beneath the trail, with colors for grass, forest, rock, marsh, water, and other tiles. The layer grows as you move and stays in saved replays; blank areas have not been collected. Caves also support positions, trails, and terrain recording; direction inference is still to come. Hatching marks tile centers that fail the ground-terrain check. Hover over a tile to see its passability; missing checks are shown as unknown. Turn the layer off to view just the trail and targets. To update an existing collector, copy the repository's `mods/dst_route_collector` into the game's `mods/` folder again, then re-enter the world.
 
 ## Manual entry and saved records
 
@@ -58,7 +58,7 @@ Each save updates the record's current observations; click Save again after maki
 ```text
 Enable the collector and enter a world → start the tool; locate the log automatically
   ↓
-Check connection → choose a target; collect player coordinates, tiles, and landmarks each second
+Check connection → choose a target; collect coordinates, tiles, landmarks, and ground passability each second
   ↓
 Client log → external Python; update the current position and directional clues
   ↓

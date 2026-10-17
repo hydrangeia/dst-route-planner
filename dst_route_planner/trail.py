@@ -75,13 +75,22 @@ def project_trail(replay: bytes) -> dict[str, Any]:
                 for tile in terrain["tiles"]:
                     x = tile["x"]
                     z = tile["z"]
-                    terrain_by_key[(x, z)] = {
+                    key = (x, z)
+                    existing = terrain_by_key.get(key)
+                    if existing is not None and sequence < existing["last_sequence"]:
+                        continue
+                    projected_tile = {
                         "x": x,
                         "z": z,
                         "tile": tile["tile"],
                         "last_seen": captured_at,
                         "last_sequence": sequence,
                     }
+                    if "passable" in tile:
+                        projected_tile["passable"] = tile["passable"]
+                    # Replace the entire cell snapshot: an omitted passable
+                    # value on a newer observation clears an older known value.
+                    terrain_by_key[key] = projected_tile
                 # Ranking follows capture order, not wall-clock timestamps.
                 # Trim after each frame so memory stays bounded and the result
                 # matches repeated application of the public retention rule.

@@ -104,6 +104,9 @@
     .terrain-water { background: #83b9c9; fill: #83b9c9; }
     .terrain-other { background: #c8cbc3; fill: #c8cbc3; }
     .trail-svg .terrain-cell { stroke: rgb(255 255 255 / 72%); stroke-width: .45; }
+    .trail-svg .terrain-blocked { fill: none; stroke: #4e3028; stroke-width: 1.8; stroke-linecap: round; pointer-events: none; }
+    .terrain-blocked-swatch { display: inline-block; width: 14px; height: 12px; background: linear-gradient(135deg, transparent 44%, #4e3028 45%, #4e3028 55%, transparent 56%); }
+    .terrain-legend[hidden] { display: none; }
     .terrain-status { min-height: 16px; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
     .trail-note { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
     .trail-svg .trail-landmark-marker { fill: #fffdf6; stroke: #8a5426; stroke-width: 1.8; }
@@ -305,6 +308,7 @@
             <span><i class="terrain-swatch terrain-marsh"></i>沼泽</span>
             <span><i class="terrain-swatch terrain-water"></i>水域</span>
             <span><i class="terrain-swatch terrain-other"></i>其他</span>
+            <span class="terrain-blocked-legend"><i class="terrain-blocked-swatch"></i>斜线：格中心不可通行</span>
           </div>
         </div>
         <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="img" aria-label="玩家已观测位置轨迹与地皮"></svg>
@@ -459,6 +463,7 @@
       explorationList: document.getElementById("explorationList"),
       trailSvg: document.getElementById("trailSvg"), trailStatus: document.getElementById("trailStatus"),
       terrainToggle: document.getElementById("terrainToggle"), terrainStatus: document.getElementById("terrainStatus"),
+      terrainLegend: document.getElementById("terrainLegend"),
       refreshTrail: document.getElementById("refreshTrailButton"),
       seenLandmarksStatus: document.getElementById("seenLandmarksStatus"),
       seenLandmarksList: document.getElementById("seenLandmarksList"),
@@ -703,8 +708,10 @@
           typeof value.z !== "number" || !Number.isFinite(value.z) ||
           typeof value.tile !== "string" || !value.tile.trim() || value.tile.length > 128 ||
           typeof value.last_seen !== "number" || !Number.isFinite(value.last_seen) ||
-          !Number.isSafeInteger(value.last_sequence) || value.last_sequence < 0) return null;
-      return {x: value.x, z: value.z, tile: value.tile, last_seen: value.last_seen, last_sequence: value.last_sequence};
+          !Number.isSafeInteger(value.last_sequence) || value.last_sequence < 0 ||
+          (Object.prototype.hasOwnProperty.call(value, "passable") && typeof value.passable !== "boolean")) return null;
+      return {x: value.x, z: value.z, tile: value.tile, last_seen: value.last_seen, last_sequence: value.last_sequence,
+        ...(Object.prototype.hasOwnProperty.call(value, "passable") ? {passable: value.passable} : {})};
     }
     function compareTerrainTiles(a, b) {
       return b.last_sequence - a.last_sequence || (a.x < b.x ? -1 : a.x > b.x ? 1 : 0) ||
@@ -752,8 +759,10 @@
         if (!tile || typeof tile !== "object" || Array.isArray(tile) ||
             typeof tile.x !== "number" || !Number.isFinite(tile.x) ||
             typeof tile.z !== "number" || !Number.isFinite(tile.z) ||
-            typeof tile.tile !== "string" || !tile.tile.trim() || tile.tile.length > 128) return null;
-        return {x: tile.x, z: tile.z, tile: tile.tile, last_seen: snapshot.captured_at, last_sequence: snapshot.sequence};
+            typeof tile.tile !== "string" || !tile.tile.trim() || tile.tile.length > 128 ||
+            (Object.prototype.hasOwnProperty.call(tile, "passable") && typeof tile.passable !== "boolean")) return null;
+        return {x: tile.x, z: tile.z, tile: tile.tile, last_seen: snapshot.captured_at, last_sequence: snapshot.sequence,
+          ...(Object.prototype.hasOwnProperty.call(tile, "passable") ? {passable: tile.passable} : {})};
       });
       if (tiles.some(tile => !tile)) throw new Error("实时地皮位置格式无法识别。");
       const seen = new Set();
@@ -822,7 +831,8 @@
       const project = point => ({x: screenX + (point.x - centerX) * scale, y: screenY - (point.z - centerZ) * scale});
       const projected = playerPoints.map(point => ({sequence: point.sequence, ...project(point)}));
       const projectedLandmarks = landmarkPoints.map((point, index) => ({number: index + 1, ...project(point)}));
-      const projectedTerrain = mapTiles.map(tile => ({tile: tile.tile, worldX: tile.x, worldZ: tile.z, ...project(tile)}));
+      const projectedTerrain = mapTiles.map(tile => ({tile: tile.tile, passable: tile.passable,
+        worldX: tile.x, worldZ: tile.z, ...project(tile)}));
       if (![rangeX, rangeZ, scale, centerX, centerZ,
         ...projected.flatMap(point => [point.x, point.y]),
         ...projectedLandmarks.flatMap(point => [point.x, point.y]),
@@ -902,10 +912,17 @@
     function trailSvgPoint(point) { return point.x.toFixed(2) + "," + point.y.toFixed(2); }
     function renderTerrainStatus() {
       const count = trailState.terrainTiles.length;
+      const known = trailState.terrainTiles.filter(tile => typeof tile.passable === "boolean").length;
+      const passable = trailState.terrainTiles.filter(tile => tile.passable === true).length;
+      const blocked = trailState.terrainTiles.filter(tile => tile.passable === false).length;
+      const unknown = count - known;
+      const counts = "地形通行检查 · 共 " + count + " 格 · 已知 " + known +
+        "（可通行 " + passable + " / 不可通行 " + blocked + "）· 未知 " + unknown;
       const hidden = !el.terrainToggle.checked;
+      if (el.terrainLegend) el.terrainLegend.hidden = hidden;
       if (trailState.terrainError) {
         el.terrainStatus.textContent = "地皮读取失败：" + trailState.terrainError +
-          (count ? "；仍保留已收到的 " + count + " 格。" : "。");
+          (count ? "；已保留现有检查结果。" + counts : "。");
       } else if (trailState.error) {
         el.terrainStatus.textContent = "回放读取失败，地皮状态未知。";
       } else if (trailState.loading) {
@@ -913,7 +930,7 @@
       } else if (trailState.mode === "history" && (!trailState.terrainAvailable || count === 0)) {
         el.terrainStatus.textContent = "这段回放没有地皮数据；较早回放可能不含此字段。";
       } else if (trailState.terrainAvailable) {
-        el.terrainStatus.textContent = "已观测地皮 " + count + " 格" + (hidden ? " · 当前已隐藏" : "") +
+        el.terrainStatus.textContent = counts + (hidden ? " · 当前已隐藏" : "") +
           (trailState.terrainTruncated ? " · 较早地皮可能已省略，最多保留 2500 格" : "");
       } else {
         el.terrainStatus.textContent = "尚未收到地皮数据。";
@@ -925,15 +942,24 @@
       renderSeenLandmarks(displayedLandmarks);
       const projection = projectTrailCoordinates(points, displayedLandmarks, trailState.terrainTiles);
       const terrainVisible = el.terrainToggle.checked;
-      let svg = '<title id="trailSvgTitle">玩家已观测轨迹、地皮与已见目标位置</title>';
+      let svg = '<title id="trailSvgTitle">玩家轨迹、地皮中心地形通行检查与已见目标位置</title>';
       if (terrainVisible && !projection.error) {
         const cellSize = TERRAIN_TILE_SIZE * projection.scale;
         for (const tile of projection.terrain) {
           const left = tile.x - cellSize / 2, top = tile.y - cellSize / 2;
+          const passability = tile.passable === true ? "地形可通行"
+            : tile.passable === false ? "地形不可通行" : "未采集通行状态";
+          const location = 'X ' + trailCoordinate(tile.worldX) + ' / Z ' + trailCoordinate(tile.worldZ);
           svg += '<rect class="terrain-cell terrain-' + terrainCategory(tile.tile) + '" x="' + left.toFixed(2) +
             '" y="' + top.toFixed(2) + '" width="' + cellSize.toFixed(2) + '" height="' + cellSize.toFixed(2) +
-            '"><title>' + esc(tile.tile) + ' · X ' + trailCoordinate(tile.worldX) + ' / Z ' + trailCoordinate(tile.worldZ) +
-            '</title></rect>';
+            '"><title>' + esc(tile.tile) + ' · ' + passability + ' · ' + location + '</title></rect>';
+          if (tile.passable === false) {
+            const slashHalf = Math.min(5, cellSize * 0.22);
+            const slashStroke = Math.min(1.8, cellSize * 0.08);
+            svg += '<path class="terrain-blocked" d="M' + (tile.x - slashHalf) + ' ' +
+              (tile.y + slashHalf) + 'L' + (tile.x + slashHalf) + ' ' +
+              (tile.y - slashHalf) + '" style="stroke-width:' + slashStroke + 'px"><title>地形不可通行 · 格中心检查失败 · ' + location + '</title></path>';
+          }
         }
       }
       svg += '<line class="trail-grid" x1="34" x2="326" y1="107.5" y2="107.5"/><line class="trail-grid" x1="180" x2="180" y1="25" y2="190"/>';

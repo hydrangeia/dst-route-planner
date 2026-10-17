@@ -45,6 +45,8 @@ def _make_stub(
     player_present: bool = True,
     visibility_mode: str = "point",
     has_tile_center_api: bool = True,
+    has_passability_api: bool = True,
+    passability_mode: str = "boolean",
 ):
     lines: list[str] = []
     sim_callbacks = []
@@ -64,8 +66,10 @@ def _make_stub(
         local function make_map()
             local origin_x, origin_z = 101, -53
             local tile_reads = {}
+            local passability_reads = {}
             return {
                 tile_reads = tile_reads,
+                passability_reads = passability_reads,
                 GetTileXYAtPoint = function(self, x, y, z)
                     return math.floor((x - origin_x) / 4), math.floor((z - origin_z) / 4)
                 end,
@@ -79,6 +83,19 @@ def _make_stub(
                     if x <= -10 then return 3 end
                     if x >= 4 then return 2 end
                     return 1
+                end,
+                IsPassableAtPoint = function(self, x, y, z, allow_water, ignore_platforms)
+                    passability_reads[#passability_reads + 1] = {
+                        x = x,
+                        y = y,
+                        z = z,
+                        allow_water = allow_water,
+                        ignore_platforms = ignore_platforms,
+                    }
+                    if self.passability_mode == "error" then error("passability unavailable") end
+                    if self.passability_mode == "nil" then return nil end
+                    if self.passability_mode == "nonboolean" then return "unknown" end
+                    return x < 4
                 end,
             }
         end
@@ -161,6 +178,9 @@ def _make_stub(
         }
     )
     world = lua.globals().make_world("forest-session-1", "forest", not has_tile_center_api)
+    world["Map"]["passability_mode"] = passability_mode
+    if not has_passability_api:
+        world["Map"]["IsPassableAtPoint"] = None
     g["TheWorld"] = world
     if player_present:
         g["ThePlayer"] = lua.globals().make_player(0, 0, 0, visibility_mode)
@@ -303,6 +323,22 @@ def test_terrain_uses_map_tile_centers_and_only_reads_revealed_noninvalid_tiles(
     reads = _from_lua(runtime["world"]["Map"]["tile_reads"])
     assert not any(read["x"] == 3 and read["z"] == 1 for read in reads)
 
+    passability_reads = _from_lua(runtime["world"]["Map"]["passability_reads"])
+    assert {(read["x"], read["z"]) for read in passability_reads} == {
+        (tile["x"], tile["z"]) for tile in tiles
+    }
+    assert all(
+        read["y"] == 0
+        and read["allow_water"] is False
+        and read["ignore_platforms"] is True
+        for read in passability_reads
+    )
+    assert not any(read["x"] == 7 and read["z"] == 1 for read in passability_reads)
+    assert not any(read["x"] == 3 and read["z"] == 1 for read in passability_reads)
+    assert not any(read["x"] == 15 and read["z"] == 13 for read in passability_reads)
+    assert next(tile for tile in tiles if tile["x"] == -1 and tile["z"] == 1)["passable"] is True
+    assert next(tile for tile in tiles if tile["x"] == 15 and tile["z"] == 1)["passable"] is False
+
     validate_snapshot(first)
 
     runtime["g"]["ThePlayer"] = runtime["lua"].globals().make_player(
@@ -332,6 +368,34 @@ def test_terrain_falls_back_to_point_visibility_and_omits_it_without_center_api(
     old_snapshot = _snapshot(without_centers["lines"])
     assert "terrain" not in old_snapshot
     assert old_snapshot["current"].get("tile_types")
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+@pytest.mark.parametrize(
+    ("stub_options", "expect_reads"),
+    [
+        ({"has_passability_api": False}, False),
+        ({"passability_mode": "error"}, True),
+        ({"passability_mode": "nil"}, True),
+        ({"passability_mode": "nonboolean"}, True),
+    ],
+)
+def test_terrain_passability_failure_or_unknown_keeps_snapshot_and_omits_status(
+    stub_options: dict, expect_reads: bool
+) -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub(visibility_mode="tile", **stub_options)
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+
+    terrain_tiles = snapshot["terrain"]["tiles"]
+    assert terrain_tiles
+    assert all("passable" not in tile for tile in terrain_tiles)
+    reads = _from_lua(runtime["world"]["Map"]["passability_reads"])
+    assert len(reads) == (len(terrain_tiles) if expect_reads else 0)
+    validate_snapshot(snapshot)
 
 
 @pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
