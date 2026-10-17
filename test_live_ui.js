@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const appHtml = fs.readFileSync("dst_route_planner/static/app.html", "utf8");
+const checkedRoutesSource = fs.readFileSync("dst_route_planner/static/checked_routes.js", "utf8");
 const source = appHtml.match(/<script>([\s\S]*?)<\/script>/)[1].replace("    initialize();", "");
 const elements = new Map();
 function element(id) {
@@ -19,7 +20,16 @@ const context = vm.createContext({
   fetch: async () => { throw new Error("unexpected fetch"); },
   setTimeout: () => 1, clearTimeout() {}
 });
+vm.runInContext(checkedRoutesSource, context);
 vm.runInContext(source, context);
+assert.ok(appHtml.includes('<script src="/static/checked_routes.js"></script>'), "the route finder loads before the page script");
+const routeDestinationElement = element("routeDestinationSelect");
+let routeOptionsMarkup = routeDestinationElement.innerHTML;
+routeDestinationElement.optionMarkupWrites = 0;
+Object.defineProperty(routeDestinationElement, "innerHTML", {
+  get() { return routeOptionsMarkup; },
+  set(value) { routeDestinationElement.optionMarkupWrites += 1; routeOptionsMarkup = value; }
+});
 function run(code) { return vm.runInContext(code, context); }
 function apiResponse(payload) { return {ok: true, json: async () => payload}; }
 function trailPoint(sequence, capturedAt, x, z) { return {sequence, captured_at: capturedAt, x, z}; }
@@ -459,6 +469,13 @@ run('applyPayload(loaded,"saved live record",{id:"00000000-0000-4000-8000-000000
 assert.equal(JSON.parse(run("JSON.stringify(createRecordPayload())")).observation.current.prefab_counts.observed_custom_prefab, 2);
 run('live.following=true;state.result=null;');
 
+function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = () => {}) {
+  const cell = {dataset: {terrainX: String(x), terrainZ: String(z)}};
+  const event = {target: {closest(selector) {
+    return selector === ".terrain-cell[data-terrain-x][data-terrain-z]" ? cell : null;
+  }}, key, preventDefault};
+  element("trailSvg").listeners[type](event);
+}
 (async () => {
   let resolve;
   context.fetch = () => new Promise(done => { resolve = done; });
@@ -966,5 +983,123 @@ run('live.following=true;state.result=null;');
   assert.ok(element("terrainStatus").textContent.includes("未知 1"), "terrain errors retain the current passability counts");
   assert.ok(element("liveTarget").textContent.includes("直线距离"), "invalid terrain does not remove a visible target");
 
-  console.log("Live UI: replay recording, trail rendering and races, and read-only connection diagnostics passed");
+  context.checkedRouteFixture = [
+    {x: 2, z: 2, tile: "GRASS", passable: true, connections: {east: true, north: false}},
+    {x: 6, z: 2, tile: "FOREST", passable: true, connections: {north: true}},
+    {x: 6, z: 6, tile: "ROCKY", passable: true},
+    {x: 2, z: 6, tile: "MARSH", passable: true, connections: {east: true}},
+    {x: 10, z: 6, tile: "ROCKY", passable: false},
+    {x: 14, z: 6, tile: "OTHER"}
+  ];
+  run('trailState.mode="live";trailState.identity="route-world\u0000forest\u0000route-session";trailState.points=[{sequence:1,captured_at:1,x:2,z:2}];trailState.terrainTiles=checkedRouteFixture;trailState.terrainAvailable=true;trailState.terrainError="";el.terrainToggle.checked=false;el.terrainConnectionToggle.checked=false;renderTrail()');
+  assert.ok(appHtml.includes('id="routeDestinationSelect"') && appHtml.includes('id="clearRouteDestinationButton"') &&
+    appHtml.includes('id="routeStatus"'), "the route selector, clear action, and status are accessible controls");
+  assert.equal((routeDestinationElement.innerHTML.match(/<option /g) || []).length, 5,
+    "the destination selector lists the four observed passable cells and its placeholder");
+  assert.equal(element("routeStatus").textContent, "请选择路线终点。", "no destination is a normal empty route state");
+  assert.equal((element("trailSvg").innerHTML.match(/class="terrain-cell/g) || []).length, 0,
+    "the route map remains visible with the terrain layer hidden");
+  element("terrainToggle").checked = true;
+  element("terrainToggle").listeners.change();
+  assert.ok(element("trailSvg").innerHTML.includes('data-terrain-x="2" data-terrain-z="2" tabindex="0" role="button"'),
+    "passable terrain cells expose accessible coordinates for choosing a destination");
+  assert.equal((element("trailSvg").innerHTML.match(/role="button"/g) || []).length, 4,
+    "only currently passable terrain cells are interactive");
+  const blockedRouteCell = element("trailSvg").innerHTML.match(/<rect class="terrain-cell terrain-rocky"[^>]+>/g).at(-1);
+  const unknownRouteCell = element("trailSvg").innerHTML.match(/<rect class="terrain-cell terrain-other"[^>]+>/)[0];
+  assert.ok(!blockedRouteCell.includes("data-terrain-x") && !unknownRouteCell.includes("data-terrain-x"),
+    "blocked and unknown cells cannot be selected as new destinations");
+  element("terrainToggle").checked = false;
+  element("terrainToggle").listeners.change();
+  routeDestinationElement.value = "2,6";
+  routeDestinationElement.listeners.change();
+  let routeSvg = element("trailSvg").innerHTML;
+  assert.ok(element("routeStatus").textContent.includes("已找到格中心路线") &&
+    element("routeStatus").textContent.includes("起点 X 2.0 / Z 2.0") &&
+    element("routeStatus").textContent.includes("终点 X 2.0 / Z 6.0") &&
+    element("routeStatus").textContent.includes("距离 12.0 世界单位 · 3 步") &&
+    element("routeStatus").textContent.includes("下一格向东 · X 6.0 / Z 2.0"),
+    "the checked-grid route reports endpoints, distance, steps, and next move");
+  assert.ok(routeSvg.includes('class="checked-route"') && routeSvg.includes('class="checked-route-goal"'),
+    "a found route and its goal render in the map even with both terrain overlays turned off");
+  assert.ok(!routeSvg.includes('class="terrain-connection') && !routeSvg.includes('class="terrain-cell'),
+    "route drawing is independent of the terrain and connection layer toggles");
+  assert.equal(routeDestinationElement.value, "2,6", "a selected destination survives redraws for the same trail identity");
+  const routeOptionWrites = routeDestinationElement.optionMarkupWrites;
+  run("renderTrail()");
+  assert.equal(routeDestinationElement.optionMarkupWrites, routeOptionWrites,
+    "one-second trail redraws do not rebuild an unchanged destination menu");
+
+  run('trailState.points=[{sequence:2,captured_at:2,x:6,z:2}];renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("起点 X 6.0 / Z 2.0") &&
+    element("routeStatus").textContent.includes("距离 8.0 世界单位 · 2 步") &&
+    element("routeStatus").textContent.includes("下一格向北 · X 6.0 / Z 6.0"),
+    "moving the player to the middle tile recalculates the remaining route");
+  context.checkedRouteFixture[1].connections.north = false;
+  run("renderTrail()");
+  assert.ok(element("routeStatus").textContent.includes("未连通") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "changing a checked edge to blocked removes the stale path and reports an unconnected route");
+  context.checkedRouteFixture[1].connections.north = true;
+  context.checkedRouteFixture[3].passable = false;
+  run("renderTrail()");
+  assert.ok(element("routeStatus").textContent.includes("终点格中心不可通行") &&
+    routeDestinationElement.value === "2,6" && routeDestinationElement.innerHTML.includes("当前不可通行"),
+    "a blocked destination stays selected and is reported instead of silently replaced");
+  delete context.checkedRouteFixture[3].passable;
+  run("renderTrail()");
+  assert.ok(element("routeStatus").textContent.includes("终点格中心没有可用") &&
+    routeDestinationElement.value === "2,6", "an unknown destination remains selected and is not treated as walkable");
+  context.checkedRouteFixture[3].passable = true;
+  trailDestinationSyntheticEvent("click", 6, 2);
+  assert.equal(routeDestinationElement.value, "6,2", "one delegated SVG click selects a passable map tile");
+  let keyPrevented = false;
+  trailDestinationSyntheticEvent("keydown", 2, 6, "Enter", () => { keyPrevented = true; });
+  assert.equal(routeDestinationElement.value, "2,6", "keyboard activation selects a terrain tile");
+  assert.equal(keyPrevented, true, "keyboard activation prevents the browser's default key action");
+  trailDestinationSyntheticEvent("click", 10, 6);
+  trailDestinationSyntheticEvent("keydown", 14, 6, "Enter");
+  assert.equal(routeDestinationElement.value, "2,6", "late events from blocked or unknown cells keep the current destination");
+  assert.equal((element("trailSvg").listeners.click ? 1 : 0) + (element("trailSvg").listeners.keydown ? 1 : 0), 2,
+    "map destination selection uses one delegated click and key listener");
+
+  run('state.target="panflute";trailState.landmarks=[{prefab:"panflute",x:2,z:6,first_seen:1,last_seen:1,first_sequence:1,last_sequence:1}];trailState.mode="history";trailState.identity="route-world\u0000forest\u0000history-two";trailState.points=[{sequence:1,captured_at:1,x:2,z:2},{sequence:2,captured_at:2,x:6,z:2},{sequence:3,captured_at:3,x:2,z:2}];renderTrail()');
+  assert.equal(routeDestinationElement.value, "", "switching trail identity clears the selected destination");
+  assert.ok(element("routeStatus").textContent.includes("请选择路线终点"), "a new history identity starts without the previous goal");
+  routeDestinationElement.value = "2,6";
+  routeDestinationElement.listeners.change();
+  assert.ok(element("routeStatus").textContent.includes("已找到格中心路线"), "historical tile connections support the same route finder");
+  routeSvg = element("trailSvg").innerHTML;
+  assert.ok(routeSvg.indexOf('class="checked-route"') > routeSvg.indexOf('class="trail-route"') &&
+    routeSvg.indexOf('class="checked-route-goal"') > routeSvg.lastIndexOf('class="trail-landmark-marker"'),
+    "the purple checked route overlays the green history trail and the goal ring is drawn after observed landmarks");
+  assert.ok(routeSvg.includes('class="checked-route-goal" cx="') && routeSvg.includes('r="10"'),
+    "the goal uses a visible 10-unit hollow ring when it overlaps a landmark");
+  run('trailState.mode="idle";renderTrail()');
+  assert.ok(element("trailStatus").textContent.includes("实时跟随已暂停") &&
+    element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "a paused or stale trail keeps its static checked-grid route");
+  assert.ok(!element("routeStatus").textContent.includes("实时观测"), "route status does not label retained data as fresh");
+  run('trailState.identity="another-world-session";renderTrail()');
+  assert.equal(routeDestinationElement.value, "", "a session or world identity change clears the old destination");
+  element("clearRouteDestinationButton").listeners.click();
+  assert.equal(routeDestinationElement.value, "", "the clear button removes the route destination");
+
+  routeDestinationElement.value = '2,6" onload="boom';
+  routeDestinationElement.listeners.change();
+  assert.equal(routeDestinationElement.value, "", "malformed select values cannot become SVG coordinates");
+  assert.ok(!element("trailSvg").innerHTML.includes("onload=\"boom"), "route controls do not inject HTML from a destination value");
+  routeDestinationElement.value = "1e308,-1e308";
+  routeDestinationElement.listeners.change();
+  routeSvg = element("trailSvg").innerHTML;
+  assert.ok(!/NaN|Infinity/.test(routeSvg), "finite extreme route coordinates never serialize NaN or Infinity into SVG");
+  assert.ok(routeSvg.includes("checked-route-goal"), "an off-map selected destination remains visible in the shared projection");
+
+  run('checkedRouteSelection.destination=null;trailState.terrainTiles=Array.from({length:2501},(_,index)=>({x:2+index*4,z:2,passable:true}));updateCheckedRouteDestinations()');
+  assert.equal((routeDestinationElement.innerHTML.match(/<option /g) || []).length, 2501,
+    "the selector caps the passable destination list at 2500 plus its placeholder");
+  assert.ok(routeDestinationElement.innerHTML.startsWith('<option value="">选择终点</option>'),
+    "the placeholder stays at the top after a large map update");
+
+  console.log("Live UI: replay recording, trail rendering, checked-grid routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -43,6 +43,7 @@ MAX_REQUEST_BYTES = 256 * 1024
 KB = build_forest_default_kb()
 PACKAGE_DIR = Path(__file__).resolve().parent
 APP_HTML_PATH = PACKAGE_DIR / "static" / "app.html"
+CHECKED_ROUTES_JS_PATH = PACKAGE_DIR / "static" / "checked_routes.js"
 DEMO_JSON_PATH = PACKAGE_DIR.parent / "examples" / "panflute_observation.json"
 DEFAULT_RECORD_DIR = PACKAGE_DIR.parent / ".dst-route-planner" / "records"
 _LOG = logging.getLogger(__name__)
@@ -406,6 +407,9 @@ class _PlannerHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, record)
             return
+        if path == "/static/checked_routes.js":
+            self._send_checked_routes_js()
+            return
         if path == "/":
             self._send_app_html()
             return
@@ -507,6 +511,20 @@ class _PlannerHandler(BaseHTTPRequestHandler):
         mime_type, _ = mimetypes.guess_type(APP_HTML_PATH.name)
         self.send_response(200)
         self.send_header("Content-Type", f"{mime_type or 'text/html'}; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _send_checked_routes_js(self) -> None:
+        try:
+            content = CHECKED_ROUTES_JS_PATH.read_bytes()
+        except OSError:
+            self._send_json(404, {"error": "The checked-grid route script is not available."})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/javascript; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")

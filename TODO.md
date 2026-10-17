@@ -1,6 +1,6 @@
 # 开发路线 / Roadmap
 
-先接上玩家坐标与周围线索的实时采集，让外置工具随着游戏自动更新，再加入已探索地图和具体路径。 / Connect live player positions and nearby observations so the external tool updates during play, then add explored maps and concrete routes.
+实时坐标、已观测地图和基于已检查连接的格网路线已接入；后续补足游戏内验证与更细的通行条件。 / Live positions, observed maps, and grid routes over checked connections are in place; next, complete in-game verification and add finer movement constraints.
 
 ## 已完成 / Completed
 
@@ -30,7 +30,7 @@
 - [x] 采集附近地图已揭示格的地皮中心与类型，在实时和历史轨迹下显示地皮底图。 / Collect centers and types of nearby revealed tiles and show a terrain layer under live and saved trails.
 - [x] 记录已观测格中心的地形通行状态，在实时与历史底图上标出检查不通过的位置，并区分未知状态。 / Record ground passability at observed tile centers, mark failed checks on live/saved maps, and keep unknown states distinct.
 - [x] 双向检查已观测相邻格中心的直连状态，在实时与历史地图上区分通过、受阻和未知连接。 / Check observed neighboring tile centers in both directions and distinguish clear, blocked, and unknown connections on live/saved maps.
-- [ ] 根据已检查的连接生成具体路径，接入实体碰撞、角色移动能力和路径重规划。 / Build concrete routes from checked connections, then add entity collisions, character movement capabilities, and replanning.
+- [x] 在地图上选择已观测且可通行的格作为路线终点，从最新玩家所在格中心沿已检查通过的相邻格连接寻找最少步数路线；显示路线长度和下一格方向坐标，并在玩家移动、新连接检查及历史回放中更新路线。切换世界或采集会话时清空终点。 / Let players choose an observed passable tile as the route endpoint, find the route with the fewest steps from the latest player tile over checked clear neighbor links, and show its length and next tile. Update routes as the player moves, new connection checks arrive, and saved replays are viewed; clear the endpoint on world or collector-session changes.
 
 ## 1. 生成数据校对 / Generation data
 
@@ -51,7 +51,7 @@
 ## 4. 路线与地图推理 / Route and map reasoning
 
 - [ ] 加入 task 的起终点环路、房间内连接、道路和岛屿连接。 / Add task start/end loops, room connections, roads, and island links.
-- [ ] 利用坐标和地皮观测，加入视野范围、移动代价和路线重规划。 / Use position and terrain observations to add view range, movement costs, and route replanning.
+- [ ] 把格内任意位置的玩家和目标接入格网，并考虑视野范围、移动代价、实体碰撞和角色移动能力。 / Connect player and target positions within tiles to the grid, then account for view range, movement costs, entity collisions, and character movement capabilities.
 
 ## 5. 游戏内展示 / In-game display
 

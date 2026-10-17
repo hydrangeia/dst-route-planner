@@ -34,7 +34,9 @@ python route_planner.py --check-live
 
 If your log lives elsewhere, use `--live-log "actual/path/client_log.txt"`. Explicit `--live-log auto` uses the same automatic discovery as the default. Leave live following unchecked for manual entry.
 
-Directions use fixed world coordinates: north is `+Z` and east is `+X`. Walkable routes around obstacles will follow as explored-map data is added.
+Directions use fixed world coordinates: north is `+Z` and east is `+X`.
+
+On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds a route with the fewest steps from the center of the latest player tile, following neighboring links that passed their checks. It shows the route length (4 world units per grid step) and the direction and coordinates for the next tile. The route recalculates when the player moves or new connection checks arrive; saved replays can show it too. If no checked links connect the tiles, the page shows “未连通” (not connected). The planner does not infer unknown links. Switching worlds or collector sessions clears the endpoint.
 
 While live following is active, the tool saves newly received snapshots locally, including coordinates, nearby clues, the current target, and direction suggestions. Download a JSONL file from “探索回放” (exploration replays) to keep the exploration session; saved replays remain available after restarting. Each world and collector session has its own recording.
 
@@ -70,9 +72,13 @@ Match room/task clues and use task-graph context to rank exploration directions
   ↓
 The page updates suggestions and straight-line distance to a visible target
   ↓
-New snapshots → local replay → trail with observed tiles, latest position, and observed targets
+Choose a route endpoint → find a path over checked clear links and show the next tile
   ↓
-Saved replay → view its trail or download coordinates, clues, and suggestions
+Player moves or a new connection check arrives → update the route
+  ↓
+New snapshots → local replay → trail and route with observed tiles, latest position, and observed targets
+  ↓
+Saved replay → view its trail and route or download coordinates, clues, and suggestions
   ↓
 Keep moving → collect, calculate, and update again
   ↓

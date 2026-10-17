@@ -1,0 +1,226 @@
+(function (root, factory) {
+  "use strict";
+
+  const api = factory();
+  if (typeof module === "object" && module.exports) {
+    module.exports = api;
+  }
+  if (root) {
+    root.CheckedRoutes = api;
+  }
+})(typeof globalThis === "undefined" ? this : globalThis, function () {
+  "use strict";
+
+  const DIRECTIONS = [
+    {name: "east", dx: 4, dz: 0},
+    {name: "north", dx: 0, dz: 4},
+  ];
+  const DIRECTION_ORDER = {east: 0, north: 1, west: 2, south: 3};
+
+  function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function isFinitePoint(value) {
+    return isRecord(value) && Number.isFinite(value.x) && Number.isFinite(value.z);
+  }
+
+  function coordinateKey(x, z) {
+    return String(x) + "," + String(z);
+  }
+
+  function cellInterval(center) {
+    const lower = center - 2;
+    const upper = center + 2;
+    if (!Number.isFinite(lower) || !Number.isFinite(upper) ||
+        lower >= center || upper <= center || upper - lower !== 4) {
+      return null;
+    }
+    return [lower, upper];
+  }
+
+  function couldBeInImpreciseCell(position, x, z) {
+    return Math.abs(position.x - x) <= 2 && Math.abs(position.z - z) <= 2;
+  }
+
+  function point(x, z) {
+    return {x, z};
+  }
+
+  function makeResult(status, start, goal, path, next) {
+    const hasPath = path.length > 0;
+    const steps = hasPath ? path.length - 1 : 0;
+    return {
+      status,
+      start: start ? point(start.x, start.z) : null,
+      goal: goal ? point(goal.x, goal.z) : null,
+      path,
+      distance: steps * 4,
+      steps,
+      next: next || null,
+    };
+  }
+
+  function movementDirection(from, to) {
+    if (to.z === from.z) {
+      if (to.x === from.x + 4) return "east";
+      if (from.x === to.x + 4) return "west";
+    }
+    if (to.x === from.x) {
+      if (to.z === from.z + 4) return "north";
+      if (from.z === to.z + 4) return "south";
+    }
+    return null;
+  }
+
+  function findRoute(tiles, position, destination) {
+    const goalInput = isFinitePoint(destination) ? point(destination.x, destination.z) : null;
+    if (!goalInput) {
+      return makeResult("no_destination", null, null, [], null);
+    }
+    if (!isFinitePoint(position)) {
+      return makeResult("no_position", null, goalInput, [], null);
+    }
+
+    const entries = [];
+    const counts = new Map();
+    if (Array.isArray(tiles)) {
+      for (const tile of tiles) {
+        if (!isRecord(tile) || !Number.isFinite(tile.x) || !Number.isFinite(tile.z)) {
+          continue;
+        }
+        const key = coordinateKey(tile.x, tile.z);
+        const entry = {x: tile.x, z: tile.z, key, tile};
+        entries.push(entry);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+
+    let startEntry = null;
+    let startMatches = 0;
+    let impreciseMatch = false;
+    for (const entry of entries) {
+      const xInterval = cellInterval(entry.x);
+      const zInterval = cellInterval(entry.z);
+      if (!xInterval || !zInterval) {
+        if (couldBeInImpreciseCell(position, entry.x, entry.z)) {
+          impreciseMatch = true;
+        }
+        continue;
+      }
+      if (position.x >= xInterval[0] && position.x < xInterval[1] &&
+          position.z >= zInterval[0] && position.z < zInterval[1]) {
+        startEntry = entry;
+        startMatches += 1;
+      }
+    }
+    if (impreciseMatch || startMatches !== 1) {
+      return makeResult("start_unknown", null, goalInput, [], null);
+    }
+
+    const start = point(startEntry.x, startEntry.z);
+    if (startEntry.tile.passable === false) {
+      return makeResult("start_blocked", start, goalInput, [], null);
+    }
+    if (startEntry.tile.passable !== true || counts.get(startEntry.key) !== 1) {
+      return makeResult("start_unknown", start, goalInput, [], null);
+    }
+
+    const goalCount = counts.get(coordinateKey(goalInput.x, goalInput.z)) || 0;
+    if (goalCount !== 1) {
+      return makeResult("goal_unknown", start, goalInput, [], null);
+    }
+    const goalEntry = entries.find(
+      entry => entry.x === goalInput.x && entry.z === goalInput.z
+    );
+    if (!goalEntry || goalEntry.tile.passable !== true) {
+      return makeResult(
+        goalEntry && goalEntry.tile.passable === false ? "goal_blocked" : "goal_unknown",
+        start,
+        goalInput,
+        [],
+        null
+      );
+    }
+    const goal = point(goalEntry.x, goalEntry.z);
+    if (startEntry.key === goalEntry.key) {
+      return makeResult("arrived", start, goal, [point(start.x, start.z)], null);
+    }
+
+    const uniqueEntries = entries.filter(entry => counts.get(entry.key) === 1);
+    const entryByCoordinate = new Map(uniqueEntries.map(entry => [entry.key, entry]));
+    const graph = new Map();
+    for (const entry of uniqueEntries) {
+      if (entry.tile.passable === true) {
+        graph.set(entry.key, new Set());
+      }
+    }
+    for (const entry of uniqueEntries) {
+      if (!graph.has(entry.key)) continue;
+      const connections = entry.tile.connections;
+      if (!isRecord(connections)) continue;
+      for (const direction of DIRECTIONS) {
+        if (connections[direction.name] !== true) continue;
+        const neighborX = entry.x + direction.dx;
+        const neighborZ = entry.z + direction.dz;
+        if (!Number.isFinite(neighborX) || !Number.isFinite(neighborZ) ||
+            (neighborX === entry.x && neighborZ === entry.z)) {
+          continue;
+        }
+        const neighborKey = coordinateKey(neighborX, neighborZ);
+        const neighbor = entryByCoordinate.get(neighborKey);
+        if (!neighbor || neighbor.tile.passable !== true || !graph.has(neighborKey)) {
+          continue;
+        }
+        graph.get(entry.key).add(neighborKey);
+        graph.get(neighborKey).add(entry.key);
+      }
+    }
+
+    for (const [key, neighbors] of graph) {
+      const from = entryByCoordinate.get(key);
+      const sorted = Array.from(neighbors);
+      sorted.sort((leftKey, rightKey) => {
+        const left = entryByCoordinate.get(leftKey);
+        const right = entryByCoordinate.get(rightKey);
+        return DIRECTION_ORDER[movementDirection(from, left)] -
+          DIRECTION_ORDER[movementDirection(from, right)];
+      });
+      graph.set(key, sorted);
+    }
+
+    const parent = new Map([[startEntry.key, null]]);
+    const queue = [startEntry.key];
+    let head = 0;
+    while (head < queue.length && !parent.has(goalEntry.key)) {
+      const currentKey = queue[head++];
+      for (const neighborKey of graph.get(currentKey) || []) {
+        if (parent.has(neighborKey)) continue;
+        parent.set(neighborKey, currentKey);
+        queue.push(neighborKey);
+      }
+    }
+    if (!parent.has(goalEntry.key)) {
+      return makeResult("unreachable", start, goal, [], null);
+    }
+
+    const reversePath = [];
+    let currentKey = goalEntry.key;
+    while (currentKey !== null) {
+      const entry = entryByCoordinate.get(currentKey);
+      reversePath.push(point(entry.x, entry.z));
+      currentKey = parent.get(currentKey);
+    }
+    const path = reversePath.reverse();
+    const direction = movementDirection(path[0], path[1]);
+    return makeResult(
+      "found",
+      start,
+      goal,
+      path,
+      direction ? {x: path[1].x, z: path[1].z, direction} : null
+    );
+  }
+
+  return {findRoute};
+});

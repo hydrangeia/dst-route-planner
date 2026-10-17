@@ -73,6 +73,34 @@ def test_create_server_binds_to_loopback_and_serves_static_page(local_server) ->
     assert "route planner test" in body
 
 
+def test_only_checked_route_javascript_static_path_is_served(local_server, monkeypatch, tmp_path) -> None:
+    base_url, _ = local_server
+    status, headers, body = _get(base_url, "/static/checked_routes.js")
+
+    assert status == 200
+    assert headers["Content-Type"].startswith("text/javascript")
+    assert headers["Cache-Control"] == "no-cache"
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert body == app.CHECKED_ROUTES_JS_PATH.read_text(encoding="utf-8")
+    assert "findRoute" in body
+
+    for path in (
+        "/static/app.html",
+        "/static/other.js",
+        "/static/checked_routes.js/extra",
+    ):
+        missing_status, _, missing = _get(base_url, path)
+        assert missing_status == 404
+        assert missing == {"error": "Route not found."}
+
+    monkeypatch.setattr(
+        app, "CHECKED_ROUTES_JS_PATH", tmp_path / "missing-checked-routes.js"
+    )
+    unavailable_status, _, unavailable = _get(base_url, "/static/checked_routes.js")
+    assert unavailable_status == 404
+    assert unavailable == {"error": "The checked-grid route script is not available."}
+
+
 def test_options_and_demo_endpoints_return_usable_manual_input(local_server) -> None:
     base_url, _ = local_server
     status, _, options = _get(base_url, "/api/options")
