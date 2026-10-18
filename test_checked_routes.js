@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const {findRoute} = require("./dst_route_planner/static/checked_routes.js");
+const {findRoute, locatePassableTile} = require("./dst_route_planner/static/checked_routes.js");
 
 function cell(x, z, passable = true, connections) {
   return {
@@ -98,6 +98,49 @@ assert.equal(route([cell(0, 0)], {x: 2, z: 0}, {x: 0, z: 0}).status, "start_unkn
   "the planner does not snap an uncovered boundary to the nearest cell");
 assert.equal(route([cell(0, 0)], {x: 2.001, z: 0}, {x: 0, z: 0}).status, "start_unknown");
 
+assert.deepEqual(locatePassableTile([], {x: 0, z: 0}), {status: "unknown", tile: null},
+  "an old replay with no observed tiles cannot locate a target");
+assert.deepEqual(locatePassableTile(undefined, {x: 0, z: 0}), {status: "unknown", tile: null});
+assert.deepEqual(locatePassableTile([cell(0, 0)], null), {status: "unknown", tile: null});
+assert.deepEqual(locatePassableTile([cell(0, 0)], {x: Infinity, z: 0}),
+  {status: "unknown", tile: null}, "non-finite target coordinates stay unknown");
+assert.deepEqual(locatePassableTile([cell(0, 0)], {x: 0, z: NaN}),
+  {status: "unknown", tile: null});
+
+const negativeTarget = locatePassableTile([cell(-8, -4)], {x: -9, z: -3});
+assert.deepEqual(negativeTarget, {status: "found", tile: {x: -8, z: -4}});
+assert.deepEqual(Object.keys(negativeTarget.tile).sort(), ["x", "z"],
+  "located tiles expose only their center coordinates");
+assert.deepEqual(locatePassableTile([cell(-4, 0), cell(0, 0)], {x: -2, z: 0}),
+  {status: "found", tile: {x: 0, z: 0}}, "a shared lower boundary belongs to the eastern cell");
+assert.deepEqual(locatePassableTile([cell(0, 0), cell(4, 0)], {x: 2, z: 0}),
+  {status: "found", tile: {x: 4, z: 0}}, "a shared upper boundary belongs to the next cell");
+assert.deepEqual(locatePassableTile([cell(0, 0)], {x: 2, z: 0}),
+  {status: "unknown", tile: null}, "uncovered bounds are not snapped to a nearby tile");
+assert.deepEqual(locatePassableTile([cell(-4, 0), cell(0, 0), cell(4, 0)], {x: -2, z: 0}).tile,
+  route([cell(-4, 0), cell(0, 0), cell(4, 0)], {x: -2, z: 0}, {x: 0, z: 0}).start,
+  "landmark lookup and route-start lookup use the same half-open cell rule");
+assert.deepEqual(locatePassableTile([cell(-4, 0, false)], {x: -3, z: 0}),
+  {status: "blocked", tile: {x: -4, z: 0}}, "a known false cell returns its center as blocked");
+assert.deepEqual(locatePassableTile([{x: 0, z: 0, tile: "GRASS"}], {x: 0, z: 0}),
+  {status: "unknown", tile: null}, "missing passability remains unknown");
+for (const passable of [null, 0, 1, "true"]) {
+  assert.deepEqual(locatePassableTile([cell(0, 0, passable)], {x: 0, z: 0}),
+    {status: "unknown", tile: null}, "only strict boolean passability is known");
+}
+assert.deepEqual(locatePassableTile([cell(0, 0, false)], {x: 0, z: 0}),
+  {status: "blocked", tile: {x: 0, z: 0}}, "strict false is distinguishable from unknown");
+assert.deepEqual(locatePassableTile([cell(0, 0), cell(2, 0)], {x: 1, z: 0}),
+  {status: "unknown", tile: null}, "overlapping cells make target lookup ambiguous");
+assert.deepEqual(locatePassableTile([cell(0, 0), cell(0, 0, false)], {x: 0, z: 0}),
+  {status: "unknown", tile: null}, "duplicate centers stay unknown even if one is blocked");
+assert.deepEqual(locatePassableTile([cell(Number.MAX_VALUE, 0)], {x: Number.MAX_VALUE, z: 0}),
+  {status: "unknown", tile: null}, "overflowing half-open bounds stay unknown");
+assert.deepEqual(locatePassableTile([cell(1e100, 0)], {x: 1e100, z: 0}),
+  {status: "unknown", tile: null}, "collapsed bounds stay unknown");
+assert.deepEqual(locatePassableTile([cell(Infinity, 0)], {x: 0, z: 0}),
+  {status: "unknown", tile: null}, "non-finite tile centers cannot cover a target");
+
 assert.equal(route([cell(0, 0), cell(2, 0)], {x: 1, z: 0}, {x: 0, z: 0}).status,
   "start_unknown", "overlapping half-open tile bounds are ambiguous");
 assert.equal(route([cell(1e100, 0)], {x: 1e100, z: 0}, {x: 1e100, z: 0}).status,
@@ -123,6 +166,11 @@ assert.equal(largeRoute.steps, 2499);
 assert.equal(largeRoute.distance, 9996);
 assert.equal(largeRoute.path.length, 2500);
 assert.ok(elapsed < 5000, "2500 terrain cells should route interactively");
+const lookupStarted = Date.now();
+const largeLookup = locatePassableTile(largeMap, {x: 9997, z: 0});
+const lookupElapsed = Date.now() - lookupStarted;
+assert.deepEqual(largeLookup, {status: "found", tile: {x: 9996, z: 0}});
+assert.ok(lookupElapsed < 5000, "2500 terrain cells should support interactive target lookup");
 
 const anchored = route(straight, {x: 1, z: 1}, {x: 4, z: 0}, {x: 0, z: 0, clear: true});
 assert.equal(anchored.status, "found");
@@ -180,4 +228,4 @@ assert.equal(farEnough.status, "found");
 assert.ok(Number.isFinite(farEnough.distance), "large checked routes keep finite total distances");
 assert.equal(farEnough.steps, 2499);
 
-console.log("Checked-grid routes: statuses, boundaries, strict edges, player anchors, BFS, and 2500 cells passed");
+console.log("Checked-grid routes: route and target lookup statuses, boundaries, strict edges, player anchors, BFS, and 2500 cells passed");

@@ -121,6 +121,7 @@
     .route-tools select { min-height: 34px; padding: 6px 8px; font-size: 11px; }
     .route-tools .button { min-height: 34px; padding: 6px 10px; font-size: 11px; }
     .route-note { margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .route-destination-source { margin: 3px 0 0; color: #53665a; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
     .route-status { min-height: 18px; margin-top: 4px; color: #604978; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
     .trail-svg .checked-route-halo { fill: none; stroke: #fffefa; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
     .trail-svg .checked-route { fill: none; stroke: #8152a6; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
@@ -131,6 +132,8 @@
     .trail-svg .terrain-cell[role="button"]:focus-visible { stroke: #704390; stroke-width: 2; outline: none; }
     .trail-note { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
     .trail-svg .trail-landmark-marker { fill: #fffdf6; stroke: #8a5426; stroke-width: 1.8; }
+    .trail-svg .trail-landmark-marker[role="button"] { cursor: pointer; }
+    .trail-svg .trail-landmark-marker[role="button"]:focus-visible { stroke: #704390; stroke-width: 3; outline: none; }
     .trail-svg .trail-landmark-number { fill: #75491f; font: 700 8px "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif; pointer-events: none; }
     .seen-landmarks { margin-top: 7px; padding-top: 7px; border-top: 1px solid #e8ede5; }
     .seen-landmarks-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -140,6 +143,9 @@
     .seen-landmark-item { display: grid; grid-template-columns: 19px minmax(0, 1fr); gap: 5px; align-items: start; color: #53665a; font-size: 10px; line-height: 1.4; }
     .seen-landmark-number { display: inline-grid; width: 17px; height: 17px; place-items: center; border: 1px solid #a77a4c; border-radius: 50%; color: #75491f; background: #fffdf6; font-size: 9px; font-weight: 700; }
     .seen-landmark-detail { display: block; color: var(--muted); overflow-wrap: anywhere; }
+    .seen-landmark-route-action { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 4px; }
+    .seen-landmark-go { min-height: 25px; padding: 3px 7px; font-size: 10px; }
+    .seen-landmark-route-reason { color: var(--muted); font-size: 10px; }
     .record-item-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; }
     .record-item-actions .button { min-height: 34px; padding: 6px 9px; font-size: 11px; }
     .record-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #e2e8de; border-radius: 10px; background: #fff; }
@@ -324,6 +330,7 @@
           <label for="routeDestinationSelect"><span>路线终点</span><select id="routeDestinationSelect" aria-label="选择路线终点"><option value="">选择终点</option></select></label>
           <button class="button" id="clearRouteDestinationButton" type="button" disabled>清除终点</button>
         </div>
+        <div class="route-destination-source" id="routeDestinationSource" role="status" aria-live="polite" hidden></div>
         <p class="route-note">采集到当前位置检查后，路线从玩家位置出发；终点为所选格中心。</p>
         <div class="route-status" id="routeStatus" role="status" aria-live="polite">选择终点后显示格中心路线。</div>
         <div class="terrain-tools">
@@ -343,7 +350,7 @@
             <span><i class="terrain-connection-swatch terrain-connection-blocked-swatch"></i>受阻</span>
           </div>
         </div>
-        <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="img" aria-label="玩家轨迹、玩家位置与格中心路线、地皮与邻格直连检查"></svg>
+        <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="group" aria-label="玩家轨迹、玩家位置与格中心路线、地皮与邻格直连检查"></svg>
         <div class="trail-status" id="trailStatus" role="status" aria-live="polite">勾选实时跟随后，会显示收到的位置。</div>
         <div class="terrain-status" id="terrainStatus" role="status" aria-live="polite">尚未收到地皮数据。</div>
         <div class="terrain-status" id="terrainConnectionStatus" role="status" aria-live="polite">未收到邻格检查数据；实时采集请使用 0.4.0 采集器。</div>
@@ -503,6 +510,7 @@
       terrainConnectionStatus: document.getElementById("terrainConnectionStatus"),
       routeDestination: document.getElementById("routeDestinationSelect"),
       clearRouteDestination: document.getElementById("clearRouteDestinationButton"),
+      routeDestinationSource: document.getElementById("routeDestinationSource"),
       routeStatus: document.getElementById("routeStatus"),
       refreshTrail: document.getElementById("refreshTrailButton"),
       seenLandmarksStatus: document.getElementById("seenLandmarksStatus"),
@@ -631,7 +639,8 @@
         localTerrain: [], storedTerrain: [], localTerrainAvailable: false, storedTerrainAvailable: false,
         terrainTruncated: false, terrainError: "" }
     };
-    const checkedRouteSelection = {identity: null, destination: null, optionsSignature: null};
+    const checkedRouteSelection = {identity: null, destination: null, source: null, optionsSignature: null};
+    let trailRenderRevision = 0;
     function normalizeTrailPlayerAnchor(value) {
       if (!value || typeof value !== "object" || Array.isArray(value) ||
           typeof value.x !== "number" || !Number.isFinite(value.x) ||
@@ -997,7 +1006,54 @@
       const angle = (Math.atan2(dx, dz) * 180 / Math.PI + 360) % 360;
       return headings[Math.round(angle / 45) % 8] + " · " + "直线距离 " + distance.toFixed(1);
     }
-    function renderSeenLandmarks(displayed) {
+    function locateLandmarkRouteTile(landmark) {
+      try {
+        const api = globalThis.CheckedRoutes;
+        if (!api || typeof api.locatePassableTile !== "function") return {status: "unknown", tile: null};
+        const result = api.locatePassableTile(trailState.terrainTiles, {x: landmark.x, z: landmark.z});
+        if (!result || !["found", "unknown", "blocked"].includes(result.status)) return {status: "unknown", tile: null};
+        if (result.status === "blocked") return {status: "blocked", tile: null};
+        if (result.status !== "found" || !isFiniteWorldPoint(result.tile)) return {status: "unknown", tile: null};
+        const matches = trailState.terrainTiles.filter(tile => tile.x === result.tile.x && tile.z === result.tile.z);
+        if (matches.length !== 1) return {status: "unknown", tile: null};
+        if (matches[0].passable === false) return {status: "blocked", tile: null};
+        if (matches[0].passable !== true) return {status: "unknown", tile: null};
+        return {status: "found", tile: {x: result.tile.x, z: result.tile.z}};
+      } catch (_) {
+        return {status: "unknown", tile: null};
+      }
+    }
+    function landmarkIdentityToken() {
+      return JSON.stringify(trailState.identity || "");
+    }
+    function landmarkRouteReason(status) {
+      return status === "blocked" ? "所在格不可通行" : "所在格未采集或通行状态未知";
+    }
+    function selectSeenLandmarkRoute(index, expectedRevision, expectedPrefab, expectedX, expectedZ) {
+      if (!Number.isSafeInteger(index) || !Number.isSafeInteger(expectedRevision) ||
+          expectedRevision !== trailRenderRevision) return false;
+      const landmark = selectedTrailLandmarks()[index];
+      if (!landmark || landmark.prefab !== state.target || expectedPrefab !== landmark.prefab ||
+          expectedX !== String(landmark.x) || expectedZ !== String(landmark.z)) return false;
+      const located = locateLandmarkRouteTile(landmark);
+      if (located.status !== "found" || !located.tile) return false;
+      checkedRouteSelection.destination = located.tile;
+      checkedRouteSelection.source = {prefab: landmark.prefab, x: landmark.x, z: landmark.z};
+      renderTrail();
+      return true;
+    }
+    function renderRouteDestinationSource() {
+      const source = checkedRouteSelection.source;
+      if (!source) {
+        el.routeDestinationSource.hidden = true;
+        el.routeDestinationSource.textContent = "";
+        return;
+      }
+      el.routeDestinationSource.hidden = false;
+      el.routeDestinationSource.textContent = "终点来自已见" + (TARGETS[source.prefab] || source.prefab) +
+        "：所记录位置 X " + trailCoordinate(source.x) + " / Z " + trailCoordinate(source.z) + " 的格中心";
+    }
+    function renderSeenLandmarks(displayed, routeTargets, renderRevision) {
       const all = trailState.landmarks.filter(item => item.prefab === state.target)
         .sort((a, b) => b.last_sequence - a.last_sequence || a.x - b.x || a.z - b.z);
       const target = TARGETS[state.target] || state.target || "当前目标";
@@ -1005,10 +1061,22 @@
       const details = displayed.map((item, index) => {
         const location = "世界坐标 X " + trailCoordinate(item.x) + " / Z " + trailCoordinate(item.z);
         const relation = landmarkRelativeLabel(item, latest);
+        const routeTarget = routeTargets[index] || {status: "unknown", tile: null};
+        const available = routeTarget.status === "found" && !!routeTarget.tile;
+        const reason = available ? "" : landmarkRouteReason(routeTarget.status);
+        const accessibleName = "前往已见" + (TARGETS[item.prefab] || item.prefab) + "第 " + (index + 1) +
+          " 处所在格 · X " + trailCoordinate(item.x) + " / Z " + trailCoordinate(item.z);
         return '<li class="seen-landmark-item"><span class="seen-landmark-number">' + (index + 1) +
           '</span><span>' + esc(TARGETS[item.prefab] || item.prefab) + ' <code>' + esc(item.prefab) + '</code>' +
           '<span class="seen-landmark-detail">' + location + ' · 最近看到 ' + esc(landmarkSeenLabel(item.last_seen)) +
-          ' · 相对最新观测：' + esc(relation) + '</span></span></li>';
+          ' · 相对最新观测：' + esc(relation) + '</span><span class="seen-landmark-route-action">' +
+          '<button class="button seen-landmark-go" type="button" data-landmark-index="' + index +
+          '" data-landmark-revision="' + renderRevision + '" data-landmark-prefab="' + esc(item.prefab) +
+          '" data-landmark-x="' + item.x + '" data-landmark-z="' + item.z +
+          '" data-landmark-identity="' + esc(landmarkIdentityToken()) + '" aria-label="' + esc(accessibleName) + '"' +
+          (available ? "" : " disabled") + '>前往所在格</button>' +
+          (reason ? '<span class="seen-landmark-route-reason">' + esc(reason) + '</span>' : "") +
+          '</span></span></li>';
       }).join("");
       el.seenLandmarksList.innerHTML = details;
       if (trailState.landmarkError) {
@@ -1045,6 +1113,13 @@
       if (checkedRouteSelection.identity === trailState.identity) return;
       checkedRouteSelection.identity = trailState.identity;
       checkedRouteSelection.destination = null;
+      checkedRouteSelection.source = null;
+    }
+    function syncCheckedRouteTarget() {
+      if (checkedRouteSelection.source && checkedRouteSelection.source.prefab !== state.target) {
+        checkedRouteSelection.destination = null;
+        checkedRouteSelection.source = null;
+      }
     }
     function updateCheckedRouteDestinations() {
       const unique = new Map();
@@ -1073,6 +1148,7 @@
       }
       if (el.routeDestination.value !== selectedKey) el.routeDestination.value = selectedKey;
       el.clearRouteDestination.disabled = !destination;
+      renderRouteDestinationSource();
     }
     function calculateCheckedRoute() {
       const latest = trailState.points.length ? trailState.points[trailState.points.length - 1] : null;
@@ -1182,14 +1258,49 @@
           " · 当前可显示 " + checks.edges.length + " 条已检查边" + (hidden ? " · 当前已隐藏" : "");
       }
     }
+    function captureLandmarkControlFocus() {
+      const active = document.activeElement;
+      if (!active || typeof active.closest !== "function") return null;
+      const listButton = active.closest(".seen-landmark-go[data-landmark-prefab][data-landmark-x][data-landmark-z][data-landmark-identity]");
+      if (listButton && el.seenLandmarksList.contains && el.seenLandmarksList.contains(listButton)) {
+        return {kind: "list", prefab: listButton.dataset.landmarkPrefab,
+          x: listButton.dataset.landmarkX, z: listButton.dataset.landmarkZ,
+          identity: listButton.dataset.landmarkIdentity};
+      }
+      const mapMarker = active.closest(".trail-landmark-marker[data-landmark-prefab][data-landmark-x][data-landmark-z][data-landmark-identity]");
+      if (mapMarker && el.trailSvg.contains && el.trailSvg.contains(mapMarker)) {
+        return {kind: "map", prefab: mapMarker.dataset.landmarkPrefab,
+          x: mapMarker.dataset.landmarkX, z: mapMarker.dataset.landmarkZ,
+          identity: mapMarker.dataset.landmarkIdentity};
+      }
+      return null;
+    }
+    function restoreLandmarkControlFocus(focus) {
+      if (!focus || focus.identity !== landmarkIdentityToken()) return;
+      const list = focus.kind === "list";
+      const container = list ? el.seenLandmarksList : el.trailSvg;
+      const selector = list
+        ? ".seen-landmark-go[data-landmark-prefab][data-landmark-x][data-landmark-z][data-landmark-identity]"
+        : ".trail-landmark-marker[data-landmark-prefab][data-landmark-x][data-landmark-z][data-landmark-identity]";
+      const control = [...container.querySelectorAll(selector)].find(item =>
+        item.dataset.landmarkPrefab === focus.prefab && item.dataset.landmarkX === focus.x &&
+        item.dataset.landmarkZ === focus.z && item.dataset.landmarkIdentity === focus.identity &&
+        (list ? !item.disabled : item.getAttribute("role") === "button"));
+      if (!control || typeof control.focus !== "function") return;
+      try { control.focus({preventScroll: true}); } catch (_) { control.focus(); }
+    }
     function renderTrail() {
+      const landmarkFocus = captureLandmarkControlFocus();
+      const renderRevision = ++trailRenderRevision;
       const points = trailState.points;
       syncCheckedRouteIdentity();
+      syncCheckedRouteTarget();
       updateCheckedRouteDestinations();
       const checkedRoute = calculateCheckedRoute();
       const routeDestination = checkedRouteSelection.destination;
       const displayedLandmarks = selectedTrailLandmarks();
-      renderSeenLandmarks(displayedLandmarks);
+      const landmarkRouteTargets = displayedLandmarks.map(landmark => locateLandmarkRouteTile(landmark));
+      renderSeenLandmarks(displayedLandmarks, landmarkRouteTargets, renderRevision);
       const projection = projectTrailCoordinates(points, displayedLandmarks, trailState.terrainTiles,
         checkedRoute, routeDestination);
       const routeView = projection.checkedRoute || {path: [], start: null, goal: null};
@@ -1266,10 +1377,24 @@
           svg += '<circle class="trail-latest" cx="' + latest.x.toFixed(2) + '" cy="' + latest.y.toFixed(2) + '" r="4"><title>最近观测位置</title></circle>';
         }
         for (const landmark of projection.landmarks) {
-          svg += '<path class="trail-landmark-marker" d="M' + landmark.x.toFixed(2) + " " + (landmark.y - 7).toFixed(2) +
+          const index = landmark.number - 1;
+          const item = displayedLandmarks[index];
+          const routeTarget = landmarkRouteTargets[index] || {status: "unknown", tile: null};
+          const available = !!item && routeTarget.status === "found" && !!routeTarget.tile;
+          const location = item ? "X " + trailCoordinate(item.x) + " / Z " + trailCoordinate(item.z) : "";
+          const label = item ? "前往已见" + (TARGETS[item.prefab] || item.prefab) + "第 " + (index + 1) +
+            " 处所在格 · " + location : "已见目标";
+          const attributes = available
+            ? ' data-landmark-index="' + index + '" data-landmark-revision="' + renderRevision +
+              '" data-landmark-prefab="' + esc(item.prefab) + '" data-landmark-x="' + item.x +
+              '" data-landmark-z="' + item.z + '" data-landmark-identity="' + esc(landmarkIdentityToken()) +
+              '" tabindex="0" role="button" aria-label="' + esc(label) + '"'
+            : ' role="img" aria-label="' + esc(label + "；" + landmarkRouteReason(routeTarget.status)) + '"';
+          const title = item ? (available ? "回车、空格或点击可前往所在格 · " : landmarkRouteReason(routeTarget.status) + " · ") + location : "已见目标";
+          svg += '<path class="trail-landmark-marker"' + attributes + ' d="M' + landmark.x.toFixed(2) + " " + (landmark.y - 7).toFixed(2) +
             "L" + (landmark.x + 7).toFixed(2) + " " + landmark.y.toFixed(2) +
             "L" + landmark.x.toFixed(2) + " " + (landmark.y + 7).toFixed(2) +
-            "L" + (landmark.x - 7).toFixed(2) + " " + landmark.y.toFixed(2) + 'Z"/>' +
+            "L" + (landmark.x - 7).toFixed(2) + " " + landmark.y.toFixed(2) + 'Z"><title>' + esc(title) + '</title></path>' +
             '<text class="trail-landmark-number" x="' + landmark.x.toFixed(2) + '" y="' + (landmark.y + 3).toFixed(2) +
             '" text-anchor="middle">' + landmark.number + '</text>';
         }
@@ -1300,6 +1425,7 @@
         }
       }
       el.trailSvg.innerHTML = svg;
+      restoreLandmarkControlFocus(landmarkFocus);
       el.routeStatus.textContent = checkedRouteStatusText(checkedRoute, projection.error);
       if (projection.error) {
         el.trailStatus.textContent = "坐标范围过大，轨迹暂时无法显示。";
@@ -2614,23 +2740,48 @@
     el.terrainConnectionToggle.addEventListener("change", renderTrail);
     el.routeDestination.addEventListener("change", () => {
       checkedRouteSelection.destination = parseCheckedRouteDestination(el.routeDestination.value);
+      checkedRouteSelection.source = null;
       renderTrail();
     });
     el.clearRouteDestination.addEventListener("click", () => {
       checkedRouteSelection.destination = null;
+      checkedRouteSelection.source = null;
       renderTrail();
     });
+    el.seenLandmarksList.addEventListener("click", event => {
+      const button = event.target && typeof event.target.closest === "function"
+        ? event.target.closest("button.seen-landmark-go[data-landmark-index][data-landmark-revision]") : null;
+      if (!button || button.disabled) return;
+      selectSeenLandmarkRoute(Number(button.dataset.landmarkIndex), Number(button.dataset.landmarkRevision),
+        button.dataset.landmarkPrefab, button.dataset.landmarkX, button.dataset.landmarkZ);
+    });
     el.trailSvg.addEventListener("click", event => {
+      const marker = event.target && typeof event.target.closest === "function"
+        ? event.target.closest(".trail-landmark-marker[data-landmark-index][data-landmark-revision]") : null;
+      if (marker) {
+        selectSeenLandmarkRoute(Number(marker.dataset.landmarkIndex), Number(marker.dataset.landmarkRevision),
+          marker.dataset.landmarkPrefab, marker.dataset.landmarkX, marker.dataset.landmarkZ);
+        return;
+      }
       const cell = event.target && typeof event.target.closest === "function"
         ? event.target.closest(".terrain-cell[data-terrain-x][data-terrain-z]") : null;
       if (!cell) return;
       const destination = parseCheckedRouteDestination(String(cell.dataset.terrainX) + "," + String(cell.dataset.terrainZ));
       if (!destination || !trailState.terrainTiles.some(tile => tile.x === destination.x && tile.z === destination.z && tile.passable === true)) return;
       checkedRouteSelection.destination = destination;
+      checkedRouteSelection.source = null;
       renderTrail();
     });
     el.trailSvg.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
+      const marker = event.target && typeof event.target.closest === "function"
+        ? event.target.closest(".trail-landmark-marker[data-landmark-index][data-landmark-revision]") : null;
+      if (marker) {
+        event.preventDefault();
+        selectSeenLandmarkRoute(Number(marker.dataset.landmarkIndex), Number(marker.dataset.landmarkRevision),
+          marker.dataset.landmarkPrefab, marker.dataset.landmarkX, marker.dataset.landmarkZ);
+        return;
+      }
       const cell = event.target && typeof event.target.closest === "function"
         ? event.target.closest(".terrain-cell[data-terrain-x][data-terrain-z]") : null;
       if (!cell) return;
@@ -2638,6 +2789,7 @@
       if (!destination || !trailState.terrainTiles.some(tile => tile.x === destination.x && tile.z === destination.z && tile.passable === true)) return;
       event.preventDefault();
       checkedRouteSelection.destination = destination;
+      checkedRouteSelection.source = null;
       renderTrail();
     });
     el.recordList.addEventListener("click", event => {

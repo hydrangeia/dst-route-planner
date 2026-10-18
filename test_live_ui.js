@@ -501,6 +501,38 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
   }}, key, preventDefault};
   element("trailSvg").listeners[type](event);
 }
+function landmarkAttributes(markup, index) {
+  const escapedIndex = String(index).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = markup.match(new RegExp('data-landmark-index="' + escapedIndex + '" data-landmark-revision="(\\d+)" data-landmark-prefab="([^"]*)" data-landmark-x="([^"]*)" data-landmark-z="([^"]*)"'));
+  assert.ok(match, "landmark " + index + " has a current interactive event identity");
+  return {index, revision: Number(match[1]), prefab: match[2], x: match[3], z: match[4]};
+}
+function landmarkListButton(index) {
+  const markup = element("seenLandmarksList").innerHTML;
+  const buttons = [...markup.matchAll(/<button class="button seen-landmark-go"[\s\S]*?<\/button>/g)].map(match => match[0]);
+  const button = buttons.find(item => item.includes('data-landmark-index="' + index + '"'));
+  assert.ok(button, "the sightings list contains button " + index);
+  return button;
+}
+function landmarkListSyntheticClick(index, forcedDisabled = false) {
+  const buttonMarkup = landmarkListButton(index);
+  const attributes = landmarkAttributes(buttonMarkup, index);
+  const button = {dataset: {landmarkIndex: String(index), landmarkRevision: String(attributes.revision),
+    landmarkPrefab: attributes.prefab, landmarkX: attributes.x, landmarkZ: attributes.z},
+    disabled: forcedDisabled || /\sdisabled>/.test(buttonMarkup)};
+  const event = {target: {closest(selector) {
+    return selector === "button.seen-landmark-go[data-landmark-index][data-landmark-revision]" ? button : null;
+  }}};
+  element("seenLandmarksList").listeners.click(event);
+}
+function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = () => {}) {
+  const marker = {dataset: {landmarkIndex: String(attributes.index), landmarkRevision: String(attributes.revision),
+    landmarkPrefab: attributes.prefab, landmarkX: String(attributes.x), landmarkZ: String(attributes.z)}};
+  const event = {target: {closest(selector) {
+    return selector === ".trail-landmark-marker[data-landmark-index][data-landmark-revision]" ? marker : null;
+  }}, key, preventDefault};
+  element("trailSvg").listeners[type](event);
+}
 (async () => {
   let resolve;
   context.fetch = () => new Promise(done => { resolve = done; });
@@ -1086,6 +1118,173 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
   assert.equal(routeDestinationElement.optionMarkupWrites, routeOptionWrites,
     "one-second trail redraws do not rebuild an unchanged destination menu");
 
+  context.landmarkRouteRecords = [
+    remembered("panflute", 1, 1, 1, 10, 1, 10),
+    remembered("panflute", 3, 3, 1, 9, 1, 9),
+    remembered("panflute", 11, 7, 1, 8, 1, 8),
+    remembered("panflute", 15, 7, 1, 7, 1, 7),
+    remembered("moonbase", 1, 1, 1, 6, 1, 6)
+  ];
+  run('state.target="panflute";trailState.landmarks=landmarkRouteRecords;renderTrail()');
+  let landmarkButtons = [...element("seenLandmarksList").innerHTML.matchAll(/<button class="button seen-landmark-go"[\s\S]*?<\/button>/g)].map(match => match[0]);
+  assert.equal(landmarkButtons.length, 4, "each of the four selected-target sightings gets a route action");
+  assert.ok(!/\sdisabled>/.test(landmarkButtons[0]) && !/\sdisabled>/.test(landmarkButtons[1]),
+    "two distinct sightings in one passable tile can both route to that tile");
+  assert.ok(/\sdisabled>/.test(landmarkButtons[2]) && element("seenLandmarksList").innerHTML.includes("所在格不可通行"),
+    "a target in a blocked tile is disabled with a clear reason");
+  assert.ok(/\sdisabled>/.test(landmarkButtons[3]) && element("seenLandmarksList").innerHTML.includes("所在格未采集或通行状态未知"),
+    "a target over unknown terrain is disabled instead of snapping to a neighbor");
+  assert.ok(landmarkButtons[0].includes('aria-label="前往已见排箫第 1 处所在格 · X 1.0 / Z 1.0"'),
+    "list actions have unique accessible names with the record coordinates");
+  let landmarkSvg = element("trailSvg").innerHTML;
+  assert.match(appHtml, /<svg class="trail-svg" id="trailSvg"[^>]*role="group" aria-label="[^"]+">/,
+    "the named map is an accessible group so its interactive markers remain exposed to assistive technology");
+  assert.equal((landmarkSvg.match(/class="trail-landmark-marker"[^>]*role="button"/g) || []).length, 2,
+    "only sightings whose containing tile is checked passable are interactive map markers");
+  assert.ok(landmarkSvg.includes("回车、空格或点击可前往所在格"), "interactive map markers explain their keyboard and pointer action");
+  landmarkListSyntheticClick(0);
+  assert.equal(routeDestinationElement.value, "2,2", "the list action selects the center of the sighting's containing tile");
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 1.0 / Z 1.0 的格中心",
+    "the route source identifies the exact remembered position even when another sighting shares its tile");
+  landmarkButtons = [...element("seenLandmarksList").innerHTML.matchAll(/<button class="button seen-landmark-go"[\s\S]*?<\/button>/g)].map(match => match[0]);
+  landmarkListSyntheticClick(1);
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 3.0 / Z 3.0 的格中心",
+    "a second record in the same cell keeps its own source coordinates");
+  landmarkSvg = element("trailSvg").innerHTML;
+  let markerIdentity = landmarkAttributes(landmarkSvg, 1);
+  landmarkMapSyntheticEvent("click", markerIdentity);
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 3.0 / Z 3.0 的格中心",
+    "clicking an observed map marker uses the same checked-tile action");
+  landmarkSvg = element("trailSvg").innerHTML;
+  markerIdentity = landmarkAttributes(landmarkSvg, 0);
+  let markerKeyPrevented = false;
+  landmarkMapSyntheticEvent("keydown", markerIdentity, "Enter", () => { markerKeyPrevented = true; });
+  assert.equal(markerKeyPrevented, true, "keyboard activation of an observed map marker prevents the default action");
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 1.0 / Z 1.0 的格中心",
+    "keyboard activation selects the exact sighting position");
+  markerIdentity = landmarkAttributes(element("trailSvg").innerHTML, 1);
+  let spacePrevented = false;
+  landmarkMapSyntheticEvent("keydown", markerIdentity, " ", () => { spacePrevented = true; });
+  assert.equal(spacePrevented, true, "Space activates an observed map marker for keyboard users");
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 3.0 / Z 3.0 的格中心",
+    "Space chooses the marker's exact sighting record");
+  landmarkMapSyntheticEvent("click", landmarkAttributes(element("trailSvg").innerHTML, 0));
+  const unknownLandmark = landmarkAttributes(landmarkListButton(3), 3);
+  landmarkMapSyntheticEvent("click", unknownLandmark);
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 1.0 / Z 1.0 的格中心",
+    "unknown terrain cannot be selected even when a synthetic event supplies marker attributes");
+  landmarkListSyntheticClick(2, true);
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 1.0 / Z 1.0 的格中心",
+    "disabled list actions cannot change the route");
+  const blockedLandmark = landmarkAttributes(landmarkButtons[2], 2);
+  landmarkMapSyntheticEvent("click", blockedLandmark);
+  assert.equal(routeDestinationElement.value, "2,2", "even a forced stale map event rechecks the blocked cell and cannot select it");
+
+  const staleLandmark = landmarkAttributes(element("trailSvg").innerHTML, 0);
+  run("trailState.landmarks[1].last_sequence=30;renderTrail()");
+  landmarkMapSyntheticEvent("click", staleLandmark);
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 1.0 / Z 1.0 的格中心",
+    "a late event after landmark ordering changes cannot select a different record at the same index");
+
+  const landmarkListElement = element("seenLandmarksList");
+  const landmarkSvgElement = element("trailSvg");
+  const originalListQuery = landmarkListElement.querySelectorAll;
+  const originalSvgQuery = landmarkSvgElement.querySelectorAll;
+  const originalListContains = landmarkListElement.contains;
+  const originalSvgContains = landmarkSvgElement.contains;
+  let listFocusOptions = null, mapFocusOptions = null;
+  const focusIdentity = run("landmarkIdentityToken()");
+  const focusedListButton = {dataset: {landmarkPrefab: "panflute", landmarkX: "1", landmarkZ: "1", landmarkIdentity: focusIdentity},
+    closest(selector) { return selector.startsWith(".seen-landmark-go") ? this : null; }};
+  const nextListButton = {dataset: focusedListButton.dataset, disabled: false,
+    focus(options) { listFocusOptions = options; }};
+  landmarkListElement.contains = item => item === focusedListButton;
+  landmarkListElement.querySelectorAll = selector => selector.startsWith(".seen-landmark-go") ? [nextListButton] : [];
+  context.document.activeElement = focusedListButton;
+  run("renderTrail()");
+  assert.equal(listFocusOptions.preventScroll, true, "redrawing the sightings list restores keyboard focus to the same enabled record");
+  const focusedMapMarker = {dataset: {landmarkPrefab: "panflute", landmarkX: "3", landmarkZ: "3", landmarkIdentity: focusIdentity},
+    closest(selector) { return selector.startsWith(".trail-landmark-marker") ? this : null; }};
+  const nextMapMarker = {dataset: focusedMapMarker.dataset, getAttribute(name) { return name === "role" ? "button" : null; },
+    focus(options) { mapFocusOptions = options; }};
+  landmarkSvgElement.contains = item => item === focusedMapMarker;
+  landmarkSvgElement.querySelectorAll = selector => selector.startsWith(".trail-landmark-marker") ? [nextMapMarker] : [];
+  context.document.activeElement = focusedMapMarker;
+  run("renderTrail()");
+  assert.equal(mapFocusOptions.preventScroll, true, "redrawing the SVG restores focus to the same enabled marker");
+  let crossIdentityFocusCount = 0;
+  landmarkListElement.querySelectorAll = () => [{dataset: {...focusedListButton.dataset,
+    landmarkIdentity: JSON.stringify("focus-new-world")}, disabled: false, focus() { crossIdentityFocusCount += 1; }}];
+  context.document.activeElement = focusedListButton;
+  run('trailState.identity="focus-new-world";renderTrail()');
+  assert.equal(crossIdentityFocusCount, 0, "focus is not restored onto a matching sighting in another world or session");
+  delete context.document.activeElement;
+  landmarkListElement.querySelectorAll = originalListQuery;
+  landmarkSvgElement.querySelectorAll = originalSvgQuery;
+  landmarkListElement.contains = originalListContains;
+  landmarkSvgElement.contains = originalSvgContains;
+
+  landmarkListSyntheticClick(0);
+  routeDestinationElement.value = "6,2";
+  routeDestinationElement.listeners.change();
+  assert.equal(element("routeDestinationSource").hidden, true, "manual select changes clear the sighting source");
+  landmarkListSyntheticClick(0);
+  trailDestinationSyntheticEvent("click", 6, 6);
+  assert.equal(routeDestinationElement.value, "6,6", "manual map-cell selection replaces a sighting-derived destination");
+  assert.equal(element("routeDestinationSource").hidden, true, "manual map-cell selection clears the sighting source");
+  landmarkListSyntheticClick(0);
+  element("clearRouteDestinationButton").listeners.click();
+  assert.equal(element("routeDestinationSource").hidden, true, "clearing the route removes its sighting source");
+
+  landmarkListSyntheticClick(0);
+  element("targetSelect").value = "moonbase";
+  element("targetSelect").listeners.change();
+  assert.equal(routeDestinationElement.value, "", "changing target type clears a sighting-derived route");
+  assert.equal(element("routeDestinationSource").hidden, true, "changing target type clears the source explanation");
+  routeDestinationElement.value = "6,6";
+  routeDestinationElement.listeners.change();
+  element("targetSelect").value = "panflute";
+  element("targetSelect").listeners.change();
+  assert.equal(routeDestinationElement.value, "6,6", "a manually selected cell route survives target-type changes");
+
+  run('trailState.mode="history";trailState.identity="route-world\\u0000forest\\u0000landmark-history";trailState.points=[{sequence:1,captured_at:1,x:6,z:2}];trailState.terrainTiles=checkedRouteFixture;trailState.landmarks=landmarkRouteRecords;state.target="panflute";renderTrail()');
+  landmarkListSyntheticClick(0);
+  assert.equal(routeDestinationElement.value, "2,2", "historical sightings can choose their recorded passable tile");
+  assert.ok(!element("routeDestinationSource").hidden, "historical sighting choices display their source");
+  context.checkedRouteFixture[0].passable = false;
+  run("renderTrail()");
+  assert.equal(routeDestinationElement.value, "2,2", "a source-derived destination stays selected if its tile later becomes blocked");
+  assert.ok(!element("routeDestinationSource").hidden && element("routeStatus").textContent.includes("终点格中心不可通行"),
+    "blocked historical destinations keep their source and report their current route state");
+  context.checkedRouteFixture[0].passable = true;
+  run("trailState.terrainTiles=checkedRouteFixture.slice(1);renderTrail()");
+  assert.equal(routeDestinationElement.value, "2,2", "a cropped source-derived destination is not silently replaced");
+  assert.ok(!element("routeDestinationSource").hidden, "a cropped destination keeps its source explanation");
+  run('trailState.terrainTiles=checkedRouteFixture;trailState.identity="route-world\\u0000forest\\u0000landmark-history-next";renderTrail()');
+  assert.equal(routeDestinationElement.value, "", "changing history identity clears the sighting-derived destination");
+  assert.ok(element("routeDestinationSource").hidden, "changing history identity clears the source explanation");
+
+  context.injectedRoutePrefab = "<img src=x onerror=boom>";
+  run('state.target=injectedRoutePrefab;trailState.landmarks=[{prefab:injectedRoutePrefab,x:1,z:1,first_seen:1,last_seen:1,first_sequence:1,last_sequence:1}];renderTrail();selectSeenLandmarkRoute(0,trailRenderRevision,injectedRoutePrefab,"1","1")');
+  assert.ok(element("seenLandmarksList").innerHTML.includes("&lt;img src=x onerror=boom&gt;"),
+    "untrusted prefab names are escaped in landmark action markup");
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见<img src=x onerror=boom>：所记录位置 X 1.0 / Z 1.0 的格中心",
+    "the selected source is written as text, never interpreted as HTML");
+  assert.ok(!element("routeDestinationSource").innerHTML.includes("onerror"), "source content cannot inject markup");
+
+  run('state.target="panflute";trailState.mode="live";trailState.identity="route-world\\u0000forest\\u0000route-session";trailState.points=[{sequence:2,captured_at:2,x:6,z:2}];trailState.landmarks=[];renderTrail()');
+  assert.equal(routeDestinationElement.value, "", "switching back to the live identity starts without a historical destination");
+  routeDestinationElement.value = "2,6";
+  routeDestinationElement.listeners.change();
   run('trailState.points=[{sequence:2,captured_at:2,x:6,z:2}];renderTrail()');
   assert.ok(element("routeStatus").textContent.includes("起点 X 6.0 / Z 2.0") &&
     element("routeStatus").textContent.includes("距离 8.0 世界单位 · 2 步") &&
@@ -1211,5 +1410,5 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
   assert.ok(routeDestinationElement.innerHTML.startsWith('<option value="">选择终点</option>'),
     "the placeholder stays at the top after a large map update");
 
-  console.log("Live UI: replay recording, trail rendering, checked-grid routes, races, and connection diagnostics passed");
+  console.log("Live UI: replay recording, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -43,6 +43,45 @@
     return Math.abs(position.x - x) <= 2 && Math.abs(position.z - z) <= 2;
   }
 
+  function buildTileEntries(tiles) {
+    const entries = [];
+    const counts = new Map();
+    if (Array.isArray(tiles)) {
+      for (const tile of tiles) {
+        if (!isRecord(tile) || !Number.isFinite(tile.x) || !Number.isFinite(tile.z)) {
+          continue;
+        }
+        const key = coordinateKey(tile.x, tile.z);
+        entries.push({x: tile.x, z: tile.z, key, tile});
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+    return {entries, counts};
+  }
+
+  function locateContainingEntry(entries, position) {
+    if (!isFinitePoint(position)) return null;
+    let match = null;
+    let matchCount = 0;
+    let impreciseMatch = false;
+    for (const entry of entries) {
+      const xInterval = cellInterval(entry.x);
+      const zInterval = cellInterval(entry.z);
+      if (!xInterval || !zInterval) {
+        if (couldBeInImpreciseCell(position, entry.x, entry.z)) {
+          impreciseMatch = true;
+        }
+        continue;
+      }
+      if (position.x >= xInterval[0] && position.x < xInterval[1] &&
+          position.z >= zInterval[0] && position.z < zInterval[1]) {
+        match = entry;
+        matchCount += 1;
+      }
+    }
+    return impreciseMatch || matchCount !== 1 ? null : match;
+  }
+
   function point(x, z) {
     return {x, z};
   }
@@ -82,39 +121,9 @@
       return makeResult("no_position", null, goalInput, [], null);
     }
 
-    const entries = [];
-    const counts = new Map();
-    if (Array.isArray(tiles)) {
-      for (const tile of tiles) {
-        if (!isRecord(tile) || !Number.isFinite(tile.x) || !Number.isFinite(tile.z)) {
-          continue;
-        }
-        const key = coordinateKey(tile.x, tile.z);
-        const entry = {x: tile.x, z: tile.z, key, tile};
-        entries.push(entry);
-        counts.set(key, (counts.get(key) || 0) + 1);
-      }
-    }
-
-    let startEntry = null;
-    let startMatches = 0;
-    let impreciseMatch = false;
-    for (const entry of entries) {
-      const xInterval = cellInterval(entry.x);
-      const zInterval = cellInterval(entry.z);
-      if (!xInterval || !zInterval) {
-        if (couldBeInImpreciseCell(position, entry.x, entry.z)) {
-          impreciseMatch = true;
-        }
-        continue;
-      }
-      if (position.x >= xInterval[0] && position.x < xInterval[1] &&
-          position.z >= zInterval[0] && position.z < zInterval[1]) {
-        startEntry = entry;
-        startMatches += 1;
-      }
-    }
-    if (impreciseMatch || startMatches !== 1) {
+    const {entries, counts} = buildTileEntries(tiles);
+    const startEntry = locateContainingEntry(entries, position);
+    if (!startEntry) {
       return makeResult("start_unknown", null, goalInput, [], null);
     }
 
@@ -222,6 +231,19 @@
     );
   }
 
+  function locatePassableTile(tiles, targetPoint) {
+    if (!isFinitePoint(targetPoint)) return {status: "unknown", tile: null};
+    const {entries, counts} = buildTileEntries(tiles);
+    const entry = locateContainingEntry(entries, targetPoint);
+    if (!entry || counts.get(entry.key) !== 1) {
+      return {status: "unknown", tile: null};
+    }
+    const center = point(entry.x, entry.z);
+    if (entry.tile.passable === false) return {status: "blocked", tile: center};
+    if (entry.tile.passable !== true) return {status: "unknown", tile: null};
+    return {status: "found", tile: center};
+  }
+
   function isPlayerAnchor(value) {
     if (!isRecord(value) || !Number.isFinite(value.x) || !Number.isFinite(value.z) ||
         typeof value.clear !== "boolean") return false;
@@ -311,5 +333,5 @@
     };
   }
 
-  return {findRoute};
+  return {findRoute, locatePassableTile};
 });

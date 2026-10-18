@@ -33,6 +33,7 @@
 - [x] 在地图上选择已观测且可通行的格作为路线终点，从最新玩家所在格中心沿已检查通过的相邻格连接寻找最少步数路线；显示路线长度和下一格方向坐标，并在玩家移动、新连接检查及历史回放中更新路线。切换世界或采集会话时清空终点。 / Let players choose an observed passable tile as the route endpoint, find the route with the fewest steps from the latest player tile over checked clear neighbor links, and show its length and next tile. Update routes as the player moves, new connection checks arrive, and saved replays are viewed; clear the endpoint on world or collector-session changes.
 
 - [x] 检查玩家实际位置到所在格中心的连接，将通过的一段接入实时与历史路线；总距离随格内移动更新，接入结果按坐标帧保存。 / Check the segment from the actual player position to its tile center, include clear segments in live and saved routes, update total distance during movement within a tile, and retain the result with its position frame.
+- [x] 从已见目标列表或地图菱形一键前往记录地点所在的已观测可通行格，显示终点来源，支持实时探索与历史回放。 / Go from a target sighting in the list or map to its observed passable tile, show the endpoint source, and support live exploration and saved replays.
 
 ## 1. 生成数据校对 / Generation data
 
