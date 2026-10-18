@@ -16,7 +16,7 @@ python route_planner.py --ui
 
 For English setup: copy this whole folder into the DST installation's `mods/` folder, enable it as a client mod, enter a world, run the command above from the planner checkout, then select “检查连接” (check connection) and enable “实时跟随” (live following). The tool locates the client log automatically; use `--live-log "actual/path/client_log.txt"` for another location, or `python route_planner.py --check-live` for a terminal check. Move your character to check that X/Z updates.
 
-更新已有采集器时，重新复制这个文件夹并覆盖原文件，再重新进入世界。0.4.0 版新增邻格直连检查。 / To update an existing installation, copy this folder over the previous files and re-enter the world. Version 0.4.0 adds neighbor-connection checks.
+更新已有采集器时，重新复制这个文件夹并覆盖原文件，再重新进入世界。0.5.0 版新增玩家所在格中心与当前位置之间的检查。 / To update an existing installation, copy this folder over the previous files and re-enter the world. Version 0.5.0 adds a check between the player's current position and the center of the tile they occupy.
 
 ## 采集内容
 
@@ -30,22 +30,24 @@ For English setup: copy this whole folder into the DST installation's `mods/` fo
 
 同一份观测中的相邻格地形检查都通过时，采集器双向调用 `Pathfinder:IsClear`，记录该格 `connections` 对象中的 `east`（`x+4`）或 `north`（`z+4`）。两次布尔结果取 AND，保留受阻的 `false`；接口缺失、调用失败或非布尔结果时省略方向。每对邻格只记录一次，不查询未采到的格。选项保留 Pathfinder 的墙障碍检查并忽略 creep。 / When both observed neighboring centers pass the ground check, the collector checks the segment in both directions and stores the AND of the boolean results in `connections.east` or `connections.north`. Missing or failed checks stay unknown. Each pair is stored once, and unsampled tiles are not queried. Registered wall blockers participate in the check; creep is ignored.
 
+快照还可能包含 `player_anchor: {x,z,clear}`。`x`、`z` 是游戏 API 返回的玩家所在格中心，并且只在该格已出现在 `terrain.tiles` 且中心 `passable` 为 `true` 时发送。采集器检查玩家当前位置的地面通行状态；若当前位置不通行，仍发送中心并将 `clear` 设为 `false`。当前位置可通行时，从实际玩家坐标到格中心双向调用 `Pathfinder:IsClear`，两次布尔结果取 AND。接口缺失、调用失败、非布尔结果、中心未采到或中心不通行时省略整个字段。每帧重新检查，不读取额外未揭示地形。 / A snapshot may also contain `player_anchor: {x,z,clear}`. Its coordinates are the tile center returned by the game API, and the field is sent only when that center is present in `terrain.tiles` with `passable: true`. The collector checks ground passability at the player's actual position. If that point is impassable, it still sends the center with `clear: false`; otherwise, it checks the path in both directions between the actual position and center, and ANDs the two boolean results. Missing APIs, failed calls, non-boolean results, an unsampled center, or an impassable center omit the field. It is recalculated every frame without querying additional unrevealed terrain.
+
 每秒输出一行 `DST_ROUTE_PLANNER_LIVE_V1 ` 加标准 JSON。Python 读取最近完整的一行；超过五秒没有新快照时，网页暂停实时建议。游戏日志的实际写入和缓冲还需要完成首次游戏内连通验证，记录在根目录 TODO 中。
 
 ## 源码依据
 
 以下路径相对 DST 的 `scripts/` 目录：
 
-- `prefabs/player_common_extensions.lua:946`：玩家已探索地图的可见性检查。
+- `prefabs/player_common_extensions.lua:946-952`：玩家已探索地图的可见性检查，以及世界坐标到地皮索引的转换。
 - `prefabs/player_common.lua:2304`：为玩家实例安装地图可见性方法。
 - `components/playercontroller.lua:5102`：按世界坐标检查可见区域。
 - `components/autoterraformer.lua:116`：世界坐标转换为地皮索引。
 - `constants.lua:17`、`components/map.lua:447`：地皮边长 `TILE_SCALE = 4`。
 - `debugcommands.lua:298-300`：按地皮索引检查地图可见性，读取格中心世界坐标。
-- `entityscript.lua:1818-1820`、`components/componentutil.lua:1104-1107`：地形通行 API 的水与船平台参数。
+- `entityscript.lua:1818-1820`、`componentutil.lua:1097-1107`：地形通行 API 的水与船平台参数。
 - `actions.lua:168-184`：地面、船平台与水面的通行区别。
 - `prefabs/world.lua:443-448`：世界初始化安装 Pathfinder。
-- `components/penguinspawner.lua:201-205`、`259-263`：不忽略墙、忽略 creep 的 `IsClear` 调用。
+- `components/penguinspawner.lua:261-263`：不忽略墙、忽略 creep 的 `IsClear` 调用。
 - `components/locomotor.lua:1834-1849`：直连 LOS 检查与完整路径搜索分开处理。
 - `prefabs/walls.lua:3-11`、`prefabs/fence.lua:312-320`：注册 Pathfinder 的墙障碍。
 - `prefabs/compass.lua:23`：读取镜头角度。

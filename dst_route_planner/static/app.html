@@ -320,11 +320,11 @@
       <p style="font-size:12px;color:var(--muted);margin:10px 0 0">方位按固定世界坐标：北 +Z，东 +X。<a href="https://github.com/hydrangeia/dst-route-planner/tree/main/mods/dst_route_collector">采集器安装说明</a></p>
       <div class="trail-box" aria-label="探索轨迹">
         <div class="trail-head"><h3>探索轨迹</h3><button class="button" id="refreshTrailButton" type="button">刷新轨迹</button></div>
-        <div class="route-tools" aria-label="格中心路线">
+        <div class="route-tools" aria-label="地图路线">
           <label for="routeDestinationSelect"><span>路线终点</span><select id="routeDestinationSelect" aria-label="选择路线终点"><option value="">选择终点</option></select></label>
           <button class="button" id="clearRouteDestinationButton" type="button" disabled>清除终点</button>
         </div>
-        <p class="route-note">从最新玩家所在格中心到所选格中心。</p>
+        <p class="route-note">采集到当前位置检查后，路线从玩家位置出发；终点为所选格中心。</p>
         <div class="route-status" id="routeStatus" role="status" aria-live="polite">选择终点后显示格中心路线。</div>
         <div class="terrain-tools">
           <label class="toggle-label"><input id="terrainToggle" type="checkbox" checked><span>显示已观测地皮</span></label>
@@ -343,7 +343,7 @@
             <span><i class="terrain-connection-swatch terrain-connection-blocked-swatch"></i>受阻</span>
           </div>
         </div>
-        <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="img" aria-label="玩家轨迹、格中心路线、地皮与邻格直连检查"></svg>
+        <svg class="trail-svg" id="trailSvg" viewBox="0 0 360 220" role="img" aria-label="玩家轨迹、玩家位置与格中心路线、地皮与邻格直连检查"></svg>
         <div class="trail-status" id="trailStatus" role="status" aria-live="polite">勾选实时跟随后，会显示收到的位置。</div>
         <div class="terrain-status" id="terrainStatus" role="status" aria-live="polite">尚未收到地皮数据。</div>
         <div class="terrain-status" id="terrainConnectionStatus" role="status" aria-live="polite">未收到邻格检查数据；实时采集请使用 0.4.0 采集器。</div>
@@ -632,12 +632,26 @@
         terrainTruncated: false, terrainError: "" }
     };
     const checkedRouteSelection = {identity: null, destination: null, optionsSignature: null};
+    function normalizeTrailPlayerAnchor(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          typeof value.x !== "number" || !Number.isFinite(value.x) ||
+          typeof value.z !== "number" || !Number.isFinite(value.z) || typeof value.clear !== "boolean") return null;
+      const keys = Object.keys(value);
+      if (keys.length !== 3 || !keys.includes("x") || !keys.includes("z") || !keys.includes("clear")) return null;
+      return {x: value.x, z: value.z, clear: value.clear};
+    }
     function normalizeTrailPoint(value) {
-      if (!value || typeof value !== "object" || !Number.isSafeInteger(value.sequence) || value.sequence < 0 ||
+      if (!value || typeof value !== "object" || Array.isArray(value) || !Number.isSafeInteger(value.sequence) || value.sequence < 0 ||
           typeof value.captured_at !== "number" || !Number.isFinite(value.captured_at) ||
           typeof value.x !== "number" || !Number.isFinite(value.x) ||
           typeof value.z !== "number" || !Number.isFinite(value.z)) return null;
-      return { sequence: value.sequence, captured_at: value.captured_at, x: value.x, z: value.z };
+      const point = {sequence: value.sequence, captured_at: value.captured_at, x: value.x, z: value.z};
+      if (Object.prototype.hasOwnProperty.call(value, "player_anchor")) {
+        const anchor = normalizeTrailPlayerAnchor(value.player_anchor);
+        if (!anchor) return null;
+        point.player_anchor = anchor;
+      }
+      return point;
     }
     const MAX_TRAIL_POINTS = 10000;
     function limitTrailPoints(points) {
@@ -651,7 +665,10 @@
         if (points[middle].sequence < point.sequence) low = middle + 1;
         else high = middle;
       }
-      if (points[low] && points[low].sequence === point.sequence) return false;
+      if (points[low] && points[low].sequence === point.sequence) {
+        points[low] = point;
+        return true;
+      }
       points.splice(low, 0, point);
       return true;
     }
@@ -1009,7 +1026,7 @@
     const MAX_ROUTE_DESTINATIONS = 2500;
     const CHECKED_ROUTE_STATUSES = new Set([
       "no_destination", "no_position", "start_unknown", "start_blocked", "goal_unknown", "goal_blocked",
-      "unreachable", "arrived", "found"
+      "anchor_unknown", "anchor_blocked", "unreachable", "arrived", "found"
     ]);
     function trailCoordinate(value) { return Number(value).toFixed(1); }
     function trailSvgPoint(point) { return point.x.toFixed(2) + "," + point.y.toFixed(2); }
@@ -1063,7 +1080,8 @@
         const api = globalThis.CheckedRoutes;
         if (!api || typeof api.findRoute !== "function") throw new Error("路线计算模块尚未加载。");
         const result = api.findRoute(trailState.terrainTiles,
-          latest ? {x: latest.x, z: latest.z} : null, checkedRouteSelection.destination);
+          latest ? {x: latest.x, z: latest.z} : null, checkedRouteSelection.destination,
+          latest && Object.prototype.hasOwnProperty.call(latest, "player_anchor") ? latest.player_anchor : undefined);
         if (!result || typeof result !== "object" || !CHECKED_ROUTE_STATUSES.has(result.status)) {
           throw new Error("路线计算结果无法识别。");
         }
@@ -1073,6 +1091,7 @@
       }
     }
     function checkedRouteStatusText(route, projectionError = false) {
+      const playerOrigin = route.origin === "player";
       const messages = {
         no_destination: "请选择路线终点。",
         no_position: "暂无最新玩家位置，路线暂时无法计算。",
@@ -1080,23 +1099,40 @@
         start_blocked: "玩家所在格中心不可通行。",
         goal_unknown: "所选终点格中心没有可用的通行检查。",
         goal_blocked: "所选终点格中心不可通行。",
+        anchor_unknown: "采集到的当前位置检查未知，无法连接路线。",
+        anchor_blocked: "玩家当前位置到所在格中心的检查受阻。",
         unreachable: "已检查路径未连通所选终点。",
-        arrived: "玩家所在格中心已是所选终点。",
-        found: "已找到格中心路线。",
+        arrived: playerOrigin ? "玩家已在所选终点格中心。" : "玩家所在格中心已是所选终点。",
+        found: playerOrigin ? "已找到玩家位置路线。" : "已找到格中心路线。",
         error: route.error || "路线计算失败。"
       };
-      const parts = [messages[route.status] || messages.error];
+      let summary = messages[route.status] || messages.error;
+      if (playerOrigin && route.status !== "found" && route.status !== "arrived") {
+        summary = "玩家位置路线 · " + summary;
+      }
+      const parts = [summary];
       if (isFiniteWorldPoint(route.start)) parts.push("起点 X " + trailCoordinate(route.start.x) + " / Z " + trailCoordinate(route.start.z));
       if (isFiniteWorldPoint(route.goal)) parts.push("终点 X " + trailCoordinate(route.goal.x) + " / Z " + trailCoordinate(route.goal.z));
       if ((route.status === "found" || route.status === "arrived") &&
           typeof route.distance === "number" && Number.isFinite(route.distance) &&
           Number.isSafeInteger(route.steps) && route.steps >= 0) {
-        parts.push("格中心路线距离 " + trailCoordinate(route.distance) + " 世界单位 · " + route.steps + " 步");
+        if (playerOrigin && Number.isFinite(route.anchor_distance) && Number.isFinite(route.grid_distance)) {
+          parts.push("总距离 " + trailCoordinate(route.distance) + " 世界单位 · 格网步数 " + route.steps +
+            " · 位置至所在格中心 " + trailCoordinate(route.anchor_distance) + " · 格中心段 " + trailCoordinate(route.grid_distance));
+        } else {
+          parts.push("格中心路线距离 " + trailCoordinate(route.distance) + " 世界单位 · " + route.steps + " 步");
+        }
       }
-      if (route.status === "found" && isFiniteWorldPoint(route.next) &&
-          ["east", "north", "west", "south"].includes(route.next.direction)) {
-        const direction = {east: "东", north: "北", west: "西", south: "南"}[route.next.direction];
-        parts.push("下一格向" + direction + " · X " + trailCoordinate(route.next.x) + " / Z " + trailCoordinate(route.next.z));
+      if (route.status === "found" && isFiniteWorldPoint(route.next)) {
+        if (route.next.kind === "anchor" &&
+            ["east", "northeast", "north", "northwest", "west", "southwest", "south", "southeast"].includes(route.next.direction)) {
+          const direction = {east: "东", northeast: "东北", north: "北", northwest: "西北",
+            west: "西", southwest: "西南", south: "南", southeast: "东南"}[route.next.direction];
+          parts.push("先到所在格中心 · 向" + direction + " · X " + trailCoordinate(route.next.x) + " / Z " + trailCoordinate(route.next.z));
+        } else if (["east", "north", "west", "south"].includes(route.next.direction)) {
+          const direction = {east: "东", north: "北", west: "西", south: "南"}[route.next.direction];
+          parts.push("下一格向" + direction + " · X " + trailCoordinate(route.next.x) + " / Z " + trailCoordinate(route.next.z));
+        }
       }
       if (projectionError) parts.push("坐标范围过大，地图路线暂不可绘制。");
       return parts.join(" · ");
@@ -1161,7 +1197,7 @@
       const terrainVisible = el.terrainToggle.checked;
       const connectionsVisible = el.terrainConnectionToggle.checked;
       const terrainConnections = projection.error ? {edges: [], recordedChecks: 0} : projectTerrainConnections(projection.terrain);
-      let svg = '<title id="trailSvgTitle">玩家轨迹、格中心路线、地皮中心地形通行检查、邻格直连检查与已见目标位置</title>';
+      let svg = '<title id="trailSvgTitle">玩家轨迹、玩家位置与格中心路线、地皮中心地形通行检查、邻格直连检查与已见目标位置</title>';
       if (terrainVisible && !projection.error) {
         const cellSize = TERRAIN_TILE_SIZE * projection.scale;
         for (const tile of projection.terrain) {
@@ -1241,12 +1277,16 @@
           if (routeView.path.length > 1) {
             const routeCommands = routeView.path.map((point, index) => (index ? "L" : "M") + trailSvgPoint(point)).join(" ");
             svg += '<path class="checked-route-halo" d="' + routeCommands + '"/>' +
-              '<path class="checked-route" d="' + routeCommands + '"><title>已检查格中心路线 · ' +
-              checkedRoute.steps + ' 步 · 距离 ' + trailCoordinate(checkedRoute.distance) + ' 世界单位</title></path>';
+              '<path class="checked-route" d="' + routeCommands + '"><title>' +
+              (checkedRoute.origin === "player"
+                ? '玩家位置路线 · 玩家位置到所在格中心后接已检查格中心连接 · ' + checkedRoute.steps + ' 格网步 · 总距离 ' + trailCoordinate(checkedRoute.distance) + ' 世界单位'
+                : '已检查格中心路线 · ' + checkedRoute.steps + ' 步 · 距离 ' + trailCoordinate(checkedRoute.distance) + ' 世界单位') +
+              '</title></path>';
           }
           if (routeView.start) {
             svg += '<circle class="checked-route-start" cx="' + routeView.start.x.toFixed(2) + '" cy="' +
-              routeView.start.y.toFixed(2) + '" r="4"><title>路线起点格中心 · X ' +
+              routeView.start.y.toFixed(2) + '" r="4"><title>' +
+              (checkedRoute.origin === "player" ? '玩家实际位置路线起点' : '路线起点格中心') + ' · X ' +
               trailCoordinate(routeView.start.worldX) + ' / Z ' + trailCoordinate(routeView.start.worldZ) + '</title></circle>';
           }
         }
@@ -1432,8 +1472,12 @@
     function recordLiveTrailSnapshot(snapshot) {
       const identity = snapshotReplayIdentity(snapshot);
       if (!identity) return;
-      const point = normalizeTrailPoint({ sequence: snapshot.sequence, captured_at: snapshot.captured_at,
-        x: snapshot.position && snapshot.position.x, z: snapshot.position && snapshot.position.z });
+      const pointValue = {sequence: snapshot.sequence, captured_at: snapshot.captured_at,
+        x: snapshot.position && snapshot.position.x, z: snapshot.position && snapshot.position.z};
+      const point = normalizeTrailPoint(pointValue);
+      if (point && Object.prototype.hasOwnProperty.call(snapshot, "player_anchor")) {
+        point.player_anchor = normalizeTrailPlayerAnchor(snapshot.player_anchor);
+      }
       const liveTrail = trailState.live;
       if (liveTrail.identity !== identity) {
         liveTrail.identity = identity;

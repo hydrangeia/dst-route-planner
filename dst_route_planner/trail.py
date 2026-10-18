@@ -109,15 +109,18 @@ def project_trail(replay: bytes) -> dict[str, Any]:
                     }
                     terrain_truncated = True
 
-        points = [
-            {
-                "sequence": frame["snapshot"]["sequence"],
-                "captured_at": frame["snapshot"]["captured_at"],
-                "x": frame["snapshot"]["position"]["x"],
-                "z": frame["snapshot"]["position"]["z"],
+        points = []
+        for frame in frames:
+            snapshot = frame["snapshot"]
+            point = {
+                "sequence": snapshot["sequence"],
+                "captured_at": snapshot["captured_at"],
+                "x": snapshot["position"]["x"],
+                "z": snapshot["position"]["z"],
             }
-            for frame in frames
-        ]
+            if "player_anchor" in snapshot:
+                point["player_anchor"] = dict(snapshot["player_anchor"])
+            points.append(point)
         result = {
             "trail_version": 1,
             "id": header["id"],

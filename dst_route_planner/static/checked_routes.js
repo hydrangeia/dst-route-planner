@@ -73,7 +73,7 @@
     return null;
   }
 
-  function findRoute(tiles, position, destination) {
+  function findGridRoute(tiles, position, destination) {
     const goalInput = isFinitePoint(destination) ? point(destination.x, destination.z) : null;
     if (!goalInput) {
       return makeResult("no_destination", null, null, [], null);
@@ -220,6 +220,95 @@
       path,
       direction ? {x: path[1].x, z: path[1].z, direction} : null
     );
+  }
+
+  function isPlayerAnchor(value) {
+    if (!isRecord(value) || !Number.isFinite(value.x) || !Number.isFinite(value.z) ||
+        typeof value.clear !== "boolean") return false;
+    const keys = Object.keys(value);
+    return keys.length === 3 && keys.includes("x") && keys.includes("z") && keys.includes("clear");
+  }
+
+  function samePoint(left, right) {
+    return !!left && !!right && left.x === right.x && left.z === right.z;
+  }
+
+  function anchorBearing(from, to) {
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    const directions = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"];
+    const octant = Math.round(Math.atan2(dx, dz) / (Math.PI / 4));
+    return directions[(octant + directions.length) % directions.length];
+  }
+
+  function anchorFailure(status, position, destination, gridStart = null, anchorDistance = null) {
+    const goal = isFinitePoint(destination) ? point(destination.x, destination.z) : null;
+    const result = makeResult(status, isFinitePoint(position) ? position : null, goal, [], null);
+    result.origin = "player";
+    if (gridStart) result.grid_start = point(gridStart.x, gridStart.z);
+    if (Number.isFinite(anchorDistance)) result.anchor_distance = anchorDistance;
+    return result;
+  }
+
+  function findRoute(tiles, position, destination, playerAnchor) {
+    if (playerAnchor === undefined) return findGridRoute(tiles, position, destination);
+
+    const goalInput = isFinitePoint(destination) ? point(destination.x, destination.z) : null;
+    if (!goalInput) return makeResult("no_destination", null, null, [], null);
+    if (!isFinitePoint(position)) return makeResult("no_position", null, goalInput, [], null);
+    if (!isPlayerAnchor(playerAnchor)) {
+      return anchorFailure("anchor_unknown", position, destination);
+    }
+
+    const actualPosition = point(position.x, position.z);
+    const center = point(playerAnchor.x, playerAnchor.z);
+    const anchorDistance = Math.hypot(actualPosition.x - center.x, actualPosition.z - center.z);
+    if (!Number.isFinite(anchorDistance)) {
+      return anchorFailure("anchor_unknown", position, destination);
+    }
+
+    // An arrived result means the actual position and the supplied center resolve to
+    // the same unique, reliable, currently passable tile under the half-open bounds.
+    const anchorCell = findGridRoute(tiles, actualPosition, center);
+    if (anchorCell.status !== "arrived" || !samePoint(anchorCell.start, center)) {
+      return anchorFailure("anchor_unknown", actualPosition, destination);
+    }
+    if (!playerAnchor.clear) {
+      return anchorFailure("anchor_blocked", actualPosition, destination, center, anchorDistance);
+    }
+
+    const gridRoute = findGridRoute(tiles, center, destination);
+    const gridDistance = gridRoute.distance;
+    const successful = gridRoute.status === "found" || gridRoute.status === "arrived";
+    const positionAtCenter = samePoint(actualPosition, center);
+    const status = gridRoute.status === "arrived" && !positionAtCenter ? "found" : gridRoute.status;
+    let path = [];
+    if (successful) {
+      path = gridRoute.path.map(item => point(item.x, item.z));
+      if (!positionAtCenter) path.unshift(actualPosition);
+    }
+    const distance = successful ? anchorDistance + gridDistance : 0;
+    if (!Number.isFinite(distance)) {
+      return anchorFailure("anchor_unknown", actualPosition, destination);
+    }
+
+    let next = gridRoute.next;
+    if (successful && !positionAtCenter) {
+      next = {kind: "anchor", direction: anchorBearing(actualPosition, center), x: center.x, z: center.z};
+    }
+    return {
+      status,
+      start: actualPosition,
+      goal: gridRoute.goal,
+      path,
+      distance,
+      steps: gridRoute.steps,
+      next: next || null,
+      origin: "player",
+      grid_start: center,
+      anchor_distance: anchorDistance,
+      grid_distance: gridDistance,
+    };
   }
 
   return {findRoute};

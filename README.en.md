@@ -36,7 +36,7 @@ If your log lives elsewhere, use `--live-log "actual/path/client_log.txt"`. Expl
 
 Directions use fixed world coordinates: north is `+Z` and east is `+X`.
 
-On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds a route with the fewest steps from the center of the latest player tile, following neighboring links that passed their checks. It shows the route length (4 world units per grid step) and the direction and coordinates for the next tile. The route recalculates when the player moves or new connection checks arrive; saved replays can show it too. If no checked links connect the tiles, the page shows “未连通” (not connected). The planner does not infer unknown links. Switching worlds or collector sessions clears the endpoint.
+On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds the route with the fewest grid steps over checked clear neighbor links. Collector 0.5.0 also checks the segment from your current position to your tile center. When that check passes, the route starts at your actual position and shows its total length and the next direction and coordinates. A blocked entry segment is reported; older data can still show tile-center routes. Routes recalculate as the player moves or new checks arrive, including in saved replays. The endpoint is the selected tile center, and each grid step is 4 world units. If no path connects the tiles, the page shows “未连通” (not connected). Switching worlds or collector sessions clears the endpoint.
 
 While live following is active, the tool saves newly received snapshots locally, including coordinates, nearby clues, the current target, and direction suggestions. Download a JSONL file from “探索回放” (exploration replays) to keep the exploration session; saved replays remain available after restarting. Each world and collector session has its own recording.
 
@@ -64,7 +64,7 @@ Enable the collector and enter a world → start the tool; locate the log automa
   ↓
 Check connection → choose a target; collect coordinates, tiles, landmarks, and ground passability each second
   ↓
-Collector: observed neighboring tiles → check the connection in both directions
+Collector: check the player-to-tile-center segment and connections between observed neighbors
   ↓
 Client log → external Python; update the current position and directional clues
   ↓
@@ -72,7 +72,7 @@ Match room/task clues and use task-graph context to rank exploration directions
   ↓
 The page updates suggestions and straight-line distance to a visible target
   ↓
-Choose a route endpoint → find a path over checked clear links and show the next tile
+Choose a route endpoint → connect the checked player position → find a route and show the next move
   ↓
 Player moves or a new connection check arrives → update the route
   ↓

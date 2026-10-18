@@ -14,6 +14,7 @@ def _journal(
     session_id: str = "session-trail",
     landmarks_by_frame: list[list[dict]] | None = None,
     terrain_by_frame: list[list[dict]] | None = None,
+    player_anchors_by_frame: list[dict | None] | None = None,
 ) -> bytes:
     journal_id = exploration_id(world_id, world_kind, session_id)
     header = {
@@ -46,6 +47,12 @@ def _journal(
                 "tile_size": 4,
                 "tiles": terrain_by_frame[frame_index],
             }
+        if (
+            player_anchors_by_frame is not None
+            and frame_index < len(player_anchors_by_frame)
+            and player_anchors_by_frame[frame_index] is not None
+        ):
+            frame["snapshot"]["player_anchor"] = player_anchors_by_frame[frame_index]
         lines.append(json.dumps(frame, separators=(",", ":")))
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -80,6 +87,38 @@ def test_project_trail_preserves_every_stationary_and_asymmetric_point() -> None
     }
     assert "private_plan_detail" not in json.dumps(trail)
     assert "directions" not in trail
+
+
+def test_project_trail_copies_only_each_frames_player_anchor() -> None:
+    trail = project_trail(
+        _journal(
+            [(1, 30, -2, 3), (2, 20, 0, 0), (3, 10, 4, -1)],
+            player_anchors_by_frame=[
+                {"x": -4, "z": 4, "clear": False},
+                None,
+                {"x": 4, "z": 0, "clear": True},
+            ],
+        )
+    )
+
+    assert trail["points"] == [
+        {
+            "sequence": 1,
+            "captured_at": 30,
+            "x": -2,
+            "z": 3,
+            "player_anchor": {"x": -4, "z": 4, "clear": False},
+        },
+        {"sequence": 2, "captured_at": 20, "x": 0, "z": 0},
+        {
+            "sequence": 3,
+            "captured_at": 10,
+            "x": 4,
+            "z": -1,
+            "player_anchor": {"x": 4, "z": 0, "clear": True},
+        },
+    ]
+    assert "player_anchor" not in trail
 
 
 def test_project_trail_keeps_sessions_separate_and_empty_bounds_null() -> None:

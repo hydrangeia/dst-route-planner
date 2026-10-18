@@ -49,6 +49,8 @@ def _make_stub(
     passability_mode: str = "boolean",
     has_pathfinder_api: bool = True,
     pathfinder_mode: str = "true",
+    player_x: float = 0,
+    player_z: float = 0,
 ):
     lines: list[str] = []
     sim_callbacks = []
@@ -97,6 +99,9 @@ def _make_stub(
                     if self.passability_mode == "error" then error("passability unavailable") end
                     if self.passability_mode == "nil" then return nil end
                     if self.passability_mode == "nonboolean" then return "unknown" end
+                    if self.passability_mode == "center_false" then
+                        return not (x == -1 and z == 1)
+                    end
                     return x < 4
                 end,
             }
@@ -123,6 +128,8 @@ def _make_stub(
                     if self.mode == "reverse_nil" and (ax > bx or az > bz) then return nil end
                     if self.mode == "reverse_false" then return ax < bx or az < bz end
                     if self.mode == "forward_false" then return ax > bx or az > bz end
+                    if self.mode == "anchor_flip" then return ax < 0.1 and bx < 0.1 end
+                    if self.mode == "anchor_one_way_blocked" then return ax == 0 end
                     return true
                 end,
                 reads = pathfinder_reads,
@@ -142,11 +149,19 @@ def _make_stub(
         end
 
         function make_player(x, y, z, visibility_mode)
+            local position = { x = x, y = y, z = z }
             local player = {
                 Transform = {
-                    GetWorldPosition = function(self) return x, y, z end,
+                    GetWorldPosition = function(self)
+                        return position.x, position.y, position.z
+                    end,
                 },
                 IsValid = function(self) return true end,
+                SetWorldPosition = function(self, next_x, next_y, next_z)
+                    position.x = next_x
+                    position.y = next_y
+                    position.z = next_z
+                end,
             }
             if visibility_mode == "point" or visibility_mode == "tile" then
                 player.CanSeePointOnMiniMap = function(self, px, py, pz)
@@ -213,7 +228,9 @@ def _make_stub(
         world["Pathfinder"] = None
     g["TheWorld"] = world
     if player_present:
-        g["ThePlayer"] = lua.globals().make_player(0, 0, 0, visibility_mode)
+        g["ThePlayer"] = lua.globals().make_player(
+            player_x, 0, player_z, visibility_mode
+        )
     g["GLOBAL"] = g
     lua.globals()["GLOBAL"] = g
     lua.execute((MOD_ROOT / "collector.lua").read_text(encoding="utf-8"))
@@ -239,12 +256,17 @@ def _add_entities(runtime, entities) -> None:
     runtime["g"]["TheSim"]["entities"] = lua.table_from(entities)
 
 
+def _pathfinder_reads(runtime) -> list[dict]:
+    return _from_lua(runtime["world"]["pathfinder_reads"])
+
+
 def test_mod_is_client_only_and_uses_one_marked_line_per_snapshot() -> None:
     modinfo = (MOD_ROOT / "modinfo.lua").read_text(encoding="utf-8")
     modmain = (MOD_ROOT / "modmain.lua").read_text(encoding="utf-8")
     collector = (MOD_ROOT / "collector.lua").read_text(encoding="utf-8")
 
     assert "client_only_mod = true" in modinfo
+    assert 'version = "0.5.0"' in modinfo
     assert 'modimport("collector.lua")' in modmain
     assert MARKER.strip() in collector
     assert "print(\"DST_ROUTE_PLANNER_LIVE_V1 \" .. G.json.encode_compliant(snapshot))" in collector
@@ -289,6 +311,8 @@ def test_stub_emits_eight_world_axis_sectors_and_only_observable_entities() -> N
     assert first["sequence"] == 1
     assert second["sequence"] == 2
     assert first["session_id"] == second["session_id"]
+    assert first["player_anchor"] == {"x": -1, "z": 1, "clear": True}
+    assert set(first["player_anchor"]) == {"x", "z", "clear"}
     assert set(first["directions"]) == DIRECTIONS
     assert first["current"]["prefab_counts"] == {"grass": 1}
     assert "GRASS" in first["current"]["tile_types"]
@@ -354,14 +378,19 @@ def test_terrain_uses_map_tile_centers_and_only_reads_revealed_noninvalid_tiles(
     assert not any(read["x"] == 3 and read["z"] == 1 for read in reads)
 
     passability_reads = _from_lua(runtime["world"]["Map"]["passability_reads"])
-    assert {(read["x"], read["z"]) for read in passability_reads} == {
+    player_point_reads = [
+        read for read in passability_reads if (read["x"], read["z"]) == (0, 0)
+    ]
+    assert len(player_point_reads) == 1
+    terrain_passability_reads = [read for read in passability_reads if read not in player_point_reads]
+    assert {(read["x"], read["z"]) for read in terrain_passability_reads} == {
         (tile["x"], tile["z"]) for tile in tiles
     }
     assert all(
         read["y"] == 0
         and read["allow_water"] is False
         and read["ignore_platforms"] is True
-        for read in passability_reads
+        for read in terrain_passability_reads + player_point_reads
     )
     assert not any(read["x"] == 7 and read["z"] == 1 for read in passability_reads)
     assert not any(read["x"] == 3 and read["z"] == 1 for read in passability_reads)
@@ -377,6 +406,147 @@ def test_terrain_uses_map_tile_centers_and_only_reads_revealed_noninvalid_tiles(
     runtime["world"]["callback"]()
     second = _snapshot(runtime["lines"])
     assert second["terrain"]["tiles"] == tiles
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_player_anchor_uses_actual_player_point_and_native_tile_center() -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub()
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+
+    # The fake map has a nonzero origin. The map API maps (0, 0) to center (-1, 1).
+    anchor = snapshot["player_anchor"]
+    assert anchor == {"x": -1, "z": 1, "clear": True}
+    assert set(anchor) == {"x", "z", "clear"}
+    assert next(
+        tile
+        for tile in snapshot["terrain"]["tiles"]
+        if (tile["x"], tile["z"]) == (-1, 1)
+    )["passable"] is True
+
+    anchor_reads = [
+        read
+        for read in _pathfinder_reads(runtime)
+        if (read["ax"], read["ay"], read["az"]) == (0, 0, 0)
+        and (read["bx"], read["by"], read["bz"]) == (-1, 0, 1)
+        or (read["ax"], read["ay"], read["az"]) == (-1, 0, 1)
+        and (read["bx"], read["by"], read["bz"]) == (0, 0, 0)
+    ]
+    assert len(anchor_reads) == 2
+    assert anchor_reads[0]["options"] == {"ignorewalls": False, "ignorecreep": True}
+    assert anchor_reads[1]["options"] == {"ignorewalls": False, "ignorecreep": True}
+    validate_snapshot(snapshot)
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_player_anchor_records_false_when_the_actual_player_point_is_not_passable() -> None:
+    from dst_route_planner.live import validate_snapshot
+
+    runtime = _make_stub(player_x=4.2)
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    snapshot = _snapshot(runtime["lines"])
+
+    assert snapshot["player_anchor"] == {"x": 3, "z": 1, "clear": False}
+    assert next(
+        tile
+        for tile in snapshot["terrain"]["tiles"]
+        if (tile["x"], tile["z"]) == (3, 1)
+    )["passable"] is True
+    reads = _from_lua(runtime["world"]["Map"]["passability_reads"])
+    assert any(read["x"] == 4.2 and read["z"] == 0 for read in reads)
+    assert not any(
+        read["ax"] == 4.2 or read["bx"] == 4.2 for read in _pathfinder_reads(runtime)
+    )
+    validate_snapshot(snapshot)
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_player_anchor_uses_both_path_checks_even_when_player_is_at_tile_center() -> None:
+    offset_runtime = _make_stub(pathfinder_mode="anchor_one_way_blocked")
+    offset_runtime["sim_callbacks"][0](offset_runtime["world"])
+    offset_runtime["world"]["callback"]()
+    offset_snapshot = _snapshot(offset_runtime["lines"])
+    assert offset_snapshot["player_anchor"] == {"x": -1, "z": 1, "clear": False}
+
+    offset_reads = [
+        read
+        for read in _pathfinder_reads(offset_runtime)
+        if (read["ax"], read["az"], read["bx"], read["bz"])
+        in {(0, 0, -1, 1), (-1, 1, 0, 0)}
+    ]
+    assert len(offset_reads) == 2
+
+    centered_runtime = _make_stub(player_x=-1, player_z=1)
+    centered_runtime["sim_callbacks"][0](centered_runtime["world"])
+    centered_runtime["world"]["callback"]()
+    centered_snapshot = _snapshot(centered_runtime["lines"])
+    assert centered_snapshot["player_anchor"] == {"x": -1, "z": 1, "clear": True}
+    center_reads = [
+        read
+        for read in _pathfinder_reads(centered_runtime)
+        if (read["ax"], read["az"], read["bx"], read["bz"])
+        == (-1, 1, -1, 1)
+    ]
+    assert len(center_reads) == 2
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_player_anchor_is_omitted_without_a_sampled_passable_visible_center() -> None:
+    hidden_center = _make_stub(visibility_mode="tile", player_x=12.2)
+    hidden_center["sim_callbacks"][0](hidden_center["world"])
+    hidden_center["world"]["callback"]()
+    hidden_snapshot = _snapshot(hidden_center["lines"])
+    hidden_tiles = hidden_snapshot["terrain"]["tiles"]
+    assert hidden_tiles
+    assert not any((tile["x"], tile["z"]) == (11, 1) for tile in hidden_tiles)
+    assert "player_anchor" not in hidden_snapshot
+    assert not any(
+        read["x"] == 12.2 and read["z"] == 0
+        for read in _from_lua(hidden_center["world"]["Map"]["passability_reads"])
+    )
+
+    blocked_center = _make_stub(passability_mode="center_false")
+    blocked_center["sim_callbacks"][0](blocked_center["world"])
+    blocked_center["world"]["callback"]()
+    blocked_snapshot = _snapshot(blocked_center["lines"])
+    assert "player_anchor" not in blocked_snapshot
+    assert not any(
+        read["x"] == 0 and read["z"] == 0
+        for read in _from_lua(blocked_center["world"]["Map"]["passability_reads"])
+    )
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_player_anchor_is_rechecked_after_each_player_movement() -> None:
+    runtime = _make_stub(pathfinder_mode="anchor_flip")
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    first = _snapshot(runtime["lines"])
+
+    player = runtime["g"]["ThePlayer"]
+    player["SetWorldPosition"](player, 0.2, 0, 0.2)
+    runtime["world"]["callback"]()
+    second = _snapshot(runtime["lines"])
+
+    assert first["player_anchor"] == {"x": -1, "z": 1, "clear": True}
+    assert second["player_anchor"] == {"x": -1, "z": 1, "clear": False}
+    assert second["sequence"] == first["sequence"] + 1
+    reads = _pathfinder_reads(runtime)
+    for player_x in (0, 0.2):
+        assert sum(
+            (read["ax"], read["az"], read["bx"], read["bz"])
+            == (player_x, player_x, -1, 1)
+            or (read["ax"], read["az"], read["bx"], read["bz"])
+            == (-1, 1, player_x, player_x)
+            for read in reads
+        ) == 2
+    point_reads = _from_lua(runtime["world"]["Map"]["passability_reads"])
+    for player_x in (0, 0.2):
+        assert sum(read["x"] == player_x and read["z"] == player_x for read in point_reads) == 1
 
 
 @pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
@@ -397,6 +567,7 @@ def test_terrain_falls_back_to_point_visibility_and_omits_it_without_center_api(
     without_centers["world"]["callback"]()
     old_snapshot = _snapshot(without_centers["lines"])
     assert "terrain" not in old_snapshot
+    assert "player_anchor" not in old_snapshot
     assert old_snapshot["current"].get("tile_types")
 
 
@@ -423,6 +594,7 @@ def test_terrain_passability_failure_or_unknown_keeps_snapshot_and_omits_status(
     terrain_tiles = snapshot["terrain"]["tiles"]
     assert terrain_tiles
     assert all("passable" not in tile for tile in terrain_tiles)
+    assert "player_anchor" not in snapshot
     reads = _from_lua(runtime["world"]["Map"]["passability_reads"])
     assert len(reads) == (len(terrain_tiles) if expect_reads else 0)
     assert _from_lua(runtime["world"]["pathfinder_reads"]) == []
@@ -470,15 +642,21 @@ def test_terrain_connections_require_bidirectional_clear_checks_and_use_neighbor
             reverse["az"],
         )
         assert forward["ay"] == forward["by"] == reverse["ay"] == reverse["by"] == 0
-        assert (forward["bx"] - forward["ax"], forward["bz"] - forward["az"]) in {
+        for read in (forward, reverse):
+            assert read["options"] == {"ignorewalls": False, "ignorecreep": True}
+        if (forward["bx"] - forward["ax"], forward["bz"] - forward["az"]) not in {
             (4, 0),
             (0, 4),
-        }
+        }:
+            # Only the player-to-center pair may differ from tile adjacency.
+            assert (forward["ax"], forward["az"], forward["bx"], forward["bz"]) == (
+                0, 0, -1, 1
+            )
+            continue
         pair = ((forward["ax"], forward["az"]), (forward["bx"], forward["bz"]))
         assert pair not in checked_pairs
         checked_pairs.add(pair)
         for read in (forward, reverse):
-            assert read["options"] == {"ignorewalls": False, "ignorecreep": True}
             start = by_position[(read["ax"], read["az"])]
             end = by_position[(read["bx"], read["bz"])]
             assert start["passable"] is True
@@ -512,6 +690,7 @@ def test_terrain_connections_are_omitted_without_pathfinder_api() -> None:
     snapshot = _snapshot(runtime["lines"])
 
     assert all("connections" not in tile for tile in snapshot["terrain"]["tiles"])
+    assert "player_anchor" not in snapshot
     assert _from_lua(runtime["world"]["pathfinder_reads"]) == []
     validate_snapshot(snapshot)
 
@@ -532,6 +711,7 @@ def test_terrain_connections_keep_unknown_when_pathfinder_fails_or_returns_nonbo
     snapshot = _snapshot(runtime["lines"])
 
     assert all("connections" not in tile for tile in snapshot["terrain"]["tiles"])
+    assert "player_anchor" not in snapshot
     reads = _from_lua(runtime["world"]["pathfinder_reads"])
     assert reads and len(reads) % 2 == 0
     validate_snapshot(snapshot)

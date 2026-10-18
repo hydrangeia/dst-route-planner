@@ -23,6 +23,7 @@ def _snapshot(
     sequence: int = 1,
     world_kind: str = "forest",
     terrain: dict | None = None,
+    player_anchor: dict | None = None,
 ) -> dict:
     snapshot = {
         "live_version": 1,
@@ -49,11 +50,27 @@ def _snapshot(
     }
     if terrain is not None:
         snapshot["terrain"] = terrain
+    if player_anchor is not None:
+        snapshot["player_anchor"] = player_anchor
     return snapshot
 
 
 def _line(snapshot: dict, prefix: str = "") -> str:
     return f"{prefix}{LIVE_MARKER}{json.dumps(snapshot, separators=(',', ':'))}\n"
+
+
+def _anchor_snapshot(
+    anchor: object,
+    *,
+    position: tuple[int | float, int | float] = (0, 0),
+    tiles: list[dict] | None = None,
+) -> dict:
+    if tiles is None:
+        tiles = [{"x": 0, "z": 0, "tile": "GRASS", "passable": True}]
+    snapshot = _snapshot(terrain={"tile_size": 4, "tiles": tiles})
+    snapshot["position"].update(x=position[0], z=position[1])
+    snapshot["player_anchor"] = anchor
+    return snapshot
 
 
 def test_reader_finds_newest_complete_marker_with_a_log_prefix(tmp_path) -> None:
@@ -199,6 +216,148 @@ def test_snapshot_validation_accepts_legacy_empty_and_populated_terrain() -> Non
         }
     )
     assert len(validate_snapshot(adjacent_large_coordinates)["terrain"]["tiles"]) == 2
+
+
+def test_snapshot_validation_accepts_player_anchor_and_legacy_omission(tmp_path) -> None:
+    legacy = _snapshot()
+    assert "player_anchor" not in validate_snapshot(legacy)
+
+    anchored = _anchor_snapshot(
+        {"x": 0, "z": 0, "clear": False},
+        position=(-2, -2),
+    )
+    assert validate_snapshot(anchored)["player_anchor"] == {
+        "x": 0,
+        "z": 0,
+        "clear": False,
+    }
+
+    path = tmp_path / "client.log"
+    path.write_text(_line(anchored), encoding="utf-8")
+    assert read_latest_snapshot(path) == anchored
+
+
+def test_player_anchor_uses_half_open_bounds_and_adjacent_cell_at_upper_edge() -> None:
+    lower_edge = _anchor_snapshot(
+        {"x": 0, "z": 0, "clear": False},
+        position=(-2, -2),
+    )
+    assert validate_snapshot(lower_edge)["player_anchor"]["clear"] is False
+
+    upper_edge = _anchor_snapshot(
+        {"x": 4, "z": 0, "clear": True},
+        position=(2, 0),
+        tiles=[
+            {"x": 0, "z": 0, "tile": "GRASS", "passable": True},
+            {"x": 4, "z": 0, "tile": "FOREST", "passable": True},
+        ],
+    )
+    assert validate_snapshot(upper_edge)["player_anchor"]["x"] == 4
+
+    excluded_upper_edge = _anchor_snapshot(
+        {"x": 0, "z": 0, "clear": True},
+        position=(2, 0),
+    )
+    with pytest.raises(LiveSnapshotError, match="unique passable tile containing position"):
+        validate_snapshot(excluded_upper_edge)
+
+
+@pytest.mark.parametrize(
+    ("anchor", "message"),
+    [
+        (None, r"player_anchor must be a JSON object"),
+        ([], r"player_anchor must be a JSON object"),
+        ({"x": 0, "z": 0}, r"contain exactly x, z, and clear"),
+        ({"x": 0, "z": 0, "clear": False, "extra": 1}, r"contain exactly x, z, and clear"),
+        ({"x": True, "z": 0, "clear": False}, r"player_anchor.x must be a finite number"),
+        ({"x": float("nan"), "z": 0, "clear": False}, r"player_anchor.x must be a finite number"),
+        ({"x": 0, "z": float("inf"), "clear": False}, r"player_anchor.z must be a finite number"),
+        ({"x": 10**1000, "z": 0, "clear": False}, r"player_anchor.x must be a finite number"),
+        ({"x": 0, "z": 0, "clear": None}, r"player_anchor.clear must be a boolean"),
+        ({"x": 0, "z": 0, "clear": 0}, r"player_anchor.clear must be a boolean"),
+    ],
+)
+def test_snapshot_validation_rejects_malformed_player_anchor(anchor: object, message: str) -> None:
+    with pytest.raises(LiveSnapshotError, match=message):
+        validate_snapshot(_anchor_snapshot(anchor, position=(0, 0)))
+
+
+def test_snapshot_validation_requires_anchor_to_be_the_unique_passable_cell_containing_player() -> None:
+    snapshot_without_terrain = _snapshot()
+    snapshot_without_terrain["player_anchor"] = {"x": 0, "z": 0, "clear": False}
+    with pytest.raises(LiveSnapshotError, match="requires observed terrain"):
+        validate_snapshot(snapshot_without_terrain)
+
+    cases = [
+        (
+            _anchor_snapshot(
+                {"x": 0, "z": 0, "clear": False},
+                tiles=[],
+            ),
+            "must reference a passable terrain tile center",
+        ),
+        (
+            _anchor_snapshot(
+                {"x": 0, "z": 0, "clear": False},
+                tiles=[{"x": 0, "z": 0, "tile": "GRASS", "passable": False}],
+            ),
+            "must reference a passable terrain tile center",
+        ),
+        (
+            _anchor_snapshot(
+                {"x": 0, "z": 0, "clear": False},
+                tiles=[{"x": 0, "z": 0, "tile": "GRASS"}],
+            ),
+            "must reference a passable terrain tile center",
+        ),
+        (
+            _anchor_snapshot(
+                {"x": 4, "z": 0, "clear": False},
+                tiles=[{"x": 0, "z": 0, "tile": "GRASS", "passable": True}],
+            ),
+            "must reference a passable terrain tile center",
+        ),
+        (
+            _anchor_snapshot(
+                {"x": 0, "z": 0, "clear": False},
+                position=(2, 0),
+            ),
+            "unique passable tile containing position",
+        ),
+        (
+            _anchor_snapshot(
+                {"x": 0, "z": 0, "clear": False},
+                position=(1, 0),
+                tiles=[
+                    {"x": 0, "z": 0, "tile": "GRASS", "passable": True},
+                    {"x": 2, "z": 0, "tile": "FOREST", "passable": True},
+                ],
+            ),
+            "unique passable tile containing position",
+        ),
+        (
+            _anchor_snapshot(
+                {"x": 4, "z": 0, "clear": False},
+                position=(0, 0),
+                tiles=[
+                    {"x": 0, "z": 0, "tile": "GRASS", "passable": True},
+                    {"x": 4, "z": 0, "tile": "FOREST", "passable": True},
+                ],
+            ),
+            "unique passable tile containing position",
+        ),
+        (
+            _anchor_snapshot(
+                {"x": 1e100, "z": 0, "clear": False},
+                position=(1e100, 0),
+                tiles=[{"x": 1e100, "z": 0, "tile": "GRASS", "passable": True}],
+            ),
+            "unique passable tile containing position",
+        ),
+    ]
+    for snapshot, message in cases:
+        with pytest.raises(LiveSnapshotError, match=message):
+            validate_snapshot(snapshot)
 
 
 @pytest.mark.parametrize(

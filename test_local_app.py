@@ -711,9 +711,15 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
     base_url, server = local_server
     _, _, demo = _get(base_url, "/api/demo")
     points = [(-12, 3.5), (-12, 3.5), (8.25, -20)]
+    anchors_by_frame = [
+        {"x": -12, "z": 4, "clear": True},
+        None,
+        {"x": 8, "z": -20, "clear": False},
+    ]
     terrain_by_frame = [
         [
             {"x": 1, "z": 1, "tile": "GRASS", "passable": False},
+            {"x": -12, "z": 4, "tile": "FOREST", "passable": True},
             {
                 "x": 4,
                 "z": 4,
@@ -729,6 +735,7 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         ],
         [
             {"x": 1, "z": 1, "tile": "DECIDUOUS"},
+            {"x": 8, "z": -20, "tile": "GRASS", "passable": True},
         ],
     ]
     live_log = server.record_store.directory.parent / "client.log"
@@ -743,6 +750,8 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         )
         snapshot["position"].update(x=x, z=z)
         snapshot["terrain"] = {"tile_size": 4, "tiles": terrain_by_frame[sequence - 1]}
+        if anchors_by_frame[sequence - 1] is not None:
+            snapshot["player_anchor"] = anchors_by_frame[sequence - 1]
         _write_live_snapshot(live_log, snapshot)
         live_status, _, live_response = _get(
             base_url, "/api/live?target=panflute&seed=0"
@@ -776,9 +785,21 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         "session_id": "session-1",
         "frame_count": 3,
         "points": [
-            {"sequence": 1, "captured_at": captured_times[0], "x": -12, "z": 3.5},
+            {
+                "sequence": 1,
+                "captured_at": captured_times[0],
+                "x": -12,
+                "z": 3.5,
+                "player_anchor": {"x": -12, "z": 4, "clear": True},
+            },
             {"sequence": 2, "captured_at": captured_times[1], "x": -12, "z": 3.5},
-            {"sequence": 3, "captured_at": captured_times[2], "x": 8.25, "z": -20},
+            {
+                "sequence": 3,
+                "captured_at": captured_times[2],
+                "x": 8.25,
+                "z": -20,
+                "player_anchor": {"x": 8, "z": -20, "clear": False},
+            },
         ],
         "bounds": {"min_x": -12, "max_x": 8.25, "min_z": -20, "max_z": 3.5},
         "landmarks": [
@@ -822,12 +843,28 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
                     "last_sequence": 3,
                 },
                 {
+                    "x": 8,
+                    "z": -20,
+                    "tile": "GRASS",
+                    "last_seen": captured_times[2],
+                    "last_sequence": 3,
+                    "passable": True,
+                },
+                {
                     "x": 2,
                     "z": 2,
                     "tile": "MARSH",
                     "last_seen": captured_times[1],
                     "last_sequence": 2,
                     "passable": False,
+                },
+                {
+                    "x": -12,
+                    "z": 4,
+                    "tile": "FOREST",
+                    "last_seen": captured_times[0],
+                    "last_sequence": 1,
+                    "passable": True,
                 },
                 {
                     "x": 4,
@@ -927,11 +964,18 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         downloaded_terrain = [
             frame["snapshot"]["terrain"] for frame in downloaded_frames
         ]
+        assert downloaded_frames[0]["snapshot"]["player_anchor"] == {
+            "x": -12, "z": 4, "clear": True
+        }
+        assert "player_anchor" not in downloaded_frames[1]["snapshot"]
+        assert downloaded_frames[2]["snapshot"]["player_anchor"] == {
+            "x": 8, "z": -20, "clear": False
+        }
         assert downloaded_terrain == [
             {"tile_size": 4, "tiles": tiles} for tiles in terrain_by_frame
         ]
         assert downloaded_terrain[0]["tiles"][0]["passable"] is False
-        assert downloaded_terrain[0]["tiles"][1]["connections"] == {"east": False}
+        assert downloaded_terrain[0]["tiles"][2]["connections"] == {"east": False}
         assert "connections" not in downloaded_terrain[1]["tiles"][0]
         assert "connections" not in downloaded_terrain[2]["tiles"][0]
         assert "passable" not in downloaded_terrain[1]["tiles"][0]

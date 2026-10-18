@@ -23,7 +23,7 @@
 采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
 
 - [x] 启动时自动定位客户端日志，提供网页和终端的一次连接检查，显示读取路径与下一步操作。 / Locate the client log automatically on startup and provide page/terminal connection checks with the selected path and next steps.
-- [ ] 在游戏中验证日志输出、坐标方向、地标采集、地形通行与邻格直连状态，记录一次完整探索过程。 / Verify log output, coordinate directions, landmarks, ground passability, and neighbor connections in game, and record a complete exploration run.
+- [ ] 在游戏中验证日志输出、坐标方向、地标采集、地形通行、玩家接入段与邻格直连状态，记录一次完整探索过程。 / Verify log output, coordinate directions, landmarks, ground passability, player entry segments, and neighbor connections in game, and record a complete exploration run.
 - [x] 实时跟随时记录连续坐标、观测和方向建议，按世界与会话保存本机 JSONL 回放，并支持重启后下载。 / Record successive positions, observations, and suggestions during live following, save local JSONL replays per world/session, and download them after restarting.
 - [x] 显示实时探索轨迹、起点和最新位置，并能打开已保存回放的轨迹；采集间隔与位置跳变处分段。 / Show live trails with start/latest positions, open trails from saved replays, and split lines at capture gaps and position jumps.
 - [x] 在实时与历史轨迹图上标记已见目标位置，显示最近看到的时间，以及相对最新玩家观测的方向和直线距离。 / Mark observed targets on live and saved trails, with last sighting time, direction, and straight-line distance from the latest player observation.
@@ -31,6 +31,8 @@
 - [x] 记录已观测格中心的地形通行状态，在实时与历史底图上标出检查不通过的位置，并区分未知状态。 / Record ground passability at observed tile centers, mark failed checks on live/saved maps, and keep unknown states distinct.
 - [x] 双向检查已观测相邻格中心的直连状态，在实时与历史地图上区分通过、受阻和未知连接。 / Check observed neighboring tile centers in both directions and distinguish clear, blocked, and unknown connections on live/saved maps.
 - [x] 在地图上选择已观测且可通行的格作为路线终点，从最新玩家所在格中心沿已检查通过的相邻格连接寻找最少步数路线；显示路线长度和下一格方向坐标，并在玩家移动、新连接检查及历史回放中更新路线。切换世界或采集会话时清空终点。 / Let players choose an observed passable tile as the route endpoint, find the route with the fewest steps from the latest player tile over checked clear neighbor links, and show its length and next tile. Update routes as the player moves, new connection checks arrive, and saved replays are viewed; clear the endpoint on world or collector-session changes.
+
+- [x] 检查玩家实际位置到所在格中心的连接，将通过的一段接入实时与历史路线；总距离随格内移动更新，接入结果按坐标帧保存。 / Check the segment from the actual player position to its tile center, include clear segments in live and saved routes, update total distance during movement within a tile, and retain the result with its position frame.
 
 ## 1. 生成数据校对 / Generation data
 
@@ -51,7 +53,7 @@
 ## 4. 路线与地图推理 / Route and map reasoning
 
 - [ ] 加入 task 的起终点环路、房间内连接、道路和岛屿连接。 / Add task start/end loops, room connections, roads, and island links.
-- [ ] 把格内任意位置的玩家和目标接入格网，并考虑视野范围、移动代价、实体碰撞和角色移动能力。 / Connect player and target positions within tiles to the grid, then account for view range, movement costs, entity collisions, and character movement capabilities.
+- [ ] 把已见目标的实际位置接入格网，并考虑视野范围、移动代价、实体碰撞和角色移动能力。 / Connect actual observed target positions to the grid, then account for view range, movement costs, entity collisions, and character movement capabilities.
 
 ## 5. 游戏内展示 / In-game display
 

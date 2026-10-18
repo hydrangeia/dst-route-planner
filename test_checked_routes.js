@@ -7,8 +7,8 @@ function cell(x, z, passable = true, connections) {
     ...(connections === undefined ? {} : {connections})
   };
 }
-function route(tiles, position, destination) {
-  return findRoute(tiles, position, destination);
+function route(tiles, position, destination, playerAnchor) {
+  return findRoute(tiles, position, destination, playerAnchor);
 }
 
 assert.equal(route([], {x: 0, z: 0}, null).status, "no_destination");
@@ -124,4 +124,60 @@ assert.equal(largeRoute.distance, 9996);
 assert.equal(largeRoute.path.length, 2500);
 assert.ok(elapsed < 5000, "2500 terrain cells should route interactively");
 
-console.log("Checked-grid routes: statuses, boundaries, strict edges, BFS, replacement, and 2500 cells passed");
+const anchored = route(straight, {x: 1, z: 1}, {x: 4, z: 0}, {x: 0, z: 0, clear: true});
+assert.equal(anchored.status, "found");
+assert.deepEqual(anchored.start, {x: 1, z: 1}, "player-origin routes retain the actual player position");
+assert.deepEqual(anchored.grid_start, {x: 0, z: 0});
+assert.deepEqual(anchored.path, [{x: 1, z: 1}, {x: 0, z: 0}, {x: 4, z: 0}],
+  "the checked player segment enters the current tile center before the grid path");
+assert.equal(anchored.steps, 1, "the player-to-center segment does not count as a grid step");
+assert.equal(anchored.anchor_distance, Math.SQRT2);
+assert.equal(anchored.grid_distance, 4);
+assert.equal(anchored.distance, Math.SQRT2 + 4);
+assert.deepEqual(anchored.next, {kind: "anchor", direction: "southwest", x: 0, z: 0});
+for (const [x, z, direction] of [[0, -1, "north"], [-1, -1, "northeast"], [-1, 0, "east"],
+  [-1, 1, "southeast"], [0, 1, "south"], [1, 1, "southwest"], [1, 0, "west"], [1, -1, "northwest"]]) {
+  const bearing = route([cell(0, 0)], {x, z}, {x: 0, z: 0}, {x: 0, z: 0, clear: true});
+  assert.equal(bearing.next.direction, direction, "anchor bearing follows the fixed eight-way world compass");
+}
+assert.equal(route(straight, {x: 1, z: 1}, {x: 4, z: 0}, undefined).origin, undefined,
+  "explicit undefined keeps the legacy grid-center result shape");
+assert.deepEqual(route(straight, {x: 1, z: 1}, {x: 4, z: 0}, undefined),
+  route(straight, {x: 1, z: 1}, {x: 4, z: 0}));
+
+const sameCellGoal = route(straight, {x: 0.5, z: 0.5}, {x: 0, z: 0}, {x: 0, z: 0, clear: true});
+assert.equal(sameCellGoal.status, "found", "the player has not arrived until reaching the goal center");
+assert.deepEqual(sameCellGoal.path, [{x: 0.5, z: 0.5}, {x: 0, z: 0}]);
+assert.equal(sameCellGoal.steps, 0);
+assert.equal(sameCellGoal.distance, Math.hypot(0.5, 0.5));
+assert.equal(sameCellGoal.next.kind, "anchor");
+assert.equal(route(straight, {x: 0, z: 0}, {x: 0, z: 0}, {x: 0, z: 0, clear: true}).status, "arrived");
+assert.deepEqual(route(straight, {x: 0, z: 0}, {x: 0, z: 0}, {x: 0, z: 0, clear: true}).path,
+  [{x: 0, z: 0}], "the player-to-center point is emitted only once when both positions match");
+
+const blockedAnchor = route(straight, {x: 1, z: 1}, {x: 4, z: 0}, {x: 0, z: 0, clear: false});
+assert.equal(blockedAnchor.status, "anchor_blocked");
+assert.deepEqual(blockedAnchor.path, [], "a failed current-point check never draws an unchecked player segment");
+for (const invalidAnchor of [null, {x: 0, z: 0, clear: 1}, {x: 0, z: 0},
+  {x: 0, z: 0, clear: true, extra: 1}, {x: NaN, z: 0, clear: true}, {x: 4, z: 0, clear: true}]) {
+  const result = route(straight, {x: 1, z: 1}, {x: 4, z: 0}, invalidAnchor);
+  assert.equal(result.status, "anchor_unknown", "invalid or mismatched player anchors stay unknown");
+  assert.deepEqual(result.path, []);
+}
+assert.equal(route([cell(0, 0, false)], {x: 1, z: 1}, {x: 0, z: 0},
+  {x: 0, z: 0, clear: false}).status, "anchor_unknown",
+  "a player anchor must reference the unique currently passable tile center");
+assert.equal(route([cell(1e100, 0)], {x: 1e100, z: 0}, {x: 1e100, z: 0},
+  {x: 1e100, z: 0, clear: true}).status, "anchor_unknown",
+  "anchors in numerically unreliable tile intervals are rejected");
+assert.equal(route(straight, {x: 1, z: 1}, null, null).status, "no_destination",
+  "missing destination keeps the original input priority");
+assert.equal(route(straight, null, {x: 4, z: 0}, null).status, "no_position",
+  "missing player position keeps the original input priority");
+
+const farEnough = route(largeMap, {x: 0, z: 0}, {x: 9996, z: 0}, {x: 0, z: 0, clear: true});
+assert.equal(farEnough.status, "found");
+assert.ok(Number.isFinite(farEnough.distance), "large checked routes keep finite total distances");
+assert.equal(farEnough.steps, 2499);
+
+console.log("Checked-grid routes: statuses, boundaries, strict edges, player anchors, BFS, and 2500 cells passed");

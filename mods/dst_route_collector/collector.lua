@@ -121,6 +121,41 @@ local function visible_tile_center(player, map, tx, ty)
     return nil
 end
 
+local function check_bidirectional_clear(pathfinder, start_x, start_z, end_x, end_z)
+    if pathfinder == nil or pathfinder.IsClear == nil then
+        return nil
+    end
+
+    local options = { ignorewalls = false, ignorecreep = true }
+    local forward_ok, forward = pcall(
+        pathfinder.IsClear,
+        pathfinder,
+        start_x,
+        0,
+        start_z,
+        end_x,
+        0,
+        end_z,
+        options
+    )
+    local backward_ok, backward = pcall(
+        pathfinder.IsClear,
+        pathfinder,
+        end_x,
+        0,
+        end_z,
+        start_x,
+        0,
+        start_z,
+        options
+    )
+    if forward_ok and backward_ok
+        and type(forward) == "boolean" and type(backward) == "boolean" then
+        return forward and backward
+    end
+    return nil
+end
+
 local function add_terrain_connections(world, tiles)
     local pathfinder = world.Pathfinder
     if pathfinder == nil or pathfinder.IsClear == nil then
@@ -141,35 +176,7 @@ local function add_terrain_connections(world, tiles)
         if first.passable ~= true or second.passable ~= true then
             return nil
         end
-
-        local options = { ignorewalls = false, ignorecreep = true }
-        local forward_ok, forward = pcall(
-            pathfinder.IsClear,
-            pathfinder,
-            first.x,
-            0,
-            first.z,
-            second.x,
-            0,
-            second.z,
-            options
-        )
-        local backward_ok, backward = pcall(
-            pathfinder.IsClear,
-            pathfinder,
-            second.x,
-            0,
-            second.z,
-            first.x,
-            0,
-            first.z,
-            options
-        )
-        if forward_ok and backward_ok
-            and type(forward) == "boolean" and type(backward) == "boolean" then
-            return forward and backward
-        end
-        return nil
+        return check_bidirectional_clear(pathfinder, first.x, first.z, second.x, second.z)
     end
 
     for _, tile in ipairs(tiles) do
@@ -256,6 +263,62 @@ local function sample_terrain(world, player, map, x, z)
     end)
     add_terrain_connections(world, tiles)
     return { tile_size = TILE_SIZE, tiles = tiles }
+end
+
+local function sample_player_anchor(world, map, x, z, terrain)
+    if terrain == nil or map.GetTileXYAtPoint == nil
+        or map.GetTileCenterPoint == nil or map.IsPassableAtPoint == nil then
+        return nil
+    end
+
+    local tile_ok, tile_x, tile_y = pcall(map.GetTileXYAtPoint, map, x, 0, z)
+    if not tile_ok or type(tile_x) ~= "number" or type(tile_y) ~= "number" then
+        return nil
+    end
+
+    local center_ok, center_x, _, center_z = pcall(
+        map.GetTileCenterPoint,
+        map,
+        tile_x,
+        tile_y
+    )
+    if not center_ok or type(center_x) ~= "number" or type(center_z) ~= "number" then
+        return nil
+    end
+
+    local sampled_tile = nil
+    for _, tile in ipairs(terrain.tiles) do
+        if tile.x == center_x and tile.z == center_z then
+            sampled_tile = tile
+            break
+        end
+    end
+    if sampled_tile == nil or sampled_tile.passable ~= true then
+        return nil
+    end
+
+    local passable_ok, passable = pcall(
+        map.IsPassableAtPoint,
+        map,
+        x,
+        0,
+        z,
+        false,
+        true
+    )
+    if not passable_ok or type(passable) ~= "boolean" then
+        return nil
+    end
+
+    if not passable then
+        return { x = center_x, z = center_z, clear = false }
+    end
+
+    local clear = check_bidirectional_clear(world.Pathfinder, x, z, center_x, center_z)
+    if clear == nil then
+        return nil
+    end
+    return { x = center_x, z = center_z, clear = clear }
 end
 
 local function direction_for_offset(dx, dz)
@@ -428,6 +491,10 @@ local function sample(world, player, sequence, world_id, session_id)
     local terrain = sample_terrain(world, player, map, x, z)
     if terrain ~= nil then
         snapshot.terrain = terrain
+        local player_anchor = sample_player_anchor(world, map, x, z, terrain)
+        if player_anchor ~= nil then
+            snapshot.player_anchor = player_anchor
+        end
     end
 
     local nonempty_landmarks = sorted_landmarks(landmarks)

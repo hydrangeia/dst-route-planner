@@ -80,7 +80,7 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
         "current",
         "directions",
     }
-    allowed_fields = required_fields | {"landmarks", "terrain"}
+    allowed_fields = required_fields | {"landmarks", "terrain", "player_anchor"}
     missing_fields = required_fields - set(data)
     if missing_fields:
         names = ", ".join(sorted(missing_fields))
@@ -104,8 +104,21 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
     position = _mapping(data["position"], "position")
     if set(position) != {"x", "y", "z"}:
         raise LiveSnapshotError("position must contain exactly x, y, and z.")
-    for axis in ("x", "y", "z"):
-        _finite_number(position[axis], f"position.{axis}")
+    position_x = _finite_number(position["x"], "position.x")
+    _finite_number(position["y"], "position.y")
+    position_z = _finite_number(position["z"], "position.z")
+
+    player_anchor = None
+    if "player_anchor" in data:
+        player_anchor = _mapping(data["player_anchor"], "player_anchor")
+        if set(player_anchor) != {"x", "z", "clear"}:
+            raise LiveSnapshotError(
+                "player_anchor must contain exactly x, z, and clear."
+            )
+        _finite_number(player_anchor["x"], "player_anchor.x")
+        _finite_number(player_anchor["z"], "player_anchor.z")
+        if type(player_anchor["clear"]) is not bool:
+            raise LiveSnapshotError("player_anchor.clear must be a boolean.")
 
     try:
         observation_from_dict(_mapping(data["current"], "current"))
@@ -208,6 +221,57 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
                     raise LiveSnapshotError(
                         f"terrain.tiles[{index}].connections.{direction} requires a distinct neighboring tile with passable=true."
                     )
+
+    if player_anchor is not None:
+        if "terrain" not in data:
+            raise LiveSnapshotError("player_anchor requires observed terrain tiles.")
+        anchor_coordinate = (player_anchor["x"], player_anchor["z"])
+        anchor_tile = tile_by_coordinate.get(anchor_coordinate)
+        if anchor_tile is None or anchor_tile.get("passable") is not True:
+            raise LiveSnapshotError(
+                "player_anchor must reference a passable terrain tile center."
+            )
+
+        matching_tiles: list[Mapping[str, Any]] = []
+        imprecise_match = False
+        for tile in data["terrain"]["tiles"]:
+            center_x = _finite_number(tile["x"], "terrain tile x")
+            center_z = _finite_number(tile["z"], "terrain tile z")
+            min_x = center_x - 2.0
+            max_x = center_x + 2.0
+            min_z = center_z - 2.0
+            max_z = center_z + 2.0
+            bounds_valid = (
+                math.isfinite(min_x)
+                and math.isfinite(max_x)
+                and math.isfinite(min_z)
+                and math.isfinite(max_z)
+                and min_x < center_x < max_x
+                and min_z < center_z < max_z
+                and max_x - min_x == 4.0
+                and max_z - min_z == 4.0
+            )
+            if not bounds_valid:
+                if (
+                    abs(position_x - center_x) <= 2.0
+                    and abs(position_z - center_z) <= 2.0
+                ):
+                    imprecise_match = True
+                continue
+            if (
+                min_x <= position_x < max_x
+                and min_z <= position_z < max_z
+            ):
+                matching_tiles.append(tile)
+
+        if (
+            imprecise_match
+            or len(matching_tiles) != 1
+            or matching_tiles[0] is not anchor_tile
+        ):
+            raise LiveSnapshotError(
+                "player_anchor must reference the unique passable tile containing position."
+            )
 
     return dict(data)
 

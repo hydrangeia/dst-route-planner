@@ -32,7 +32,10 @@ Object.defineProperty(routeDestinationElement, "innerHTML", {
 });
 function run(code) { return vm.runInContext(code, context); }
 function apiResponse(payload) { return {ok: true, json: async () => payload}; }
-function trailPoint(sequence, capturedAt, x, z) { return {sequence, captured_at: capturedAt, x, z}; }
+function trailPoint(sequence, capturedAt, x, z, playerAnchor = undefined) {
+  return {sequence, captured_at: capturedAt, x, z,
+    ...(playerAnchor === undefined ? {} : {player_anchor: playerAnchor})};
+}
 function remembered(prefab, x, z, firstSequence, lastSequence, firstSeen = firstSequence, lastSeen = lastSequence) {
   return {prefab, x, z, first_seen: firstSeen, last_seen: lastSeen, first_sequence: firstSequence, last_sequence: lastSequence};
 }
@@ -81,6 +84,7 @@ function frame(session = "one", sequence = 1, recording = null, worldId = "world
   if (recording) result.recording = recording;
   if (Object.prototype.hasOwnProperty.call(trail, "landmarks")) result.snapshot.landmarks = trail.landmarks;
   if (Object.prototype.hasOwnProperty.call(trail, "terrain")) result.snapshot.terrain = trail.terrain;
+  if (Object.prototype.hasOwnProperty.call(trail, "player_anchor")) result.snapshot.player_anchor = trail.player_anchor;
   return result;
 }
 const projection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:10,z:0},{sequence:3,captured_at:3,x:0,z:10}])");
@@ -331,6 +335,27 @@ assert.deepEqual(legacyTrail.landmarks, [], "version 1 historical trails without
 assert.equal(legacyTrail.landmarksTruncated, false);
 assert.equal(legacyTrail.terrainTiles.length, 0, "older trail payloads without terrain remain valid");
 assert.equal(legacyTrail.terrainAvailable, false);
+assert.ok(!Object.hasOwn(legacyTrail.points[0] || {}, "player_anchor"), "legacy v1 trail points keep the anchor unknown");
+const anchoredValidationPayload = trailPayload(validationSummary, [
+  trailPoint(1, 10, 2, 3, {x: 2, z: 2, clear: false}),
+  trailPoint(2, 11, 6, 3, {x: 6, z: 2, clear: true}),
+  trailPoint(3, 12, 10, 3)
+]);
+context.validationPayload = anchoredValidationPayload;
+const anchoredValidation = JSON.parse(run("JSON.stringify(validateTrailPayload(validationPayload, validationSummary))"));
+assert.deepEqual(anchoredValidation.points.map(point => point.player_anchor), [
+  {x: 2, z: 2, clear: false}, {x: 6, z: 2, clear: true}, undefined
+], "trail point normalization retains both clear values and omits unknown anchors");
+assert.ok(!Object.hasOwn(anchoredValidation.points[2], "player_anchor"));
+for (const invalidAnchor of [null, [], {x: 2, z: 2}, {x: 2, z: 2, clear: 0},
+  {x: NaN, z: 2, clear: true}, {x: 2, z: Infinity, clear: true}, {x: 2, z: 2, clear: true, extra: 1}]) {
+  context.validationPayload = trailPayload(validationSummary, [
+    {...trailPoint(1, 10, 2, 3), player_anchor: invalidAnchor}
+  ]);
+  assert.throws(() => run("validateTrailPayload(validationPayload, validationSummary)"), undefined,
+    "malformed historical anchors invalidate the trail point instead of inheriting an older value");
+}
+context.validationPayload = trailPayload(validationSummary, []);
 const validTerrainPayload = trailPayload(validationSummary, [trailPoint(1, 10, 2, 3)], undefined, false,
   {tile_size: 4, tiles: [terrainCell(2, 3, "GRASS", 1, 10)], truncated: false});
 context.validationPayload = validTerrainPayload;
@@ -689,6 +714,7 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
     landmarks: [{prefab: "panflute", x: 500, z: 0}], terrain: {tile_size: 4, tiles: [{x: 500, z: 0, tile: "GRASS", passable: false, connections: {east: true}}]}});
   run("applyLiveResult(reply)");
   context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 200,
+    player_anchor: {x: 50, z: 0, clear: false},
     landmarks: [{prefab: "panflute", x: 50, z: 0}], terrain: {tile_size: 4, tiles: [{x: 50, z: 0, tile: "MARSH", passable: false, connections: {east: false}}]}});
   run("applyLiveResult(reply)");
   assert.equal(run("trailState.identity"), "race-b\u0000forest\u0000same-session");
@@ -703,6 +729,8 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
     "a late response from another world cannot replace observed terrain");
   assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.terrainTiles[0].connections)")), {east: false},
     "a late response cannot replace the active world's connection checks");
+  assert.equal(run("trailState.points.find(point=>point.sequence===1).player_anchor.clear"), false,
+    "the active world's local failed anchor is retained while its stored trail response is pending");
   pendingTrails.get(raceB.id)({ok: false, status: 500, json: async () => ({error: "trail unavailable"})});
   await settle();
   assert.ok(element("trailStatus").textContent.includes("trail unavailable"));
@@ -722,7 +750,8 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
   context.fetch = async url => {
     if (url !== "/api/explorations/" + raceB.id + "/trail") throw new Error("unexpected fetch " + url);
     trailCallCounts.set(raceB.id, trailCallCounts.get(raceB.id) + 1);
-    return apiResponse(trailPayload(raceB, [trailPoint(0, 199, 49, 0)], [remembered("panflute", 49, 0, 0, 0)], false,
+    return apiResponse(trailPayload(raceB, [trailPoint(1, 199, 49, 0, {x: 50, z: 0, clear: true})],
+      [remembered("panflute", 49, 0, 0, 0)], false,
       {tile_size: 4, tiles: [terrainCell(50, 0, "MARSH", 0, 199, true, {east: true})], truncated: false}));
   };
   run("refreshSelectedTrail()");
@@ -733,13 +762,19 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
     "newer local blocked terrain wins over stored history in the live view");
   assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.terrainTiles[0].connections)")), {east: false},
     "newer local connection results win over stored history in the live view");
+  assert.equal(run("trailState.points.find(point=>point.sequence===1).player_anchor.clear"), false,
+    "a local same-sequence anchor replaces the stored anchor as a whole");
+  context.reply = frame("same-session", 1, raceB, "race-b", {x: 50, z: 0, capturedAt: 201});
+  run("applyLiveResult(reply)");
+  assert.ok(!Object.hasOwn(JSON.parse(run("JSON.stringify(trailState.points.find(point=>point.sequence===1))")), "player_anchor"),
+    "a newer local point at the same sequence without an anchor clears the stored anchor");
 
   const newerRaceB = {...raceB, frame_count: 4};
   context.fetch = async url => {
     if (url !== "/api/explorations/" + raceB.id + "/trail") throw new Error("unexpected fetch " + url);
     trailCallCounts.set(raceB.id, trailCallCounts.get(raceB.id) + 1);
     return apiResponse(trailPayload(newerRaceB, [
-      trailPoint(0, 199, 49, 0), trailPoint(1, 200, 50, 0),
+      trailPoint(0, 199, 49, 0), trailPoint(1, 200, 50, 0, {x: 50, z: 0, clear: true}),
       trailPoint(2, 201, 51, 0), trailPoint(3, 202, 52, 0)
     ], [remembered("panflute", 49, 0, 0, 2, 199, 201)], false,
       {tile_size: 4, tiles: [terrainCell(50, 0, "MARSH", 0, 199, true, {east: true})], truncated: false}));
@@ -758,6 +793,8 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
     "historical trail merging preserves the newer local connection results over saved terrain");
   assert.equal(trailCallCounts.get(raceB.id), 4, "opening a replay refreshes cached trail data when its frame count advanced");
   assert.equal(run("trailState.points.length"), 4);
+  assert.ok(!Object.hasOwn(JSON.parse(run("JSON.stringify(trailState.points.find(point=>point.sequence===1))")), "player_anchor"),
+    "history cache merging does not resurrect a same-sequence anchor cleared by the local frame");
   assert.ok(element("trailStatus").textContent.includes("历史回放"));
   assert.ok(JSON.parse(run("JSON.stringify(trailState.landmarks)")).some(item => item.prefab === "panflute" && item.x === 49),
     "saved history opens remembered target positions");
@@ -983,6 +1020,25 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
   assert.ok(element("terrainStatus").textContent.includes("未知 1"), "terrain errors retain the current passability counts");
   assert.ok(element("liveTarget").textContent.includes("直线距离"), "invalid terrain does not remove a visible target");
 
+  run(`trailState.mode="idle";trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,
+    localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],
+    localTerrainAvailable:false,storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};
+    recordLiveTrailSnapshot({world_id:"anchor-world",world_kind:"forest",session_id:"anchor-session",sequence:7,
+      captured_at:7,position:{x:3,z:3},player_anchor:{x:2,z:2,clear:false}});`);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localPoints[0].player_anchor)")),
+    {x: 2, z: 2, clear: false}, "live point construction preserves a failed current-point anchor check");
+  run(`recordLiveTrailSnapshot({world_id:"anchor-world",world_kind:"forest",session_id:"anchor-session",sequence:7,
+    captured_at:8,position:{x:3.5,z:3}});`);
+  assert.ok(!Object.hasOwn(JSON.parse(run("JSON.stringify(trailState.live.localPoints[0])")), "player_anchor"),
+    "a same-sequence local point without an anchor replaces the whole prior point");
+  run(`recordLiveTrailSnapshot({world_id:"anchor-world",world_kind:"forest",session_id:"anchor-session",sequence:7,
+    captured_at:9,position:{x:3.5,z:3},player_anchor:{x:2,z:2,clear:"bad"}});`);
+  assert.equal(run("trailState.live.localPoints[0].player_anchor"), null,
+    "an invalid live anchor is retained as unknown and cannot revive an older value");
+  run(`trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],
+    landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],localTerrainAvailable:false,
+    storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};`);
+
   context.checkedRouteFixture = [
     {x: 2, z: 2, tile: "GRASS", passable: true, connections: {east: true, north: false}},
     {x: 6, z: 2, tile: "FOREST", passable: true, connections: {north: true}},
@@ -1051,6 +1107,56 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
   assert.ok(element("routeStatus").textContent.includes("终点格中心没有可用") &&
     routeDestinationElement.value === "2,6", "an unknown destination remains selected and is not treated as walkable");
   context.checkedRouteFixture[3].passable = true;
+  run('trailState.points=[{sequence:3,captured_at:3,x:3,z:3,player_anchor:{x:2,z:2,clear:true}}];renderTrail()');
+  let playerRoute = JSON.parse(run("JSON.stringify(calculateCheckedRoute())"));
+  assert.equal(playerRoute.origin, "player");
+  assert.deepEqual(playerRoute.path, [{x:3,z:3},{x:2,z:2},{x:6,z:2},{x:6,z:6},{x:2,z:6}],
+    "the projected player route begins at the actual location before the checked grid path");
+  assert.equal(playerRoute.steps, 3);
+  assert.equal(playerRoute.anchor_distance, Math.SQRT2);
+  assert.equal(playerRoute.grid_distance, 12);
+  assert.equal(playerRoute.distance, 12 + Math.SQRT2);
+  assert.deepEqual(playerRoute.next, {kind:"anchor",direction:"southwest",x:2,z:2});
+  routeSvg = element("trailSvg").innerHTML;
+  assert.ok(element("routeStatus").textContent.includes("已找到玩家位置路线") &&
+    element("routeStatus").textContent.includes("总距离 13.4 世界单位 · 格网步数 3") &&
+    element("routeStatus").textContent.includes("先到所在格中心 · 向西南 · X 2.0 / Z 2.0"),
+    "player-origin route status shows total distance, grid steps, and the center approach bearing");
+  assert.ok(routeSvg.includes("玩家位置路线 · 玩家位置到所在格中心后接已检查格中心连接") &&
+    appHtml.includes("采集到当前位置检查后，路线从玩家位置出发；终点为所选格中心。"), "the route layer and note identify the actual origin and center destination");
+
+  run('trailState.points=[{sequence:4,captured_at:4,x:6.5,z:3,player_anchor:{x:6,z:2,clear:true}}];renderTrail()');
+  playerRoute = JSON.parse(run("JSON.stringify(calculateCheckedRoute())"));
+  assert.equal(playerRoute.steps, 2);
+  assert.equal(playerRoute.distance, 8 + Math.hypot(0.5, 1), "movement to another cell recomputes the remaining total distance");
+  assert.deepEqual(playerRoute.next, {kind:"anchor",direction:"southwest",x:6,z:2});
+
+  routeDestinationElement.value = "2,2";
+  routeDestinationElement.listeners.change();
+  run('trailState.points=[{sequence:5,captured_at:5,x:3,z:3,player_anchor:{x:2,z:2,clear:true}}];renderTrail()');
+  playerRoute = JSON.parse(run("JSON.stringify(calculateCheckedRoute())"));
+  assert.equal(playerRoute.status, "found", "being inside the destination tile does not count as arrival before its center");
+  assert.deepEqual(playerRoute.path, [{x:3,z:3},{x:2,z:2}]);
+  assert.equal(playerRoute.steps, 0);
+  assert.deepEqual(playerRoute.next, {kind:"anchor",direction:"southwest",x:2,z:2});
+  assert.ok(element("routeStatus").textContent.includes("格网步数 0"));
+
+  routeDestinationElement.value = "2,6";
+  routeDestinationElement.listeners.change();
+  run('trailState.points=[{sequence:6,captured_at:6,x:3,z:3,player_anchor:{x:2,z:2,clear:false}}];renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("玩家位置路线 · 玩家当前位置到所在格中心的检查受阻") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "a failed player-anchor check never falls back to an unchecked line");
+  run('trailState.points=[{sequence:7,captured_at:7,x:3,z:3,player_anchor:{x:6,z:2,clear:true}}];renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("采集到的当前位置检查未知") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "an anchor that names a different tile is unknown and draws no route segment");
+  run('trailState.points=[{sequence:8,captured_at:8,x:3,z:3}];renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("已找到格中心路线") &&
+    element("routeStatus").textContent.includes("起点 X 2.0 / Z 2.0") &&
+    !element("routeStatus").textContent.includes("玩家位置路线"),
+    "legacy points without an anchor retain the original grid-center route mode");
+
   trailDestinationSyntheticEvent("click", 6, 2);
   assert.equal(routeDestinationElement.value, "6,2", "one delegated SVG click selects a passable map tile");
   let keyPrevented = false;
@@ -1068,7 +1174,10 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
   assert.ok(element("routeStatus").textContent.includes("请选择路线终点"), "a new history identity starts without the previous goal");
   routeDestinationElement.value = "2,6";
   routeDestinationElement.listeners.change();
-  assert.ok(element("routeStatus").textContent.includes("已找到格中心路线"), "historical tile connections support the same route finder");
+  assert.ok(element("routeStatus").textContent.includes("已找到格中心路线"), "historical points without anchors keep the legacy route mode");
+  run('trailState.points[2]={sequence:3,captured_at:3,x:3,z:3,player_anchor:{x:2,z:2,clear:true}};renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("已找到玩家位置路线"),
+    "historical trail points with a checked player anchor use the actual-position route mode");
   routeSvg = element("trailSvg").innerHTML;
   assert.ok(routeSvg.indexOf('class="checked-route"') > routeSvg.indexOf('class="trail-route"') &&
     routeSvg.indexOf('class="checked-route-goal"') > routeSvg.lastIndexOf('class="trail-landmark-marker"'),
@@ -1077,8 +1186,9 @@ function trailDestinationSyntheticEvent(type, x, z, key = "", preventDefault = (
     "the goal uses a visible 10-unit hollow ring when it overlaps a landmark");
   run('trailState.mode="idle";renderTrail()');
   assert.ok(element("trailStatus").textContent.includes("实时跟随已暂停") &&
-    element("trailSvg").innerHTML.includes('class="checked-route"'),
-    "a paused or stale trail keeps its static checked-grid route");
+    element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("routeStatus").textContent.includes("玩家位置路线"),
+    "a paused or stale trail keeps its static player-origin route");
   assert.ok(!element("routeStatus").textContent.includes("实时观测"), "route status does not label retained data as fresh");
   run('trailState.identity="another-world-session";renderTrail()');
   assert.equal(routeDestinationElement.value, "", "a session or world identity change clears the old destination");
