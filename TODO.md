@@ -19,6 +19,7 @@
 
 - [x] 客户端采集玩家坐标、当前地皮和附近地标，把每秒快照送给外置 Python。 / Collect player coordinates, the current tile, and nearby landmarks on the client, and send one snapshot per second to external Python.
 - [x] 网页实时展示位置与方向建议，识别采集暂停和世界切换。 / Show live positions and direction suggestions, and detect paused collection and world changes.
+- [x] 实时地图在采集暂停、错误、手动停止或最后有效快照超过五秒时暂停导航；隐藏紫色路线和下一步提示，保留地皮、最后位置、终点与来源目标，收到新有效快照后恢复，历史回放路线照常显示。 / Pause live navigation when collection pauses, errors, stops manually, or the last valid snapshot is over five seconds old; hide the purple route and next-step guidance while keeping terrain, last position, endpoint, and target source, then resume on a valid snapshot. Saved replay routes remain visible.
 
 采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
 

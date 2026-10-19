@@ -38,6 +38,8 @@ Directions use fixed world coordinates: north is `+Z` and east is `+X`.
 
 On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds the route with the fewest grid steps over checked clear neighbor links. Collector 0.5.0 also checks the segment from your current position to your tile center. When that check passes, the route starts at your actual position and shows its total length and the next direction and coordinates. A blocked entry segment is reported; older data can still show tile-center routes. Routes recalculate as the player moves or new checks arrive, including in saved replays. The endpoint is the selected tile center, and each grid step is 4 world units. If no path connects the tiles, the page shows “未连通” (not connected). Switching worlds or collector sessions clears the endpoint.
 
+During live following, a paused collector, an error, a manual stop, or more than five seconds without a valid snapshot pauses navigation. This includes time spent waiting for a page response. The map shows “导航已暂停” (navigation paused) and hides the purple live route and next-step guidance while keeping observed terrain, the last trail position, the route endpoint, and its target source. A new valid snapshot restores live navigation. Saved replay routes remain visible.
+
 While live following is active, the tool saves newly received snapshots locally, including coordinates, nearby clues, the current target, and direction suggestions. Download a JSONL file from “探索回放” (exploration replays) to keep the exploration session; saved replays remain available after restarting. Each world and collector session has its own recording.
 
 “探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review that exploration; this pauses live following. Check live following again to return to the current session. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
@@ -78,6 +80,8 @@ Use the player position to find a route and show the next move
   ↓
 Player moves or a new connection check arrives → update the route
   ↓
+Collection pause, error, manual stop, or stale snapshot → pause navigation; new valid snapshot → resume (replays remain visible)
+  ↓
 New snapshots → local replay → trail and route with observed tiles, latest position, and observed targets
   ↓
 Saved replay → view its trail and route or download coordinates, clues, and suggestions
@@ -86,8 +90,6 @@ Keep moving → collect, calculate, and update again
   ↓
 Save current observations and world notes to continue next time
 ```
-
-The page marks observations stale if collection pauses for more than five seconds. Manual entry and JSON examples remain available.
 
 ## Targets
 

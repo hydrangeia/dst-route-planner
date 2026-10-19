@@ -5,6 +5,20 @@ const appHtml = fs.readFileSync("dst_route_planner/static/app.html", "utf8");
 const checkedRoutesSource = fs.readFileSync("dst_route_planner/static/checked_routes.js", "utf8");
 const source = appHtml.match(/<script>([\s\S]*?)<\/script>/)[1].replace("    initialize();", "");
 const elements = new Map();
+let nextTimerId = 0;
+const scheduledTimers = new Map();
+function fakeSetTimeout(callback, delay = 0) {
+  const id = ++nextTimerId;
+  scheduledTimers.set(id, {callback, delay});
+  return id;
+}
+function fakeClearTimeout(id) { scheduledTimers.delete(id); }
+function fireScheduledTimer(id) {
+  const timer = scheduledTimers.get(id);
+  assert.ok(timer, "timer " + id + " is scheduled");
+  scheduledTimers.delete(id);
+  timer.callback();
+}
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     value: "", checked: false, disabled: false, textContent: "", innerHTML: "",
@@ -18,10 +32,11 @@ function element(id) {
 const context = vm.createContext({
   document: {getElementById: element}, AbortController,
   fetch: async () => { throw new Error("unexpected fetch"); },
-  setTimeout: () => 1, clearTimeout() {}
+  setTimeout: fakeSetTimeout, clearTimeout: fakeClearTimeout, routeTestNow: 0
 });
 vm.runInContext(checkedRoutesSource, context);
 vm.runInContext(source, context);
+run('routeFreshness.now=()=>routeTestNow');
 assert.ok(appHtml.includes('<script src="/static/checked_routes.js"></script>'), "the route finder loads before the page script");
 const routeDestinationElement = element("routeDestinationSelect");
 let routeOptionsMarkup = routeDestinationElement.innerHTML;
@@ -1079,7 +1094,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     {x: 10, z: 6, tile: "ROCKY", passable: false},
     {x: 14, z: 6, tile: "OTHER"}
   ];
-  run('trailState.mode="live";trailState.identity="route-world\u0000forest\u0000route-session";trailState.points=[{sequence:1,captured_at:1,x:2,z:2}];trailState.terrainTiles=checkedRouteFixture;trailState.terrainAvailable=true;trailState.terrainError="";el.terrainToggle.checked=false;el.terrainConnectionToggle.checked=false;renderTrail()');
+  run('trailState.mode="history";trailState.identity="route-world\u0000forest\u0000route-session";trailState.points=[{sequence:1,captured_at:1,x:2,z:2}];trailState.terrainTiles=checkedRouteFixture;trailState.terrainAvailable=true;trailState.terrainError="";el.terrainToggle.checked=false;el.terrainConnectionToggle.checked=false;renderTrail()');
   assert.ok(appHtml.includes('id="routeDestinationSelect"') && appHtml.includes('id="clearRouteDestinationButton"') &&
     appHtml.includes('id="routeStatus"'), "the route selector, clear action, and status are accessible controls");
   assert.equal((routeDestinationElement.innerHTML.match(/<option /g) || []).length, 5,
@@ -1281,7 +1296,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     "the selected source is written as text, never interpreted as HTML");
   assert.ok(!element("routeDestinationSource").innerHTML.includes("onerror"), "source content cannot inject markup");
 
-  run('state.target="panflute";trailState.mode="live";trailState.identity="route-world\\u0000forest\\u0000route-session";trailState.points=[{sequence:2,captured_at:2,x:6,z:2}];trailState.landmarks=[];renderTrail()');
+  run('state.target="panflute";trailState.mode="live";trailState.identity="route-world\\u0000forest\\u0000route-session";trailState.points=[{sequence:2,captured_at:2,x:6,z:2}];trailState.landmarks=[];acceptRouteFreshness(trailState.identity,2,0);renderTrail()');
   assert.equal(routeDestinationElement.value, "", "switching back to the live identity starts without a historical destination");
   routeDestinationElement.value = "2,6";
   routeDestinationElement.listeners.change();
@@ -1306,7 +1321,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.ok(element("routeStatus").textContent.includes("终点格中心没有可用") &&
     routeDestinationElement.value === "2,6", "an unknown destination remains selected and is not treated as walkable");
   context.checkedRouteFixture[3].passable = true;
-  run('trailState.points=[{sequence:3,captured_at:3,x:3,z:3,player_anchor:{x:2,z:2,clear:true}}];renderTrail()');
+  run('trailState.mode="history";trailState.points=[{sequence:3,captured_at:3,x:3,z:3,player_anchor:{x:2,z:2,clear:true}}];renderTrail()');
   let playerRoute = JSON.parse(run("JSON.stringify(calculateCheckedRoute())"));
   assert.equal(playerRoute.origin, "player");
   assert.deepEqual(playerRoute.path, [{x:3,z:3},{x:2,z:2},{x:6,z:2},{x:6,z:6},{x:2,z:6}],
@@ -1385,9 +1400,11 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     "the goal uses a visible 10-unit hollow ring when it overlaps a landmark");
   run('trailState.mode="idle";renderTrail()');
   assert.ok(element("trailStatus").textContent.includes("实时跟随已暂停") &&
-    element("trailSvg").innerHTML.includes('class="checked-route"') &&
-    element("routeStatus").textContent.includes("玩家位置路线"),
-    "a paused or stale trail keeps its static player-origin route");
+    !element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("trailSvg").innerHTML.includes('class="checked-route-goal"') &&
+    element("routeStatus").textContent.includes("实时导航已暂停") &&
+    element("routeStatus").textContent.includes("最后观测位置"),
+    "a paused live trail keeps its goal and labels the retained location while suppressing route guidance");
   assert.ok(!element("routeStatus").textContent.includes("实时观测"), "route status does not label retained data as fresh");
   run('trailState.identity="another-world-session";renderTrail()');
   assert.equal(routeDestinationElement.value, "", "a session or world identity change clears the old destination");
@@ -1410,5 +1427,145 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.ok(routeDestinationElement.innerHTML.startsWith('<option value="">选择终点</option>'),
     "the placeholder stays at the top after a large map update");
 
-  console.log("Live UI: replay recording, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
+  const liveRouteTerrain = [
+    {x: 2, z: 2, tile: "GRASS", passable: true, connections: {east: true}},
+    {x: 6, z: 2, tile: "FOREST", passable: true, connections: {north: true}},
+    {x: 6, z: 6, tile: "ROCKY", passable: true},
+    {x: 2, z: 6, tile: "MARSH", passable: true, connections: {east: true}}
+  ];
+  function liveRouteFrame(sequence, options = {}) {
+    const reply = frame(options.session || "fresh-session", sequence, null, options.world || "fresh-world", {
+      worldKind: options.worldKind || "forest", x: options.x ?? 2, z: options.z ?? 2,
+      capturedAt: 100 + sequence, terrain: {tile_size: 4, tiles: liveRouteTerrain}
+    });
+    reply.status = options.status || "live";
+    reply.age_seconds = options.age ?? 0.5;
+    return reply;
+  }
+  context.routeTestNow = 10000;
+  run(`pauseRouteNavigation("waiting",false);state.target="panflute";state.liveRecording=null;state.explorations=[];
+    live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;
+    trailState.mode="live";trailState.identity=null;trailState.id=null;trailState.summary=null;trailState.points=[];
+    trailState.landmarks=[];trailState.terrainTiles=[];trailState.terrainAvailable=false;trailState.terrainError="";
+    trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],
+      landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],localTerrainAvailable:false,
+      storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};`);
+  context.liveRouteReply = liveRouteFrame(1);
+  run("applyLiveResult(liveRouteReply)");
+  run(`checkedRouteSelection.identity=trailState.identity;checkedRouteSelection.destination={x:2,z:6};
+    checkedRouteSelection.source={prefab:"panflute",x:2,z:6};el.routeDestination.value="2,6";renderTrail()`);
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("routeStatus").textContent.includes("下一格向东"),
+    "an accepted fresh live snapshot enables the route and its next-step hint");
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 2.0 / Z 6.0 的格中心");
+
+  context.fetch = async () => { throw new Error("offline"); };
+  await run("pollLive()");
+  assert.ok(!element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("trailSvg").innerHTML.includes('class="checked-route-goal"') &&
+    element("routeStatus").textContent.includes("连接暂时中断") &&
+    !element("routeStatus").textContent.includes("下一格") &&
+    routeDestinationElement.value === "2,6" && !element("routeDestinationSource").hidden,
+    "an error pauses the route while preserving its endpoint and source");
+  run('unavailableLive("尚未连接日志","disabled")');
+  assert.ok(element("routeStatus").textContent.includes("实时采集未启用") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"') && routeDestinationElement.value === "2,6",
+    "a disabled collector pauses guidance while keeping the selected endpoint");
+  context.liveRouteReply = liveRouteFrame(2);
+  run("applyLiveResult(liveRouteReply)");
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "a later fresh snapshot restores route guidance after an error");
+
+  context.routeTestNow += 4900;
+  context.liveRouteReply = liveRouteFrame(2, {age: 0.1});
+  run("applyLiveResult(liveRouteReply)");
+  assert.ok(element("routeStatus").textContent.includes("快照已超过五秒") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "a repeated sequence cannot reset freshness when its accepted age plus elapsed time exceeds five seconds");
+  context.liveRouteReply = liveRouteFrame(3, {age: 0.2});
+  run("applyLiveResult(liveRouteReply)");
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "a newer fresh sequence restores route guidance");
+
+  let resolveHeldLive;
+  context.fetch = () => new Promise(resolve => { resolveHeldLive = resolve; });
+  const heldLivePoll = run("pollLive()");
+  const firstExpiry = run("routeFreshness.timer");
+  context.routeTestNow += 4700;
+  fireScheduledTimer(firstExpiry);
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "the route remains active while the accepted snapshot is still within five seconds");
+  const finalExpiry = run("routeFreshness.timer");
+  context.routeTestNow += 200;
+  fireScheduledTimer(finalExpiry);
+  assert.ok(!element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("trailSvg").innerHTML.includes('class="checked-route-goal"') &&
+    element("routeStatus").textContent.includes("快照已超过五秒") &&
+    !element("routeStatus").textContent.includes("下一格") &&
+    element("routeDestinationSource").textContent.includes("终点来自已见排箫") &&
+    element("livePosition").textContent.includes("最后观测位置") &&
+    run("state.result") === null,
+    "a held live request expires locally, removes the purple route and next hint, and retains the goal, source, and last position");
+
+  run('trailState.mode="history";renderTrail()');
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("routeStatus").textContent.includes("已找到格中心路线"),
+    "history replay routes use their recorded last position even while live freshness is paused");
+  run('state.result={directions:[{direction:"east",score:7}]};trailState.mode="live";live.following=true;stopLive()');
+  assert.ok(element("routeStatus").textContent.includes("实时跟随已暂停") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    routeDestinationElement.value === "2,6" && !element("routeDestinationSource").hidden,
+    "manually stopping live following pauses guidance and keeps the selected endpoint and source");
+  resolveHeldLive(apiResponse(liveRouteFrame(4)));
+  await heldLivePoll;
+
+  let resolveResumeLive;
+  context.fetch = () => new Promise(resolve => { resolveResumeLive = resolve; });
+  element("liveFollow").checked = true;
+  element("liveFollow").listeners.change();
+  assert.ok(run("live.following") && run("state.result") === null &&
+    element("resultsArea").innerHTML.includes("正在连接实时采集") &&
+    element("routeStatus").textContent.includes("正在等待有效快照") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "resuming while the live request is pending clears old room and task directions until fresh data arrives");
+  resolveResumeLive(apiResponse({status: "waiting"}));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(run("live.following") && element("routeStatus").textContent.includes("正在等待有效快照") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "resuming live following waits for a fresh snapshot before restoring the route");
+  context.liveRouteReply = liveRouteFrame(4);
+  run("applyLiveResult(liveRouteReply)");
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "a fresh snapshot after resuming restores live route guidance");
+  context.liveRouteReply = liveRouteFrame(3);
+  run("applyLiveResult(liveRouteReply)");
+  assert.ok(element("routeStatus").textContent.includes("倒序观测") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    routeDestinationElement.value === "2,6" && !element("routeDestinationSource").hidden,
+    "an out-of-order snapshot cannot clear the paused state or the selected endpoint source");
+  run("stopLive()");
+
+  run(`live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;trailState.mode="live";
+    trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],
+      landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],localTerrainAvailable:false,
+      storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};state.liveRecording=null;`);
+  context.liveRouteReply = liveRouteFrame(1, {world: "fresh-cave", session: "cave-session", worldKind: "cave", status: "unsupported_world", age: 0.4});
+  run("applyLiveResult(liveRouteReply)");
+  run(`checkedRouteSelection.identity=trailState.identity;checkedRouteSelection.destination={x:2,z:6};
+    checkedRouteSelection.source={prefab:"panflute",x:2,z:6};el.routeDestination.value="2,6";renderTrail()`);
+  assert.ok(run('routeFreshness.status') === "fresh" &&
+    element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("routeStatus").textContent.includes("下一格向东"),
+    "a fresh unsupported-world cave position still supports the checked grid route");
+  const caveExpiry = run("routeFreshness.timer");
+  context.routeTestNow += 4700;
+  fireScheduledTimer(caveExpiry);
+  assert.ok(!element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("routeStatus").textContent.includes("快照已超过五秒") &&
+    routeDestinationElement.value === "2,6" && !element("routeDestinationSource").hidden,
+    "a cave route pauses when its last accepted position ages past five seconds");
+  run("stopLive()");
+
+  console.log("Live UI: replay recording, freshness-gated live routes, history isolation, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

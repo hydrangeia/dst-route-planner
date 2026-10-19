@@ -520,6 +520,111 @@
     };
 
     const live = { following: false, timer: null, controller: null, request: 0, key: null, sequence: 0 };
+    const ROUTE_FRESHNESS_LIMIT_SECONDS = 5;
+    const routeFreshness = {
+      status: "paused", reason: "waiting", identity: null, sequence: null,
+      snapshotAgeSeconds: null, checkedAt: null, timer: null, now: () => Date.now()
+    };
+    function clearRouteFreshnessTimer() {
+      clearTimeout(routeFreshness.timer);
+      routeFreshness.timer = null;
+    }
+    function routeFreshnessAge(now = routeFreshness.now()) {
+      if (!Number.isFinite(routeFreshness.snapshotAgeSeconds) || !Number.isFinite(routeFreshness.checkedAt)) return null;
+      return routeFreshness.snapshotAgeSeconds + Math.max(0, now - routeFreshness.checkedAt) / 1000;
+    }
+    function markLastObservedPosition() {
+      liveEl.position.textContent = liveEl.position.textContent.replace("玩家坐标 ", "最后观测位置 ");
+    }
+    function routePauseStatusText() {
+      const hasPosition = trailState.points.length > 0;
+      const position = hasPosition ? "地图保留最后观测位置" : "等待有效玩家位置";
+      const messages = {
+        stopped: "实时跟随已暂停 · " + position + "。",
+        waiting: "实时导航已暂停 · " + position + "，正在等待有效快照。",
+        disabled: "实时导航已暂停 · " + position + "，实时采集未启用。",
+        error: "实时导航已暂停 · " + position + "，连接暂时中断。",
+        out_of_order: "实时导航已暂停 · 收到倒序观测，" + position + "，等待新快照。",
+        stale: "实时导航已暂停 · " + position + "，快照已超过五秒。等待新快照。",
+        unsupported: "实时导航已暂停 · " + position + "，此世界暂不支持实时位置。"
+      };
+      return messages[routeFreshness.reason] || messages.waiting;
+    }
+    function pauseRouteNavigation(reason, render = true) {
+      clearRouteFreshnessTimer();
+      routeFreshness.status = "paused";
+      routeFreshness.reason = reason || "waiting";
+      markLastObservedPosition();
+      if (routeFreshness.reason === "stale" && live.following) {
+        liveEl.status.textContent = "采集已暂停，最新观测超过五秒；等待新数据后继续更新。";
+      }
+      if (render && trailState.mode !== "history") renderTrail();
+    }
+    function expireRouteNavigationIfNeeded() {
+      if (routeFreshness.status !== "fresh") return false;
+      if (routeFreshnessAge() <= ROUTE_FRESHNESS_LIMIT_SECONDS) return true;
+      pauseRouteNavigation("stale", false);
+      if (live.following) clearLiveRecommendations("采集已暂停，最新观测超过五秒；等待新数据后继续更新。");
+      return false;
+    }
+    function scheduleRouteFreshnessExpiry() {
+      clearRouteFreshnessTimer();
+      if (routeFreshness.status !== "fresh") return;
+      const age = routeFreshnessAge();
+      const remainingMs = Math.max(1, (ROUTE_FRESHNESS_LIMIT_SECONDS - age) * 1000 + 1);
+      routeFreshness.timer = setTimeout(() => {
+        routeFreshness.timer = null;
+        if (routeFreshness.status !== "fresh") return;
+        if (!expireRouteNavigationIfNeeded()) {
+          if (trailState.mode !== "history") renderTrail();
+          return;
+        }
+        scheduleRouteFreshnessExpiry();
+      }, remainingMs);
+    }
+    function acceptRouteFreshness(identity, sequence, ageSeconds) {
+      if (!identity || !Number.isSafeInteger(sequence) || sequence < 0 ||
+          typeof ageSeconds !== "number" || !Number.isFinite(ageSeconds) || ageSeconds < 0) {
+        pauseRouteNavigation("stale", false);
+        return false;
+      }
+      let calibratedAge = ageSeconds;
+      if (routeFreshness.identity === identity && Number.isSafeInteger(routeFreshness.sequence)) {
+        if (sequence < routeFreshness.sequence) {
+          pauseRouteNavigation("out_of_order", false);
+          return false;
+        }
+        if (sequence === routeFreshness.sequence) {
+          calibratedAge = Math.max(calibratedAge, routeFreshnessAge() || 0);
+        }
+      }
+      if (calibratedAge > ROUTE_FRESHNESS_LIMIT_SECONDS) {
+        pauseRouteNavigation("stale", false);
+        return false;
+      }
+      routeFreshness.status = "fresh";
+      routeFreshness.reason = "";
+      routeFreshness.identity = identity;
+      routeFreshness.sequence = sequence;
+      routeFreshness.snapshotAgeSeconds = calibratedAge;
+      routeFreshness.checkedAt = routeFreshness.now();
+      scheduleRouteFreshnessExpiry();
+      return true;
+    }
+    function liveRouteIsFresh() {
+      if (trailState.mode === "history") return true;
+      if (!expireRouteNavigationIfNeeded() || routeFreshness.status !== "fresh" ||
+          !routeFreshness.identity || trailState.identity !== routeFreshness.identity) {
+        if (routeFreshness.status === "fresh") pauseRouteNavigation("waiting", false);
+        return false;
+      }
+      const latest = trailState.points[trailState.points.length - 1];
+      if (!latest || latest.sequence !== routeFreshness.sequence) {
+        pauseRouteNavigation("waiting", false);
+        return false;
+      }
+      return true;
+    }
     const liveEl = {
       follow: document.getElementById("liveFollow"), status: document.getElementById("liveStatus"),
       position: document.getElementById("livePosition"), target: document.getElementById("liveTarget"),
@@ -615,6 +720,7 @@
     function stopLive(message = "已暂停实时跟随，可以手动修改观测。") {
       const wasFollowing = live.following;
       live.following = false;
+      pauseRouteNavigation("stopped", false);
       live.request += 1;
       clearTimeout(live.timer);
       live.timer = null;
@@ -1296,7 +1402,8 @@
       syncCheckedRouteIdentity();
       syncCheckedRouteTarget();
       updateCheckedRouteDestinations();
-      const checkedRoute = calculateCheckedRoute();
+      const routeIsPaused = !liveRouteIsFresh();
+      const checkedRoute = routeIsPaused ? null : calculateCheckedRoute();
       const routeDestination = checkedRouteSelection.destination;
       const displayedLandmarks = selectedTrailLandmarks();
       const landmarkRouteTargets = displayedLandmarks.map(landmark => locateLandmarkRouteTile(landmark));
@@ -1398,7 +1505,7 @@
             '<text class="trail-landmark-number" x="' + landmark.x.toFixed(2) + '" y="' + (landmark.y + 3).toFixed(2) +
             '" text-anchor="middle">' + landmark.number + '</text>';
         }
-        if (checkedRoute.status === "found" || checkedRoute.status === "arrived") {
+        if (checkedRoute && (checkedRoute.status === "found" || checkedRoute.status === "arrived")) {
           if (routeView.path.length > 1) {
             const routeCommands = routeView.path.map((point, index) => (index ? "L" : "M") + trailSvgPoint(point)).join(" ");
             svg += '<path class="checked-route-halo" d="' + routeCommands + '"/>' +
@@ -1426,7 +1533,7 @@
       }
       el.trailSvg.innerHTML = svg;
       restoreLandmarkControlFocus(landmarkFocus);
-      el.routeStatus.textContent = checkedRouteStatusText(checkedRoute, projection.error);
+      el.routeStatus.textContent = routeIsPaused ? routePauseStatusText() : checkedRouteStatusText(checkedRoute, projection.error);
       if (projection.error) {
         el.trailStatus.textContent = "坐标范围过大，轨迹暂时无法显示。";
         renderTerrainStatus(projection);
@@ -1568,6 +1675,7 @@
       renderTrail();
     }
     function resumeLiveTrailView() {
+      pauseRouteNavigation("waiting", false);
       const liveTrail = trailState.live;
       const summary = state.liveRecording && liveTrail.identity &&
         explorationReplayIdentity(state.liveRecording) === liveTrail.identity ? state.liveRecording : null;
@@ -1742,12 +1850,17 @@
       }
       renderPrefabOptions();
     }
-    function unavailableLive(message) {
+    function clearLiveRecommendations(message) {
       liveEl.status.textContent = message;
       liveEl.target.textContent = "";
       state.result = null;
       el.stale.classList.remove("visible");
       el.results.innerHTML = '<div class="empty-results">' + esc(message) + '</div>';
+    }
+    function unavailableLive(message, reason = "error") {
+      pauseRouteNavigation(reason, false);
+      clearLiveRecommendations(message);
+      if (trailState.mode !== "history") renderTrail();
     }
     function acceptLiveIdentity(key, sequence) {
       if (live.key && live.key !== key) {
@@ -1763,7 +1876,7 @@
       const position = snapshot && snapshot.position;
       return result.status === "unsupported_world" && !!key &&
         typeof result.age_seconds === "number" && Number.isFinite(result.age_seconds) && result.age_seconds >= 0 && result.age_seconds <= 5 &&
-        snapshot && Number.isSafeInteger(snapshot.sequence) && snapshot.sequence >= 0 &&
+        Number.isSafeInteger(snapshot.sequence) && snapshot.sequence >= 0 &&
         typeof snapshot.captured_at === "number" && Number.isFinite(snapshot.captured_at) &&
         position && typeof position.x === "number" && Number.isFinite(position.x) &&
         typeof position.z === "number" && Number.isFinite(position.z);
@@ -1774,13 +1887,37 @@
       if (result.status === "live" && (!snapshot || !key || !result.plan || !Array.isArray(result.plan.directions))) {
         throw new Error("实时数据格式无法识别。");
       }
-      if (snapshot && key && live.key === key && snapshot.sequence < live.sequence) {
-        unavailableLive("忽略了倒序观测，等待新的采集快照。");
+      const priorSequence = key ? Math.max(
+        live.key === key && Number.isSafeInteger(live.sequence) ? live.sequence : -1,
+        routeFreshness.identity === key && Number.isSafeInteger(routeFreshness.sequence) ? routeFreshness.sequence : -1
+      ) : -1;
+      if (snapshot && key && Number.isSafeInteger(snapshot.sequence) && snapshot.sequence < priorSequence) {
+        unavailableLive("忽略了倒序观测，等待新的采集快照。", "out_of_order");
         return;
+      }
+      const freshUnsupported = isFreshUnsupportedSnapshot(result, snapshot, key);
+      if (result.status === "live") {
+        if (typeof result.age_seconds !== "number" || !Number.isFinite(result.age_seconds) || result.age_seconds < 0 ||
+            result.age_seconds > ROUTE_FRESHNESS_LIMIT_SECONDS) {
+          unavailableLive("采集已暂停，最新观测超过五秒；等待新数据后继续更新。", "stale");
+          return;
+        }
+        if (!acceptRouteFreshness(key, snapshot.sequence, result.age_seconds)) {
+          const reason = routeFreshness.reason || "stale";
+          unavailableLive(reason === "out_of_order" ? "忽略了倒序观测，等待新的采集快照。" :
+            "采集已暂停，最新观测超过五秒；等待新数据后继续更新。", reason);
+          return;
+        }
+      } else if (freshUnsupported) {
+        if (!acceptRouteFreshness(key, snapshot.sequence, result.age_seconds)) {
+          const reason = routeFreshness.reason || "stale";
+          unavailableLive(reason === "out_of_order" ? "忽略了倒序观测，等待新的采集快照。" :
+            "采集已暂停，最新观测超过五秒；等待新数据后继续更新。", reason);
+          return;
+        }
       }
       const recording = Object.prototype.hasOwnProperty.call(result, "recording") ? result.recording : undefined;
       updateLiveRecording(recording, snapshot);
-      const freshUnsupported = isFreshUnsupportedSnapshot(result, snapshot, key);
       if (snapshot && snapshot.position && (result.status === "live" || freshUnsupported)) {
         const world = snapshot.world_kind === "forest" ? "大陆" : snapshot.world_kind === "cave" ? "洞穴" : snapshot.world_kind;
         liveEl.position.textContent = `${world} · 玩家坐标 X ${Number(snapshot.position.x).toFixed(1)} / Z ${Number(snapshot.position.z).toFixed(1)}`;
@@ -1797,9 +1934,17 @@
           unsupported_world: "已收到位置，这个世界的方向推理待接入。"
         };
         const unsupportedExpired = result.status === "unsupported_world" && typeof result.age_seconds === "number" &&
-          Number.isFinite(result.age_seconds) && result.age_seconds > 5;
-        unavailableLive(unsupportedExpired ? messages.stale :
-          (messages[result.status] || "读取实时观测失败：" + (result.error || "请检查采集器和日志。")));
+          Number.isFinite(result.age_seconds) && result.age_seconds > ROUTE_FRESHNESS_LIMIT_SECONDS;
+        if (freshUnsupported) {
+          clearLiveRecommendations(messages.unsupported_world);
+        } else {
+          const reason = result.status === "disabled" ? "disabled"
+            : result.status === "error" ? "error"
+            : result.status === "stale" || unsupportedExpired ? "stale"
+            : result.status === "unsupported_world" ? "unsupported" : "waiting";
+          unavailableLive(unsupportedExpired ? messages.stale :
+            (messages[result.status] || "读取实时观测失败：" + (result.error || "请检查采集器和日志。")), reason);
+        }
         return;
       }
       acceptLiveIdentity(key, snapshot.sequence);
@@ -1836,7 +1981,7 @@
         if (!live.following || request !== live.request || target !== state.target || seed !== state.seed) return;
         applyLiveResult(result);
       } catch (error) {
-        if (error.name !== "AbortError" && live.following && request === live.request) unavailableLive("实时连接暂时中断：" + error.message);
+        if (error.name !== "AbortError" && live.following && request === live.request) unavailableLive("实时连接暂时中断：" + error.message, "error");
       } finally {
         if (live.following && request === live.request) {
           live.controller = null;
@@ -1848,9 +1993,10 @@
     liveEl.follow.addEventListener("change", () => {
       if (!liveEl.follow.checked) { stopLive(); return; }
       cancelStaleRequest();
+      pauseRouteNavigation("waiting", false);
       live.following = true; live.key = null; live.sequence = 0;
       resumeLiveTrailView();
-      liveEl.status.textContent = "正在连接实时采集…";
+      clearLiveRecommendations("正在连接实时采集…");
       updateLiveControls(); pollLive();
     });
 
