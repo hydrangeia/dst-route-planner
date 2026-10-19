@@ -1567,5 +1567,172 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     "a cave route pauses when its last accepted position ages past five seconds");
   run("stopLive()");
 
-  console.log("Live UI: replay recording, freshness-gated live routes, history isolation, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
+  const deadlineWorld = "deadline-world";
+  const deadlineSession = "deadline-session";
+  run('state.target="panflute";state.seed="17";live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;trailState.mode="live";');
+  context.liveRouteReply = liveRouteFrame(1, {world: deadlineWorld, session: deadlineSession});
+  run("applyLiveResult(liveRouteReply)");
+  run('checkedRouteSelection.identity=trailState.identity;checkedRouteSelection.destination={x:2,z:6};checkedRouteSelection.source={prefab:"panflute",x:2,z:6};el.routeDestination.value="2,6";renderTrail()');
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"'), "the deadline cases start from an active live route");
+
+  let resolveLateFetch;
+  let resolveRetryFetch;
+  const deadlineUrls = [];
+  context.fetch = url => {
+    deadlineUrls.push(url);
+    if (deadlineUrls.length === 1) return new Promise(resolve => { resolveLateFetch = resolve; });
+    if (deadlineUrls.length === 2) return new Promise(resolve => { resolveRetryFetch = resolve; });
+    throw new Error("unexpected live request " + url);
+  };
+  const timedOutFetch = run("pollLive()");
+  const fetchDeadline = run("live.requestTimeoutTimer");
+  assert.equal(scheduledTimers.get(fetchDeadline).delay, 5000, "the live request deadline is five seconds");
+  assert.ok(deadlineUrls[0].includes("target=panflute") && deadlineUrls[0].includes("seed=17"));
+  fireScheduledTimer(fetchDeadline);
+  await timedOutFetch;
+  assert.ok(element("liveStatus").textContent.includes("实时请求超时，正在重试") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("trailSvg").innerHTML.includes('class="checked-route-goal"') &&
+    routeDestinationElement.value === "2,6" && !element("routeDestinationSource").hidden,
+    "a hung fetch pauses route guidance with a retry message while preserving its endpoint and source");
+  assert.equal(run("live.requestTimeoutTimer"), null, "the request deadline is cleared after timeout");
+  const fetchRetry = run("live.timer");
+  assert.equal(scheduledTimers.get(fetchRetry).delay, 1000, "a timed-out request reuses the one-second poll cadence");
+  fireScheduledTimer(fetchRetry);
+  assert.equal(deadlineUrls.length, 2, "the collector request retries automatically");
+  resolveLateFetch(apiResponse(liveRouteFrame(2, {world: deadlineWorld, session: deadlineSession})));
+  await settle();
+  assert.ok(element("liveStatus").textContent.includes("实时请求超时") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"') && run("state.result") === null,
+    "a late success from the timed-out fetch cannot replace the paused view");
+  const retryDeadline = run("live.requestTimeoutTimer");
+  resolveRetryFetch(apiResponse(liveRouteFrame(3, {world: deadlineWorld, session: deadlineSession})));
+  await settle();
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    element("routeStatus").textContent.includes("下一格向东"),
+    "a fresh response from the automatic retry restores the route");
+  assert.equal(run("live.requestTimeoutTimer"), null);
+  assert.equal(scheduledTimers.has(retryDeadline), false, "a successful response clears its deadline timer");
+
+  let resolveLateBody;
+  context.fetch = () => ({ok: true, json: () => new Promise(resolve => { resolveLateBody = resolve; })});
+  const timedOutBody = run("pollLive()");
+  await settle();
+  const bodyDeadline = run("live.requestTimeoutTimer");
+  assert.ok(resolveLateBody && scheduledTimers.get(bodyDeadline).delay === 5000,
+    "the same deadline stays active while the JSON response body is being read");
+  fireScheduledTimer(bodyDeadline);
+  await timedOutBody;
+  assert.ok(element("liveStatus").textContent.includes("实时请求超时") &&
+    !element("trailSvg").innerHTML.includes('class="checked-route"'),
+    "a hanging response body also pauses live guidance");
+  resolveLateBody(liveRouteFrame(4, {world: deadlineWorld, session: deadlineSession}));
+  await settle();
+  assert.equal(run("state.result"), null, "a late JSON body cannot apply after its request timed out");
+  run("stopLive()");
+  assert.equal(run("live.timer"), null, "stopping clears the retry scheduled after a timeout");
+  assert.equal(run("live.requestTimeoutTimer"), null);
+
+  let resolveChangedInput;
+  const changedInputUrls = [];
+  context.fetch = url => {
+    changedInputUrls.push(url);
+    if (changedInputUrls.length === 1) return new Promise(resolve => { resolveChangedInput = resolve; });
+    return Promise.resolve(apiResponse({status: "waiting"}));
+  };
+  element("liveFollow").checked = true;
+  run('live.following=true;liveEl.follow.checked=true;resumeLiveTrailView();clearLiveRecommendations("正在连接实时采集…")');
+  const changedInputPoll = run("pollLive()");
+  const changedInputDeadline = run("live.requestTimeoutTimer");
+  element("targetSelect").value = "moonbase";
+  element("targetSelect").listeners.change();
+  element("seedInput").value = "41";
+  element("seedInput").listeners.input();
+  fireScheduledTimer(changedInputDeadline);
+  await changedInputPoll;
+  assert.equal(element("liveStatus").textContent, "正在连接实时采集…",
+    "a request for an old target or seed cannot pause the updated view when it times out");
+  resolveChangedInput(apiResponse(liveRouteFrame(4, {world: deadlineWorld, session: deadlineSession})));
+  await settle();
+  assert.equal(element("liveStatus").textContent, "正在连接实时采集…",
+    "a late response from the old target and seed remains ignored");
+  const changedInputRetry = run("live.timer");
+  fireScheduledTimer(changedInputRetry);
+  assert.ok(changedInputUrls[1] && changedInputUrls[1].includes("target=moonbase") && changedInputUrls[1].includes("seed=41"),
+    "the next poll uses the current target and seed: " + JSON.stringify(changedInputUrls));
+  await settle();
+  assert.equal(element("liveStatus").textContent, "正在等待采集器输出，请进入世界并启用客户端 mod。");
+  run("stopLive()");
+
+  let rejectObsoleteFetch;
+  let resolveCurrentFetch;
+  let generationCalls = 0;
+  context.fetch = () => {
+    generationCalls += 1;
+    if (generationCalls === 1) return new Promise((resolve, reject) => { rejectObsoleteFetch = reject; });
+    return new Promise(resolve => { resolveCurrentFetch = resolve; });
+  };
+  run('live.following=true;liveEl.follow.checked=true;resumeLiveTrailView();clearLiveRecommendations("正在连接实时采集…")');
+  const obsoletePoll = run("pollLive()");
+  const obsoleteDeadline = run("live.requestTimeoutTimer");
+  fireScheduledTimer(obsoleteDeadline);
+  const currentPoll = run("pollLive()");
+  await obsoletePoll;
+  assert.equal(element("liveStatus").textContent, "正在连接实时采集…",
+    "an obsolete timeout cannot pause a newer live request");
+  assert.equal(run("live.timer"), null, "an obsolete poll does not schedule a second retry");
+  resolveCurrentFetch(apiResponse(liveRouteFrame(5, {world: deadlineWorld, session: deadlineSession})));
+  await currentPoll;
+  await settle();
+  const freshGenerationStatus = element("liveStatus").textContent;
+  const freshGenerationRetry = run("live.timer");
+  assert.ok(freshGenerationStatus.includes("实时更新 · 观测 5") &&
+    run("routeFreshness.status") === "fresh" && run("routeFreshness.sequence") === 5,
+    "the current generation accepts its fresh response");
+  rejectObsoleteFetch(new Error("late obsolete error"));
+  await settle();
+  assert.equal(element("liveStatus").textContent, freshGenerationStatus,
+    "an obsolete error arriving after the fresh response cannot replace it");
+  assert.equal(run("routeFreshness.status"), "fresh");
+  assert.equal(run("routeFreshness.sequence"), 5);
+  assert.equal(run("live.timer"), freshGenerationRetry,
+    "an obsolete error cannot cancel the current poll cadence");
+
+  let resolveStoppedFetch;
+  context.fetch = () => new Promise(resolve => { resolveStoppedFetch = resolve; });
+  const resultBeforeStop = run("JSON.stringify(state.result)");
+  const stoppedPoll = run("pollLive()");
+  run("stopLive()");
+  await stoppedPoll;
+  assert.equal(run("live.requestTimeoutTimer"), null, "manual stop cancels the deadline");
+  assert.equal(run("live.timer"), null, "manual stop does not schedule another poll");
+  resolveStoppedFetch(apiResponse(liveRouteFrame(6, {world: deadlineWorld, session: deadlineSession})));
+  await settle();
+  assert.equal(run("JSON.stringify(state.result)"), resultBeforeStop,
+    "a late response after manual stop cannot update observations");
+
+  const deadlineHistory = replaySummary("9".repeat(64), {worldId: "deadline-history", session: "deadline-history-session"});
+  let resolveHistoryFetch;
+  context.fetch = url => {
+    if (url.startsWith("/api/live?")) return new Promise(resolve => { resolveHistoryFetch = resolve; });
+    if (url === "/api/explorations/" + deadlineHistory.id + "/trail") {
+      return Promise.resolve(apiResponse(trailPayload(deadlineHistory, [trailPoint(0, 50, 70, 80)])));
+    }
+    throw new Error("unexpected fetch " + url);
+  };
+  run('live.following=true;liveEl.follow.checked=true;resumeLiveTrailView()');
+  const historyPendingPoll = run("pollLive()");
+  run("openExplorationTrail(" + JSON.stringify(deadlineHistory) + ")");
+  await historyPendingPoll;
+  await settle();
+  assert.equal(run("trailState.mode"), "history");
+  assert.equal(run("live.requestTimeoutTimer"), null, "opening history cancels the live deadline");
+  resolveHistoryFetch(apiResponse(liveRouteFrame(7, {world: deadlineWorld, session: deadlineSession})));
+  await settle();
+  assert.equal(run("trailState.mode"), "history");
+  assert.equal(run("trailState.points[0].x"), 70,
+    "a late live response cannot replace history after the user opens a replay");
+  assert.equal(run("live.timer"), null, "history does not leave a live retry running");
+
+  console.log("Live UI: replay recording, freshness-gated live routes, request timeouts and retries, history isolation, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

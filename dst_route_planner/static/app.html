@@ -519,7 +519,8 @@
       liveCheckStatus: document.getElementById("liveCheckStatus")
     };
 
-    const live = { following: false, timer: null, controller: null, request: 0, key: null, sequence: 0 };
+    const LIVE_REQUEST_TIMEOUT_MS = 5000;
+    const live = { following: false, timer: null, controller: null, requestTimeoutTimer: null, request: 0, key: null, sequence: 0 };
     const ROUTE_FRESHNESS_LIMIT_SECONDS = 5;
     const routeFreshness = {
       status: "paused", reason: "waiting", identity: null, sequence: null,
@@ -724,6 +725,8 @@
       live.request += 1;
       clearTimeout(live.timer);
       live.timer = null;
+      clearTimeout(live.requestTimeoutTimer);
+      live.requestTimeoutTimer = null;
       if (live.controller) live.controller.abort();
       live.controller = null;
       liveEl.follow.checked = false;
@@ -1968,20 +1971,60 @@
         ? `${TARGETS[state.target] || state.target}已在附近 · 直线距离 ${Number(target.distance).toFixed(1)} · X ${Number(target.x).toFixed(1)} / Z ${Number(target.z).toFixed(1)}` : "";
       recordLiveTrailSnapshot(snapshot);
     }
+    async function fetchLivePayload(target, seed, controller) {
+      let timeoutId = null;
+      let abortListener = null;
+      const aborted = new Promise((_, reject) => {
+        abortListener = () => {
+          const error = new Error("实时请求已取消。");
+          error.name = "AbortError";
+          reject(error);
+        };
+        controller.signal.addEventListener("abort", abortListener, {once: true});
+      });
+      const work = (async () => {
+        const response = await fetch(`/api/live?target=${encodeURIComponent(target)}&seed=${encodeURIComponent(seed)}`,
+          {signal: controller.signal, headers: {Accept: "application/json"}});
+        return await readJsonResponse(response);
+      })();
+      const timedOut = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          const error = new Error("实时请求超时。");
+          error.name = "TimeoutError";
+          reject(error);
+          controller.abort();
+        }, LIVE_REQUEST_TIMEOUT_MS);
+        live.requestTimeoutTimer = timeoutId;
+      });
+      try {
+        return await Promise.race([work, timedOut, aborted]);
+      } finally {
+        clearTimeout(timeoutId);
+        controller.signal.removeEventListener("abort", abortListener);
+        if (live.requestTimeoutTimer === timeoutId) live.requestTimeoutTimer = null;
+      }
+    }
     async function pollLive() {
       if (!live.following) return;
       const request = ++live.request;
+      clearTimeout(live.timer);
+      live.timer = null;
+      clearTimeout(live.requestTimeoutTimer);
+      live.requestTimeoutTimer = null;
+      if (live.controller) live.controller.abort();
       const target = state.target, seed = state.seed;
       const controller = new AbortController();
       live.controller = controller;
       try {
         if (!state.options.targets.includes(target) || !/^\d+$/.test(String(seed)) || !Number.isSafeInteger(Number(seed))) throw new Error("请选择目标，并填写非负整数种子。");
-        const response = await fetch(`/api/live?target=${encodeURIComponent(target)}&seed=${encodeURIComponent(seed)}`, {signal: controller.signal, headers: {Accept: "application/json"}});
-        const result = await readJsonResponse(response);
+        const result = await fetchLivePayload(target, seed, controller);
         if (!live.following || request !== live.request || target !== state.target || seed !== state.seed) return;
         applyLiveResult(result);
       } catch (error) {
-        if (error.name !== "AbortError" && live.following && request === live.request) unavailableLive("实时连接暂时中断：" + error.message, "error");
+        if (live.following && request === live.request && target === state.target && seed === state.seed) {
+          if (error.name === "TimeoutError") unavailableLive("实时请求超时，正在重试…", "error");
+          else if (error.name !== "AbortError") unavailableLive("实时连接暂时中断：" + error.message, "error");
+        }
       } finally {
         if (live.following && request === live.request) {
           live.controller = null;
