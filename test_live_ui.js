@@ -721,10 +721,17 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     }
     throw new Error("unexpected import fetch " + url);
   };
+  run('state.explorations=[];renderExplorations();el.explorationsStatus.textContent="还没有探索回放。";');
   run('state.target="moonbase";state.seed="41";el.target.value="moonbase";el.seed.value="41";el.recordName.value="keep this name";el.worldNote.value="keep this world";state.dirs.north.note="keep observation";live.following=true;liveEl.follow.checked=true;trailState.mode="live";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;');
   context.rawImportFile = rawImportFile;
   const importedResult = await run("importExplorationFile(rawImportFile)");
   assert.equal(importedResult.id, importedOnce.id);
+  assert.equal(run("state.explorations.length"), 1);
+  assert.ok(!element("explorationsStatus").textContent.includes("还没有探索回放"),
+    "importing from an empty list clears the stale no-replays status");
+  assert.ok(element("explorationsStatus").textContent.includes("显示 1 条回放") &&
+    element("explorationsStatus").textContent.includes("含刚导入的回放"),
+    "the list status reports the imported replay and its visible count");
   assert.equal(importRequests.length, 1);
   assert.equal(importRequests[0].options.method, "POST");
   assert.equal(importRequests[0].options.headers["Accept"], "application/json");
@@ -888,6 +895,8 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   await pendingOldList;
   await settle();
   assert.ok(raceListRequests >= 2, "a refresh racing with import is repeated after the stale response");
+  assert.ok(element("explorationsStatus").textContent.includes("共 2 条有效回放。"),
+    "the refresh following an import updates the list count instead of restoring an empty-list status");
   assert.equal(run('state.explorations.some(item => item.id === "' + refreshRaceImport.id + '")'), true,
     "a pre-import refresh response cannot remove the imported replay");
 

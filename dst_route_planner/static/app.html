@@ -2306,7 +2306,11 @@
         state.explorations = [summary, ...state.explorations.filter(item => item.id !== summary.id)].slice(0, 10);
         state.explorationIdsSeen.add(summary.id);
         renderExplorations();
-        if (state.explorationsLoading) state.explorationsRefreshPending = true;
+        if (state.explorationsLoading) {
+          state.explorationsRefreshPending = true;
+        } else {
+          el.explorationsStatus.textContent = "显示 " + state.explorations.length + " 条回放，含刚导入的回放。";
+        }
         updateRecordControls();
         const outcome = result.created ? "已导入新回放" : "这个回放已存在，已关联到已有记录";
         if (trailState.revision === viewRevision) {
