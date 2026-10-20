@@ -42,7 +42,7 @@ During live following, a paused collector, an error, a manual stop, or a last va
 
 While live following is active, the tool saves newly received snapshots locally, including coordinates, nearby clues, the current target, and direction suggestions. Download a JSONL file from “探索回放” (exploration replays) to keep the exploration session; saved replays remain available after restarting. Each world and collector session has its own recording.
 
-“探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review that exploration; this pauses live following. Check live following again to return to the current session. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
+“探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review it. Viewing a replay pauses live following; check it again to return to the current session. In “探索回放” (exploration replays), choose “导入回放” (Import replay) to open a file picker, then select a JSONL file downloaded from the tool. It uploads automatically. After a successful upload, the page opens the imported trail if the current view has not changed. If you switch views or worlds during upload, the page keeps the current view; choose “查看导入轨迹” (View imported trail) to open the imported replay manually. Imported trails include positions, terrain, observed targets, and grid routes. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
 
 The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists up to the 10 most recent sightings, with time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there. Choose “前往所在格” (Go to observed tile) in the list or click a map diamond to set the observed, passable tile at that recorded location as the route endpoint. The route shows which target sighting it came from and leads to the tile center.
 
@@ -84,7 +84,7 @@ Collection pause / error / manual stop / stale snapshot → pause; request timeo
   ↓
 New snapshots → local replay → trail and route with observed tiles, latest position, and observed targets
   ↓
-Saved replay → view its trail and route or download coordinates, clues, and suggestions
+Saved replay → view its trail and route, or download JSONL → import replay → view trail
   ↓
 Keep moving → collect, calculate, and update again
   ↓

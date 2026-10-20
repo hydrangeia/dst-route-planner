@@ -23,9 +23,12 @@ from dst_route_planner.live import (
     read_latest_snapshot,
 )
 from dst_route_planner.exploration import (
+    MAX_EXPLORATION_BYTES,
     CorruptExplorationError,
+    ExplorationConflictError,
     ExplorationNotFoundError,
     ExplorationStore,
+    ExplorationTooLargeError,
     InvalidExplorationIdError,
 )
 from dst_route_planner.models import Direction
@@ -417,6 +420,35 @@ class _PlannerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = urlsplit(self.path).path
+        if path == "/api/explorations/import":
+            try:
+                raw = self._read_exploration_body()
+                summary, created = self.server.exploration_store.import_bytes(raw)
+            except _ResponseAlreadySent:
+                return
+            except InputValidationError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except ExplorationTooLargeError as exc:
+                self._send_json(413, {"error": str(exc)})
+                return
+            except CorruptExplorationError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except ExplorationConflictError as exc:
+                self._send_json(409, {"error": str(exc)})
+                return
+            except OSError:
+                _LOG.exception("Unable to import exploration replay")
+                self._send_json(500, {"error": "The exploration could not be imported."})
+                return
+            except Exception:
+                _LOG.exception("Exploration import failed")
+                self._send_json(500, {"error": "The exploration could not be imported."})
+                return
+            self._send_json(201 if created else 200, {"exploration": summary, "created": created})
+            return
+
         if path not in {"/api/plan", "/api/records"}:
             self._send_json(404, {"error": "Route not found."})
             return
@@ -463,23 +495,7 @@ class _PlannerHandler(BaseHTTPRequestHandler):
         media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if media_type != "application/json":
             raise InputValidationError("Content-Type must be application/json.")
-
-        raw_length = self.headers.get("Content-Length")
-        if raw_length is None:
-            raise InputValidationError("Content-Length is required.")
-        try:
-            length = int(raw_length)
-        except ValueError as exc:
-            raise InputValidationError("Content-Length must be a non-negative integer.") from exc
-        if length < 0:
-            raise InputValidationError("Content-Length must be a non-negative integer.")
-        if length > MAX_REQUEST_BYTES:
-            self._send_json(413, {"error": f"Request body exceeds the {MAX_REQUEST_BYTES}-byte limit."})
-            raise _ResponseAlreadySent
-
-        body = self.rfile.read(length)
-        if len(body) != length:
-            raise InputValidationError("Request body ended before Content-Length bytes were received.")
+        body = self._read_request_body(MAX_REQUEST_BYTES)
         try:
             text = body.decode("utf-8")
             return json.loads(
@@ -491,6 +507,40 @@ class _PlannerHandler(BaseHTTPRequestHandler):
             raise InputValidationError("Request body must be UTF-8 JSON.") from exc
         except json.JSONDecodeError as exc:
             raise InputValidationError(f"invalid JSON: {exc.msg}") from exc
+
+    def _read_exploration_body(self) -> bytes:
+        content_type = self.headers.get("Content-Type", "")
+        parts = content_type.split(";")
+        if parts[0].strip().lower() != "application/x-ndjson":
+            raise InputValidationError("Content-Type must be application/x-ndjson.")
+        charset_seen = False
+        for part in parts[1:]:
+            name, separator, value = part.partition("=")
+            charset = value.strip().strip('"').lower()
+            if not separator or name.strip().lower() != "charset" or charset_seen or charset != "utf-8":
+                raise InputValidationError(
+                    "Content-Type may only include the charset=utf-8 parameter."
+                )
+            charset_seen = True
+        return self._read_request_body(MAX_EXPLORATION_BYTES)
+
+    def _read_request_body(self, maximum_bytes: int) -> bytes:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise InputValidationError("Content-Length is required.")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise InputValidationError("Content-Length must be a non-negative integer.") from exc
+        if length < 0:
+            raise InputValidationError("Content-Length must be a non-negative integer.")
+        if length > maximum_bytes:
+            self._send_json(413, {"error": f"Request body exceeds the {maximum_bytes}-byte limit."})
+            raise _ResponseAlreadySent
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise InputValidationError("Request body ended before Content-Length bytes were received.")
+        return body
 
     def _send_json(self, status: int, payload: Mapping[str, Any]) -> None:
         encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")

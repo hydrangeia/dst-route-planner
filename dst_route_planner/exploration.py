@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import threading
 import time
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,6 +44,14 @@ class CorruptExplorationError(ExplorationError):
 
 class ExplorationLockError(OSError):
     """Raised when another process holds a journal lock for too long."""
+
+
+class ExplorationConflictError(ExplorationError):
+    """Raised when a different replay already uses the imported identity."""
+
+
+class ExplorationTooLargeError(ExplorationError):
+    """Raised when an import exceeds replay size or frame limits."""
 
 
 @dataclass(frozen=True)
@@ -141,6 +151,26 @@ def _metadata_summary(
         byte_count=metadata.complete_size,
         status=status,
     )
+
+
+def _extract_import_id(raw: bytes) -> str | None:
+    """Return a syntactically valid header ID so the shared reader can validate it."""
+    first_line = raw.split(b"\n", 1)[0]
+    try:
+        header = json.loads(
+            first_line.decode("utf-8"),
+            object_pairs_hook=_object_no_duplicates,
+            parse_constant=ExplorationStore._reject_constant,
+            parse_float=ExplorationStore._parse_finite_float,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(header, dict):
+        return None
+    try:
+        return ExplorationStore.normalize_id(header.get("id"))
+    except InvalidExplorationIdError:
+        return None
 
 
 class ExplorationStore:
@@ -244,6 +274,130 @@ class ExplorationStore:
             )
             self._metadata_cache[journal_id] = updated
             return _metadata_summary(updated)
+
+    def import_bytes(self, raw: bytes) -> tuple[dict[str, Any], bool]:
+        """Validate and atomically import one complete JSONL replay."""
+        if not isinstance(raw, bytes):
+            raise CorruptExplorationError("replay body must be bytes.")
+        if len(raw) > MAX_EXPLORATION_BYTES:
+            raise ExplorationTooLargeError("exploration exceeds the configured size limit.")
+        if not raw:
+            raise CorruptExplorationError("journal is empty.")
+        normalized = raw if raw.endswith(b"\n") else raw + b"\n"
+        if len(normalized) > MAX_EXPLORATION_BYTES:
+            raise ExplorationTooLargeError("exploration exceeds the configured size limit.")
+
+        # Terminate the final input line before using the journal reader. That
+        # preserves its recovery behavior for interrupted on-disk appends while
+        # ensuring an invalid imported tail cannot be silently ignored.
+        header_id = _extract_import_id(normalized)
+        expected_id = header_id if header_id is not None else ""
+        header, frames, complete_size = self._read_journal_bytes(normalized, expected_id)
+        if not frames:
+            raise CorruptExplorationError("journal must contain at least one frame.")
+        if len(frames) > MAX_EXPLORATION_FRAMES:
+            raise ExplorationTooLargeError("exploration exceeds the configured frame limit.")
+        for frame in frames:
+            _captured_at_timestamp(frame["snapshot"]["captured_at"])
+        if complete_size != len(normalized):
+            raise CorruptExplorationError("journal contains an incomplete line.")
+
+        journal_id = header["id"]
+        path = self._journal_path(journal_id)
+        with self._lock, self._journal_file_lock(journal_id):
+            self.directory.mkdir(parents=True, exist_ok=True)
+            if path.is_symlink():
+                raise ExplorationConflictError("an exploration already exists at this identity.")
+            if path.exists():
+                return self._import_existing(path, journal_id, header, frames), False
+
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=self.directory,
+                    prefix=f".{journal_id}.import-",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    temporary.write(normalized)
+                    temporary.flush()
+                    os.fsync(temporary.fileno())
+                try:
+                    if os.name == "nt":
+                        # Windows rename is atomic and fails when the destination
+                        # already exists.
+                        os.rename(temporary_path, path)
+                        temporary_path = None
+                    else:
+                        # A hard link publishes the fully written file atomically
+                        # and cannot replace a file created by another process.
+                        os.link(temporary_path, path)
+                except FileExistsError:
+                    if path.is_symlink():
+                        raise ExplorationConflictError(
+                            "an exploration already exists at this identity."
+                        )
+                    return self._import_existing(path, journal_id, header, frames), False
+                finally:
+                    if temporary_path is not None:
+                        try:
+                            temporary_path.unlink()
+                        except OSError:
+                            pass
+
+                stat = path.stat()
+                metadata = _JournalMetadata(
+                    header=header,
+                    frame_count=len(frames),
+                    started_at=frames[0]["received_at"],
+                    last_captured_at=_captured_at_timestamp(
+                        frames[-1]["snapshot"]["captured_at"]
+                    ),
+                    last_sequence=frames[-1]["snapshot"]["sequence"],
+                    complete_size=len(normalized),
+                    file_size=stat.st_size,
+                    mtime_ns=stat.st_mtime_ns,
+                )
+                self._metadata_cache[journal_id] = metadata
+                return _metadata_summary(metadata), True
+            finally:
+                if temporary_path is not None:
+                    try:
+                        temporary_path.unlink()
+                    except OSError:
+                        pass
+
+    def _import_existing(
+        self,
+        path: Path,
+        journal_id: str,
+        imported_header: dict[str, Any],
+        imported_frames: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if path.is_symlink():
+            raise ExplorationConflictError("an exploration already exists at this identity.")
+        try:
+            metadata = self._read_metadata(path, journal_id)
+            with path.open("rb") as journal:
+                existing = journal.read(metadata.complete_size)
+            stat = path.stat()
+            if (stat.st_size, stat.st_mtime_ns) != (metadata.file_size, metadata.mtime_ns):
+                self._metadata_cache.pop(journal_id, None)
+                raise CorruptExplorationError("journal changed while it was being compared.")
+            if len(existing) != metadata.complete_size:
+                raise CorruptExplorationError("journal ended before its complete content was read.")
+            existing_header, existing_frames, _ = self._read_journal_bytes(existing, journal_id)
+        except (OSError, CorruptExplorationError) as exc:
+            raise ExplorationConflictError(
+                "an unreadable exploration already exists at this identity."
+            ) from exc
+        if existing_header != imported_header or existing_frames != imported_frames:
+            raise ExplorationConflictError(
+                "a different exploration already exists for this world and session."
+            )
+        return _metadata_summary(metadata)
 
     def summary_for_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
         """Return a matching journal summary without changing its file."""
@@ -414,6 +568,7 @@ class ExplorationStore:
                         line.decode("utf-8"),
                         object_pairs_hook=_object_no_duplicates,
                         parse_constant=self._reject_constant,
+                        parse_float=self._parse_finite_float,
                     )
                 )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
@@ -467,6 +622,13 @@ class ExplorationStore:
             previous_sequence = snapshot["sequence"]
             frames.append(value)
         return header, frames, complete_size
+
+    @staticmethod
+    def _parse_finite_float(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("non-finite JSON number")
+        return number
 
     @staticmethod
     def _reject_constant(value: str) -> None:

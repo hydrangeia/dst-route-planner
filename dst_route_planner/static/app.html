@@ -70,6 +70,8 @@
     .record-message.error { color: #823c31; }
     .records-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 17px; }
     .records-head h3 { margin: 0; color: #53665a; font-size: 13px; }
+    .records-head-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+    .exploration-import-status.error { color: #823c31; }
     .records-status { margin: 7px 0; color: var(--muted); font-size: 12px; }
     .record-list { display: grid; gap: 7px; }
     .live-replay { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 9px; }
@@ -361,7 +363,13 @@
           <ol class="seen-landmarks-list" id="seenLandmarksList"></ol>
         </div>
       </div>
-      <div class="records-head"><h3>已保存回放</h3><button class="button" id="refreshExplorationsButton" type="button">刷新回放</button></div>
+      <div class="records-head"><h3>已保存回放</h3><div class="records-head-actions">
+        <button class="button" id="importExplorationButton" type="button">导入回放</button>
+        <input class="sr-only" id="explorationImportFile" type="file" accept=".jsonl,application/x-ndjson" aria-label="选择探索回放 JSONL 文件">
+        <button class="button" id="viewImportedExplorationButton" type="button" hidden>查看导入轨迹</button>
+        <button class="button" id="refreshExplorationsButton" type="button">刷新回放</button>
+      </div></div>
+      <div class="records-status exploration-import-status" id="explorationImportStatus" role="status" aria-live="polite"></div>
       <div class="records-status" id="explorationsStatus" role="status" aria-live="polite">正在读取探索回放…</div>
       <div class="record-list exploration-list" id="explorationList"></div>
     </section>
@@ -479,7 +487,9 @@
       result: null, revision: 0, requestId: 0, controller: null, loading: false,
       records: [], recordsRequestId: 0, recordsLoading: false, recordOpenRequestId: 0,
       explorations: [], explorationsRequestId: 0, explorationsLoading: false,
-      explorationsRefreshPending: false, explorationIdsSeen: new Set(), liveRecording: null,
+      explorationsRefreshPending: false, explorationsListRevision: 0,
+      importedExplorationSummary: null, importingExploration: false,
+      explorationIdsSeen: new Set(), liveRecording: null,
       recordOpening: false, savingRecord: false, activeRecordId: null, activeRecordName: null,
       formGeneration: 0
     };
@@ -500,6 +510,10 @@
       activeRecordStatus: document.getElementById("activeRecordStatus"), recordsStatus: document.getElementById("recordsStatus"),
       recordList: document.getElementById("recordList"),
       refreshExplorations: document.getElementById("refreshExplorationsButton"),
+      importExploration: document.getElementById("importExplorationButton"),
+      explorationImportFile: document.getElementById("explorationImportFile"),
+      viewImportedExploration: document.getElementById("viewImportedExplorationButton"),
+      explorationImportStatus: document.getElementById("explorationImportStatus"),
       explorationsStatus: document.getElementById("explorationsStatus"),
       explorationList: document.getElementById("explorationList"),
       trailSvg: document.getElementById("trailSvg"), trailStatus: document.getElementById("trailStatus"),
@@ -2174,6 +2188,10 @@
       el.saveAsNewRecord.disabled = state.savingRecord;
       el.refreshRecords.disabled = state.recordsLoading || state.recordOpening;
       el.refreshExplorations.disabled = state.explorationsLoading;
+      el.importExploration.disabled = state.importingExploration;
+      el.explorationImportFile.disabled = state.importingExploration;
+      el.viewImportedExploration.hidden = !state.importedExplorationSummary;
+      el.importExploration.textContent = state.importingExploration ? "正在导入…" : "导入回放";
       el.saveRecord.textContent = state.savingRecord ? "正在保存…" : "保存记录";
       el.saveAsNewRecord.textContent = state.savingRecord ? "正在保存…" : "另存为新记录";
       el.refreshRecords.textContent = state.recordsLoading ? "正在刷新…" : "刷新列表";
@@ -2246,6 +2264,68 @@
           esc(summary.id) + '">查看轨迹</button><a class="button" href="' + esc(href) + '" download>下载 JSONL</a></div></article>';
       }).join("");
     }
+    const MAX_EXPLORATION_IMPORT_BYTES = 32 * 1024 * 1024;
+    function setExplorationImportStatus(message, kind = "info") {
+      el.explorationImportStatus.textContent = message;
+      el.explorationImportStatus.className = "records-status exploration-import-status" + (kind === "error" ? " error" : "");
+    }
+    async function importExplorationFile(file) {
+      if (state.importingExploration) return null;
+      const fileName = file && typeof file.name === "string" && file.name ? file.name : "所选文件";
+      if (!file || !Number.isSafeInteger(file.size) || file.size < 0) {
+        setExplorationImportStatus("无法读取“" + fileName + "”的文件大小。", "error");
+        return null;
+      }
+      if (file.size === 0) {
+        setExplorationImportStatus("导入失败：“" + fileName + "”是空文件。", "error");
+        return null;
+      }
+      if (file.size > MAX_EXPLORATION_IMPORT_BYTES) {
+        setExplorationImportStatus("导入失败：“" + fileName + "”超过 32 MiB 上限。", "error");
+        return null;
+      }
+      const viewRevision = trailState.revision;
+      state.importingExploration = true;
+      updateRecordControls();
+      setExplorationImportStatus("正在导入“" + fileName + "”…");
+      try {
+        const response = await fetch("/api/explorations/import", {
+          method: "POST",
+          headers: { "Accept": "application/json", "Content-Type": "application/x-ndjson" },
+          body: file
+        });
+        const result = await readJsonResponse(response);
+        const summary = normalizeExplorationSummary(result && result.exploration);
+        if (!result || (response.status !== 200 && response.status !== 201) ||
+            typeof result.created !== "boolean" || !summary ||
+            ((response.status === 201) !== result.created)) {
+          throw new Error("本地引擎返回的导入结果无法识别。");
+        }
+        state.importedExplorationSummary = summary;
+        state.explorationsListRevision += 1;
+        state.explorations = [summary, ...state.explorations.filter(item => item.id !== summary.id)].slice(0, 10);
+        state.explorationIdsSeen.add(summary.id);
+        renderExplorations();
+        if (state.explorationsLoading) state.explorationsRefreshPending = true;
+        updateRecordControls();
+        const outcome = result.created ? "已导入新回放" : "这个回放已存在，已关联到已有记录";
+        if (trailState.revision === viewRevision) {
+          setExplorationImportStatus(outcome + "：“" + fileName + "”，共 " + summary.frame_count + " 帧，正在打开轨迹。");
+          openExplorationTrail(summary);
+        } else {
+          setExplorationImportStatus(outcome + "：“" + fileName + "”，共 " + summary.frame_count +
+            " 帧。当前视图已变化，可点“查看导入轨迹”打开。");
+        }
+        return summary;
+      } catch (error) {
+        setExplorationImportStatus("导入失败：“" + fileName + "”。" +
+          (error && error.message ? error.message : "请检查 JSONL 文件后重试。"), "error");
+        return null;
+      } finally {
+        state.importingExploration = false;
+        updateRecordControls();
+      }
+    }
     function queueExplorationsRefresh() {
       if (state.explorationsLoading) {
         state.explorationsRefreshPending = true;
@@ -2259,6 +2339,7 @@
         return;
       }
       const requestId = ++state.explorationsRequestId;
+      const listRevision = state.explorationsListRevision;
       state.explorationsLoading = true;
       el.explorationsStatus.textContent = "正在读取探索回放…";
       updateRecordControls();
@@ -2266,11 +2347,16 @@
         const response = await fetch("/api/explorations", { headers: { "Accept": "application/json" } });
         const result = await readJsonResponse(response);
         if (requestId !== state.explorationsRequestId) return;
+        if (listRevision !== state.explorationsListRevision) {
+          state.explorationsRefreshPending = true;
+          return;
+        }
         if (!result || !Array.isArray(result.explorations)) throw new Error("探索回放列表格式无法识别。");
         const received = result.explorations;
         const valid = received.map(normalizeExplorationSummary).filter(Boolean);
         const invalidCount = received.length - valid.length;
         state.explorations = valid.slice(0, 10);
+        state.explorationsListRevision += 1;
         for (const summary of state.explorations) state.explorationIdsSeen.add(summary.id);
         renderExplorations();
         let status = valid.length
@@ -2924,6 +3010,15 @@
     el.saveAsNewRecord.addEventListener("click", () => saveRecord(true));
     el.refreshRecords.addEventListener("click", () => refreshRecords());
     el.refreshExplorations.addEventListener("click", () => refreshExplorations());
+    el.importExploration.addEventListener("click", () => el.explorationImportFile.click());
+    el.explorationImportFile.addEventListener("change", () => {
+      const file = el.explorationImportFile.files?.[0];
+      el.explorationImportFile.value = "";
+      if (file) void importExplorationFile(file);
+    });
+    el.viewImportedExploration.addEventListener("click", () => {
+      if (state.importedExplorationSummary) openExplorationTrail(state.importedExplorationSummary);
+    });
     el.refreshTrail.addEventListener("click", refreshSelectedTrail);
     el.terrainToggle.addEventListener("change", renderTrail);
     el.terrainConnectionToggle.addEventListener("change", renderTrail);

@@ -63,6 +63,20 @@ def _post(base_url: str, payload: bytes | dict, path: str = "/api/plan"):
         return response.code, response.headers, json.loads(response.read().decode("utf-8"))
 
 
+def _post_import(base_url: str, payload: bytes, content_type: str = "application/x-ndjson"):
+    request = Request(
+        base_url + "/api/explorations/import",
+        data=payload,
+        headers={"Content-Type": content_type},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            return response.status, response.headers, json.loads(response.read().decode("utf-8"))
+    except HTTPError as response:
+        return response.code, response.headers, json.loads(response.read().decode("utf-8"))
+
+
 def test_create_server_binds_to_loopback_and_serves_static_page(local_server) -> None:
     base_url, server = local_server
     status, headers, body = _get(base_url, "/")
@@ -1052,3 +1066,93 @@ def test_exploration_trail_api_handles_empty_invalid_missing_and_bad_journals(
     assert oversized_status == 500
     assert oversized_response == {"error": "The exploration trail could not be read."}
     assert journal_path.read_bytes() == corrupt
+
+
+def _replay_import_bytes(snapshot: dict) -> bytes:
+    from dst_route_planner.exploration import exploration_id
+
+    journal_id = exploration_id(
+        snapshot["world_id"], snapshot["world_kind"], snapshot["session_id"]
+    )
+    header = {
+        "replay_version": 1,
+        "id": journal_id,
+        "world_id": snapshot["world_id"],
+        "world_kind": snapshot["world_kind"],
+        "session_id": snapshot["session_id"],
+    }
+    frame = {
+        "replay_version": 1,
+        "received_at": "2026-02-01T00:00:01Z",
+        "target": "panflute",
+        "seed": 0,
+        "snapshot": snapshot,
+    }
+    return b"\n".join(
+        json.dumps(value, separators=(",", ":")).encode("utf-8")
+        for value in (header, frame)
+    )
+
+
+def test_exploration_import_http_roundtrip_duplicate_conflict_and_trail(local_server) -> None:
+    base_url, server = local_server
+    _, _, demo = _get(base_url, "/api/demo")
+    snapshot = _live_snapshot(demo["directions"])
+    raw = _replay_import_bytes(snapshot)
+
+    status, _, created = _post_import(base_url, raw, "application/x-ndjson; charset=UTF-8")
+
+    assert status == 201
+    assert created["created"] is True
+    assert created["exploration"]["frame_count"] == 1
+    journal_id = created["exploration"]["id"]
+    download_status, _, download = _get(base_url, f"/api/explorations/{journal_id}")
+    assert download_status == 200
+    assert download.encode("utf-8") == raw + b"\n"
+    trail_status, _, trail = _get(base_url, f"/api/explorations/{journal_id}/trail")
+    assert trail_status == 200
+    assert trail["frame_count"] == 1
+    assert trail["points"][0]["x"] == snapshot["position"]["x"]
+    assert "player_anchor" not in trail["points"][0]
+    assert trail["terrain"]["tiles"] == []
+    assert server.exploration_store.get_bytes(journal_id) == raw + b"\n"
+
+    reformatted = b"\n".join(
+        json.dumps(value, sort_keys=True).encode("utf-8")
+        for value in (json.loads(line) for line in raw.splitlines())
+    )
+    duplicate_status, _, duplicate = _post_import(base_url, reformatted)
+    assert duplicate_status == 200
+    assert duplicate == {"exploration": created["exploration"], "created": False}
+    before_conflict = server.exploration_store.get_bytes(journal_id)
+    changed_frame = json.loads(raw.splitlines()[1])
+    changed_frame["target"] = "pigking"
+    conflict = raw.splitlines()[0] + b"\n" + json.dumps(changed_frame).encode("utf-8")
+    conflict_status, _, conflict_body = _post_import(base_url, conflict)
+    assert conflict_status == 409
+    assert "error" in conflict_body
+    assert server.exploration_store.get_bytes(journal_id) == before_conflict
+
+
+def test_exploration_import_http_validation_and_size_errors(local_server) -> None:
+    base_url, server = local_server
+    content_status, _, content_error = _post_import(base_url, b"{}", "application/json")
+    assert content_status == 400
+    assert "Content-Type" in content_error["error"]
+
+    invalid_status, _, invalid = _post_import(base_url, b"not-json")
+    assert invalid_status == 400
+    assert "error" in invalid
+    assert not server.exploration_store.directory.exists()
+
+    _, server = local_server
+    connection = http.client.HTTPConnection(*server.server_address[:2], timeout=5)
+    connection.putrequest("POST", "/api/explorations/import")
+    connection.putheader("Content-Type", "application/x-ndjson")
+    connection.putheader("Content-Length", str(32 * 1024 * 1024 + 1))
+    connection.endheaders()
+    response = connection.getresponse()
+    too_large = json.loads(response.read().decode("utf-8"))
+    assert response.status == 413
+    assert "limit" in too_large["error"]
+    connection.close()

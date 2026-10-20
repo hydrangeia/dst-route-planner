@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from dst_route_planner import app
-from dst_route_planner.exploration import CorruptExplorationError, ExplorationStore
+from dst_route_planner.exploration import (
+    CorruptExplorationError,
+    ExplorationConflictError,
+    ExplorationStore,
+    ExplorationTooLargeError,
+    exploration_id,
+)
 
 
 def _snapshot(
@@ -234,3 +240,189 @@ def test_frame_and_byte_limits_preserve_the_existing_download(tmp_path, monkeypa
     assert fourth["status"] == "limit_reached"
     assert fourth["frame_count"] == 2
     assert path.read_bytes() == at_frame_limit
+
+
+def _import_replay(*sequences: int, world_id: str = "import-world", session_id: str = "import-session") -> bytes:
+    world_kind = "forest"
+    journal_id = exploration_id(world_id, world_kind, session_id)
+    header = {
+        "replay_version": 1,
+        "id": journal_id,
+        "world_id": world_id,
+        "world_kind": world_kind,
+        "session_id": session_id,
+    }
+    rows = [header]
+    for sequence in sequences:
+        rows.append(
+            {
+                "replay_version": 1,
+                "received_at": f"2026-02-01T00:00:{sequence:02d}Z",
+                "target": "panflute",
+                "seed": 7,
+                "snapshot": _snapshot(
+                    sequence, world_id=world_id, world_kind=world_kind, session_id=session_id
+                ),
+            }
+        )
+    return b"\n".join(json.dumps(row, separators=(",", ":")).encode("utf-8") for row in rows)
+
+
+def test_import_roundtrips_old_replays_and_allows_capture_to_continue(tmp_path) -> None:
+    store = ExplorationStore(tmp_path)
+    raw = _import_replay(1, 2)
+
+    summary, created = store.import_bytes(raw)
+
+    assert created is True
+    assert summary["frame_count"] == 2
+    assert summary["status"] == "recording"
+    imported = raw + b"\n"
+    assert store.get_bytes(summary["id"]) == imported
+    assert store.list_explorations() == [summary]
+    frames = [json.loads(line) for line in imported.splitlines()][1:]
+    assert all("terrain" not in frame["snapshot"] for frame in frames)
+    assert all("player_anchor" not in frame["snapshot"] for frame in frames)
+
+    continued = store.capture(
+        _snapshot(3, world_id="import-world", session_id="import-session"),
+        target="panflute",
+        seed=7,
+    )
+    assert continued["frame_count"] == 3
+    assert [
+        json.loads(line).get("snapshot", {}).get("sequence")
+        for line in store.get_bytes(summary["id"]).splitlines()[1:]
+    ] == [1, 2, 3]
+
+
+def test_import_is_semantically_idempotent_and_conflicts_never_replace(tmp_path) -> None:
+    store = ExplorationStore(tmp_path)
+    raw = _import_replay(1)
+    first, created = store.import_bytes(raw)
+    path = tmp_path / f"{first['id']}.jsonl"
+    original = path.read_bytes()
+
+    rows = [json.loads(line) for line in (raw + b"\n").splitlines()]
+    reformatted = b"\n".join(
+        json.dumps(row, ensure_ascii=True, sort_keys=True).encode("utf-8") for row in rows
+    )
+    duplicate, duplicate_created = store.import_bytes(reformatted)
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate == first
+    assert path.read_bytes() == original
+
+    changed = json.loads((raw + b"\n").splitlines()[1])
+    changed["target"] = "pigking"
+    conflicting = b"\n".join(
+        [json.dumps(rows[0]).encode(), json.dumps(changed).encode()]
+    )
+    with pytest.raises(ExplorationConflictError):
+        store.import_bytes(conflicting)
+    assert path.read_bytes() == original
+
+
+def test_import_rejects_invalid_journals_without_leaving_files(tmp_path) -> None:
+    raw = _import_replay(1, 2)
+    rows = [json.loads(line) for line in (raw + b"\n").splitlines()]
+    wrong_identity = copy.deepcopy(rows)
+    wrong_identity[0]["id"] = "0" * 64
+    mixed_session = copy.deepcopy(rows)
+    mixed_session[2]["snapshot"]["session_id"] = "other-session"
+    decreasing = copy.deepcopy(rows)
+    decreasing[2]["snapshot"]["sequence"] = 1
+    unsupported = copy.deepcopy(rows)
+    unsupported[1]["replay_version"] = 2
+
+    cases = [
+        raw + b"\nnot-json",
+        b"\n".join(json.dumps(row).encode() for row in wrong_identity),
+        b"\n".join(json.dumps(row).encode() for row in mixed_session),
+        b"\n".join(json.dumps(row).encode() for row in decreasing),
+        b"\n".join(json.dumps(row).encode() for row in unsupported),
+        json.dumps(rows[0]).encode() + b"\n",
+        b'{"replay_version":1,"replay_version":1}\n',
+        b"\n".join(
+            json.dumps(row).encode()
+            for row in [{**rows[0], "replay_version": 2}, *rows[1:]]
+        ),
+    ]
+    for invalid in cases:
+        store = ExplorationStore(tmp_path / str(len(list(tmp_path.iterdir()))))
+        with pytest.raises(CorruptExplorationError):
+            store.import_bytes(invalid)
+        assert not store.directory.exists()
+
+
+def test_import_limits_frames_and_bytes_without_partial_files(tmp_path, monkeypatch) -> None:
+    import dst_route_planner.exploration as exploration
+
+    raw = _import_replay(1, 2)
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 1)
+    store = ExplorationStore(tmp_path / "frames")
+    with pytest.raises(ExplorationTooLargeError):
+        store.import_bytes(raw)
+    assert not store.directory.exists()
+
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 10_000)
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_BYTES", len(raw))
+    byte_store = ExplorationStore(tmp_path / "bytes")
+    with pytest.raises(ExplorationTooLargeError):
+        byte_store.import_bytes(raw)
+    assert not byte_store.directory.exists()
+
+
+def test_import_rejects_non_finite_numbers_and_duplicate_keys(tmp_path) -> None:
+    raw = _import_replay(1)
+    non_finite = raw.replace(b'"seed":7', b'"seed":7,"plan":{"score":1e999}')
+    duplicate_key = raw.replace(b'"seed":7', b'"seed":7,"seed":7')
+    for invalid in (non_finite, duplicate_key):
+        with pytest.raises(CorruptExplorationError):
+            ExplorationStore(tmp_path / str(len(list(tmp_path.iterdir())))).import_bytes(invalid)
+
+
+def test_concurrent_imports_for_one_identity_publish_only_one_file(tmp_path) -> None:
+    raw = _import_replay(1, 2)
+    stores = [ExplorationStore(tmp_path) for _ in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        outcomes = list(executor.map(lambda store: store.import_bytes(raw), stores))
+
+    assert sum(created for _, created in outcomes) == 1
+    assert {summary["id"] for summary, _ in outcomes} == {
+        exploration_id("import-world", "forest", "import-session")
+    }
+    assert len(list(tmp_path.glob("*.jsonl"))) == 1
+    assert len(list(tmp_path.glob("*.tmp"))) == 0
+
+
+def test_import_never_replaces_a_symlink(tmp_path) -> None:
+    raw = _import_replay(1)
+    rows = [json.loads(line) for line in (raw + b"\n").splitlines()]
+    journal_id = rows[0]["id"]
+    store = ExplorationStore(tmp_path / "store")
+    store.directory.mkdir()
+    target = tmp_path / "outside.jsonl"
+    target.write_bytes(b"leave this alone")
+    link = store._journal_path(journal_id)
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available on this machine")
+
+    with pytest.raises(ExplorationConflictError):
+        store.import_bytes(raw)
+    assert target.read_bytes() == b"leave this alone"
+
+
+def test_import_rejects_unrepresentable_capture_time_before_writing(tmp_path) -> None:
+    rows = [json.loads(line) for line in (_import_replay(1) + b"\n").splitlines()]
+    rows[1]["snapshot"]["captured_at"] = 1e20
+    invalid = b"\n".join(json.dumps(row).encode() for row in rows)
+    directory = tmp_path / "unrepresentable"
+    store = ExplorationStore(directory)
+
+    with pytest.raises(CorruptExplorationError):
+        store.import_bytes(invalid)
+
+    assert not directory.exists()

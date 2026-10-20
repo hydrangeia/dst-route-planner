@@ -24,7 +24,8 @@ function element(id) {
     value: "", checked: false, disabled: false, textContent: "", innerHTML: "",
     className: "", href: "", hidden: true, listeners: Object.create(null),
     classList: {add() {}, remove() {}, toggle() {}, contains() { return false; }},
-    querySelectorAll() { return []; }, addEventListener(name, handler) { this.listeners[name] = handler; },
+    querySelectorAll() { return []; }, click() { this.clickCount = (this.clickCount || 0) + 1; },
+    addEventListener(name, handler) { this.listeners[name] = handler; },
     removeAttribute(name) { if (name === "href") this.href = ""; }
   });
   return elements.get(id);
@@ -690,6 +691,205 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   await run('refreshExplorations({quiet:true})');
   assert.equal(run("state.explorations.length"), 0, "created_at must not substitute for started_at");
   assert.ok(element("explorationsStatus").textContent.includes("格式不完整"));
+
+  assert.ok(appHtml.includes('id="importExplorationButton"') && appHtml.includes('id="explorationImportFile"'));
+  assert.ok(appHtml.includes('accept=".jsonl,application/x-ndjson"'), "replay import uses its own JSONL picker");
+  assert.ok(appHtml.includes('id="viewImportedExplorationButton"'), "the most recently imported replay has a dedicated view action");
+  let rejectedImportRequests = 0;
+  context.fetch = async () => { rejectedImportRequests += 1; throw new Error("size checks should happen before fetch"); };
+  context.emptyImportFile = {name: "empty.jsonl", size: 0};
+  context.largeImportFile = {name: "large.jsonl", size: 32 * 1024 * 1024 + 1};
+  assert.equal(await run("importExplorationFile(emptyImportFile)"), null);
+  assert.ok(element("explorationImportStatus").textContent.includes("空文件"));
+  assert.equal(await run("importExplorationFile(largeImportFile)"), null);
+  assert.ok(element("explorationImportStatus").textContent.includes("32 MiB"));
+  assert.equal(rejectedImportRequests, 0, "empty and oversized files are rejected before upload");
+
+  const importedOnce = replaySummary("0".repeat(64), {worldId: "imported-world", session: "imported-session", frames: 2});
+  const rawImportFile = {name: "run.jsonl", size: 37};
+  const importRequests = [];
+  function importResponse(status, summary, created) {
+    return {ok: status >= 200 && status < 300, status, json: async () => ({exploration: summary, created})};
+  }
+  context.fetch = async (url, options = {}) => {
+    if (url === "/api/explorations/import") {
+      importRequests.push({url, options});
+      return importResponse(201, importedOnce, true);
+    }
+    if (url === "/api/explorations/" + importedOnce.id + "/trail") {
+      return apiResponse(trailPayload(importedOnce, [trailPoint(0, 10, 5, 9)]));
+    }
+    throw new Error("unexpected import fetch " + url);
+  };
+  run('state.target="moonbase";state.seed="41";el.target.value="moonbase";el.seed.value="41";el.recordName.value="keep this name";el.worldNote.value="keep this world";state.dirs.north.note="keep observation";live.following=true;liveEl.follow.checked=true;trailState.mode="live";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;');
+  context.rawImportFile = rawImportFile;
+  const importedResult = await run("importExplorationFile(rawImportFile)");
+  assert.equal(importedResult.id, importedOnce.id);
+  assert.equal(importRequests.length, 1);
+  assert.equal(importRequests[0].options.method, "POST");
+  assert.equal(importRequests[0].options.headers["Accept"], "application/json");
+  assert.equal(importRequests[0].options.headers["Content-Type"], "application/x-ndjson");
+  assert.equal(importRequests[0].options.body, rawImportFile, "the original File/Blob object is sent without text decoding or re-encoding");
+  assert.equal(run("trailState.mode"), "history", "a successful import opens its trail when the view revision is unchanged");
+  assert.equal(run("trailState.id"), importedOnce.id);
+  assert.equal(run("live.following"), false, "opening an imported trail pauses live following");
+  assert.equal(element("viewImportedExplorationButton").hidden, false);
+  assert.equal(run("state.target"), "moonbase");
+  assert.equal(run("state.seed"), "41");
+  assert.equal(element("recordName").value, "keep this name");
+  assert.equal(element("worldNote").value, "keep this world");
+  assert.equal(run("state.dirs.north.note"), "keep observation");
+  await settle();
+  assert.equal(run("trailState.points[0].x"), 5);
+
+  context.fetch = async (url, options = {}) => {
+    if (url === "/api/explorations/import") {
+      assert.equal(options.body, rawImportFile, "a repeat import also sends its original file object");
+      return importResponse(200, importedOnce, false);
+    }
+    if (url === "/api/explorations/" + importedOnce.id + "/trail") {
+      return apiResponse(trailPayload(importedOnce, [trailPoint(0, 10, 5, 9)]));
+    }
+    throw new Error("unexpected duplicate import fetch " + url);
+  };
+  const duplicateResult = await run("importExplorationFile(rawImportFile)");
+  assert.equal(duplicateResult.id, importedOnce.id);
+  assert.ok(element("explorationImportStatus").textContent.includes("已存在"), "HTTP 200 duplicate imports are successful");
+  assert.equal(run('state.explorations.filter(item => item.id === "' + importedOnce.id + '").length'), 1);
+
+  const liveBeforeFailure = replaySummary("8".repeat(64), {worldId: "live-import-world", session: "live-import-session"});
+  run('live.following=true;liveEl.follow.checked=true;trailState.mode="live";trailState.id="' + liveBeforeFailure.id +
+    '";trailState.revision++;trailState.identity=explorationReplayIdentity(' + JSON.stringify(liveBeforeFailure) + ');trailState.summary=' +
+    JSON.stringify(liveBeforeFailure) + ';state.target="panflute";state.seed="99";el.target.value="panflute";el.seed.value="99";' +
+    'el.recordName.value="record preserved";el.worldNote.value="note preserved";el.file.value="manual-observations.json";');
+  element("fileInput").files = [{name: "manual-observations.json"}];
+  const failedViewRevision = run("trailState.revision");
+  const failedExplorations = JSON.parse(run("JSON.stringify(state.explorations.map(item=>item.id))"));
+  context.failImportFile = {name: '<img src=x onerror="bad">.jsonl', size: 20};
+  context.fetch = async (url) => {
+    assert.equal(url, "/api/explorations/import");
+    return {ok: false, status: 409, json: async () => ({error: '<b>世界冲突</b>'})};
+  };
+  assert.equal(await run("importExplorationFile(failImportFile)"), null);
+  assert.equal(run("live.following"), true, "a failed import leaves live following active");
+  assert.equal(run("trailState.mode"), "live");
+  assert.equal(run("trailState.id"), liveBeforeFailure.id);
+  assert.equal(run("trailState.revision"), failedViewRevision);
+  assert.equal(element("liveFollow").checked, true);
+  assert.equal(element("fileInput").value, "manual-observations.json");
+  assert.equal(element("fileInput").files[0].name, "manual-observations.json");
+  assert.equal(run("state.target"), "panflute");
+  assert.equal(run("state.seed"), "99");
+  assert.equal(element("recordName").value, "record preserved");
+  assert.equal(element("worldNote").value, "note preserved");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(state.explorations.map(item=>item.id))")), failedExplorations);
+  assert.ok(element("explorationImportStatus").textContent.includes("<b>世界冲突</b>"),
+    "service errors and filenames are written as text, never treated as HTML");
+
+  const lateImport = replaySummary("6".repeat(64), {worldId: "late-import", session: "late-import-session", frames: 3});
+  const viewChosenDuringUpload = replaySummary("7".repeat(64), {worldId: "chosen-world", session: "chosen-session"});
+  let resolveLateImport;
+  context.lateImportFile = {name: "late.jsonl", size: 48};
+  context.fetch = (url, options = {}) => {
+    if (url === "/api/explorations/import") {
+      return new Promise(resolve => { resolveLateImport = () => resolve(importResponse(201, lateImport, true)); });
+    }
+    if (url === "/api/explorations/" + viewChosenDuringUpload.id + "/trail") {
+      return Promise.resolve(apiResponse(trailPayload(viewChosenDuringUpload, [trailPoint(0, 10, 30, 40)])));
+    }
+    if (url === "/api/explorations/" + lateImport.id + "/trail") {
+      return Promise.resolve(apiResponse(trailPayload(lateImport, [trailPoint(0, 10, 60, 70)])));
+    }
+    throw new Error("unexpected late import fetch " + url);
+  };
+  const lateImportPending = run("importExplorationFile(lateImportFile)");
+  const chosenDuringUpload = run("openExplorationTrail(" + JSON.stringify(viewChosenDuringUpload) + ")");
+  assert.equal(chosenDuringUpload, true);
+  const chosenViewRevision = run("trailState.revision");
+  resolveLateImport();
+  assert.equal((await lateImportPending).id, lateImport.id);
+  assert.equal(run("trailState.id"), viewChosenDuringUpload.id, "a late successful import does not take over a newer view");
+  assert.equal(run("trailState.revision"), chosenViewRevision);
+  assert.ok(element("explorationImportStatus").textContent.includes("当前视图已变化"));
+  const latestTenWithoutImport = Array.from({length: 10}, (_, index) =>
+    replaySummary((index + 10).toString(16).padStart(64, "0"), {worldId: "recent-" + index}));
+  run("state.explorations=" + JSON.stringify(latestTenWithoutImport) + ";renderExplorations()");
+  assert.equal(run('state.explorations.some(item => item.id === "' + lateImport.id + '")'), false,
+    "the imported replay can be absent from the latest ten");
+  assert.ok(!element("explorationList").innerHTML.includes(lateImport.id));
+  element("viewImportedExplorationButton").listeners.click();
+  assert.equal(run("trailState.id"), lateImport.id,
+    "the dedicated action opens the imported summary even when it is not in the recent list");
+  await settle();
+
+  const repeatedFile = {name: "same-file.jsonl", size: 12};
+  const repeatedSummary = replaySummary("a".repeat(64), {worldId: "repeat-world", session: "repeat-session"});
+  const repeatedBodies = [];
+  let resolveRepeatedFirst;
+  let repeatedUploadCount = 0;
+  context.fetch = (url, options = {}) => {
+    if (url === "/api/explorations/import") {
+      repeatedBodies.push(options.body);
+      repeatedUploadCount += 1;
+      if (repeatedUploadCount === 1) {
+        return new Promise(resolve => { resolveRepeatedFirst = () => resolve(importResponse(200, repeatedSummary, false)); });
+      }
+      return Promise.resolve(importResponse(200, repeatedSummary, false));
+    }
+    if (url === "/api/explorations/" + repeatedSummary.id + "/trail") {
+      return Promise.resolve(apiResponse(trailPayload(repeatedSummary, [trailPoint(0, 10, 11, 12)])));
+    }
+    throw new Error("unexpected repeated import fetch " + url);
+  };
+  element("importExplorationButton").listeners.click();
+  assert.equal(element("explorationImportFile").clickCount, 1, "the import button opens its separate file picker");
+  context.repeatedFile = repeatedFile;
+  element("explorationImportFile").files = [repeatedFile];
+  element("explorationImportFile").value = "selected-file";
+  element("explorationImportFile").listeners.change();
+  assert.equal(element("explorationImportFile").value, "", "the picker clears its value after selection");
+  assert.equal(run("state.importingExploration"), true);
+  assert.equal(await run("importExplorationFile(repeatedFile)"), null, "a concurrent second upload is ignored");
+  assert.equal(repeatedUploadCount, 1, "only one upload starts at a time");
+  resolveRepeatedFirst();
+  await settle();
+  assert.equal(element("importExplorationButton").disabled, false);
+  assert.equal(repeatedBodies[0], repeatedFile);
+  element("explorationImportFile").files = [repeatedFile];
+  element("explorationImportFile").value = "selected-file";
+  element("explorationImportFile").listeners.change();
+  assert.equal(element("explorationImportFile").value, "", "the same file can be selected again after completion");
+  await settle();
+  assert.equal(repeatedUploadCount, 2);
+  assert.equal(repeatedBodies[1], repeatedFile);
+
+  const refreshRaceImport = replaySummary("b".repeat(64), {worldId: "refresh-race", session: "refresh-session"});
+  const staleListSummary = replaySummary("c".repeat(64), {worldId: "old-list"});
+  let resolveStaleImportList;
+  let raceListRequests = 0;
+  context.fetch = (url, options = {}) => {
+    if (url === "/api/explorations") {
+      raceListRequests += 1;
+      if (raceListRequests === 1) {
+        return new Promise(resolve => { resolveStaleImportList = () => resolve(apiResponse({explorations: [staleListSummary]})); });
+      }
+      return Promise.resolve(apiResponse({explorations: [refreshRaceImport, staleListSummary]}));
+    }
+    if (url === "/api/explorations/import") return Promise.resolve(importResponse(201, refreshRaceImport, true));
+    if (url === "/api/explorations/" + refreshRaceImport.id + "/trail") {
+      return Promise.resolve(apiResponse(trailPayload(refreshRaceImport, [trailPoint(0, 10, 1, 2)])));
+    }
+    throw new Error("unexpected refresh race fetch " + url);
+  };
+  const pendingOldList = run('refreshExplorations({quiet:true})');
+  const racedImport = await run("importExplorationFile(" + JSON.stringify({name: "race.jsonl", size: 10}) + ")");
+  assert.equal(racedImport.id, refreshRaceImport.id);
+  resolveStaleImportList();
+  await pendingOldList;
+  await settle();
+  assert.ok(raceListRequests >= 2, "a refresh racing with import is repeated after the stale response");
+  assert.equal(run('state.explorations.some(item => item.id === "' + refreshRaceImport.id + '")'), true,
+    "a pre-import refresh response cannot remove the imported replay");
 
   const liveTrailId = "1".repeat(64);
   const liveTrailSummary = replaySummary(liveTrailId, {worldId: "trail-world", session: "trail-session", frames: 3});
