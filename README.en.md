@@ -34,7 +34,7 @@ python route_planner.py --check-live
 
 If your log lives elsewhere, use `--live-log "actual/path/client_log.txt"`. Explicit `--live-log auto` uses the same automatic discovery as the default. Leave live following unchecked for manual entry.
 
-Directions use fixed world coordinates: north is `+Z` and east is `+X`.
+Directions use fixed world coordinates: north is `+Z` and east is `+X`. The map opens fitted to all observed areas. Select “全图” (Full map) to restore that view, or “跟随位置” (Follow position) to keep the latest position in a local view; “放大” (Zoom in) and “缩小” (Zoom out) change its range.
 
 On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds the route with the fewest grid steps over checked clear neighbor links. Collector 0.5.0 also checks the segment from your current position to your tile center. When that check passes, the route starts at your actual position and shows its total length and the next direction and coordinates. A blocked entry segment is reported; older data can still show tile-center routes. Routes recalculate as the player moves or new checks arrive, including in saved replays. The endpoint is the selected tile center, and each grid step is 4 world units. If no path connects the tiles, the page shows “未连通” (not connected). Switching worlds or collector sessions clears the endpoint.
 
@@ -82,7 +82,7 @@ Player moves or a new connection check arrives → update the route
   ↓
 Collection pause / error / manual stop / stale snapshot → pause; request timeout → wait one second → retry; fresh snapshot → resume (no retries after stop or in history)
   ↓
-New snapshots → local replay → trail and route with observed tiles, latest position, and observed targets
+New snapshots → local replay → trail and route (full map or follow position) with observed tiles, latest position, and observed targets
   ↓
 Saved replay → view its trail and route, or download JSONL → import replay → view trail
   ↓

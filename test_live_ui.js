@@ -1943,5 +1943,132 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     "a late live response cannot replace history after the user opens a replay");
   assert.equal(run("live.timer"), null, "history does not leave a live retry running");
 
-  console.log("Live UI: replay recording, freshness-gated live routes, request timeouts and retries, history isolation, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
+
+  // Map follow/zoom keeps nearby navigation readable on long explorations.
+  context.vpProjectionPoints = [trailPoint(1, 1, 0, 0), trailPoint(2, 2, 1000, 20)];
+  const vpFull = run("projectTrailCoordinates(vpProjectionPoints)");
+  const vpFollow = run("projectTrailCoordinates(vpProjectionPoints,[],[],null,null,{mode:'follow',span:64})");
+  assert.equal(vpFull.viewport, null, "full map keeps its original automatic projection");
+  assert.equal(vpFollow.viewport.center_x, 1000);
+  assert.equal(vpFollow.viewport.center_z, 20);
+  assert.equal(vpFollow.viewport.span_z, 64);
+  assert.ok(Math.abs(vpFollow.viewport.span_x - 64 * 292 / 165) < 1e-9);
+  assert.equal(vpFollow.points[1].x, 180);
+  assert.equal(vpFollow.points[1].y, 107.5);
+  assert.ok(vpFollow.scale > vpFull.scale * 5, "distant history does not shrink the local view");
+  assert.deepEqual(JSON.parse(JSON.stringify(vpFollow.ranges)), JSON.parse(JSON.stringify(vpFull.ranges)),
+    "local zoom preserves the recorded data bounds");
+  assert.equal(run("projectTrailCoordinates(vpProjectionPoints,[],[],null,null,{mode:'follow',span:32}).scale"), vpFollow.scale * 2);
+  assert.equal(run("projectTrailCoordinates([],[],[],null,null,{mode:'follow',span:64}).viewport"), null);
+  assert.equal(run("projectTrailCoordinates([{x:-1e308,z:0},{x:1e308,z:0}],[],[],null,null,{mode:'follow',span:64}).error"), true);
+
+  const vpHistory = replaySummary("e".repeat(64), {worldId: "viewport-world", session: "viewport-history", frames: 2});
+  const vpPoints = [trailPoint(1, 1, 0.25, 0.25), trailPoint(2, 2, 1000.25, 20.25, {x:1000,z:20,clear:true})];
+  const vpTiles = [terrainCell(0,0,"GRASS",1,1,true),
+    terrainCell(1000,20,"GRASS",2,2,true,{east:true}), terrainCell(1004,20,"GRASS",2,2,true)];
+  const vpLandmarks = [remembered("panflute",0.5,0.5,1,1), remembered("panflute",1004.5,20.5,2,2)];
+  let vpHistoryPoints = vpPoints;
+  context.vpHistory = vpHistory;
+  context.fetch = async url => {
+    assert.equal(url, "/api/explorations/" + vpHistory.id + "/trail");
+    return apiResponse(trailPayload(vpHistory, vpHistoryPoints, vpLandmarks, false, {tile_size:4,tiles:vpTiles,truncated:false}));
+  };
+  run('stopLive();state.target="panflute";el.target.value="panflute";openExplorationTrail(vpHistory)');
+  await settle();
+  element("terrainToggle").checked = true;
+  run("renderTrail()");
+  assert.equal(run("trailViewport.mode"), "all");
+  assert.equal(element("viewportFollowButton").disabled, false);
+  assert.equal(element("viewportZoomInButton").disabled, false, "zoom is available directly from full map");
+  assert.equal(run("setTrailViewportMode('invalid')"), false);
+  assert.equal(run("zoomTrailViewport(0)"), false);
+  element("viewportZoomInButton").listeners.click();
+  assert.equal(run("trailViewport.mode"), "follow");
+  assert.equal(run("trailViewport.span"), 32);
+  assert.equal(element("viewportZoomInButton").disabled, true);
+  let vpSvg = element("trailSvg").innerHTML;
+  assert.ok(vpSvg.includes('<clipPath id="trailViewportClip">') &&
+    (vpSvg.match(/clip-path="url\(#trailViewportClip\)"/g) || []).length === 2,
+    "terrain/connections and trail/route layers are clipped while directions and legends stay fixed");
+  assert.ok(!vpSvg.includes('data-terrain-x="0"') && !vpSvg.includes('data-landmark-x="0.5"'),
+    "off-view terrain and target markers leave no hidden focusable controls");
+  assert.ok(vpSvg.includes('data-terrain-x="1000"') && vpSvg.includes('data-landmark-x="1004.5"'));
+  assert.ok(element("seenLandmarksList").innerHTML.includes('data-landmark-x="0.5"') &&
+    routeDestinationElement.innerHTML.includes('value="0,0"'), "lists retain destinations outside the local view");
+  routeDestinationElement.value = "1004,20";
+  routeDestinationElement.listeners.change();
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"'));
+  run("refreshSelectedTrail()");
+  await settle();
+  assert.equal(run("trailViewport.span"), 32, "refreshing the same replay keeps the zoom");
+  assert.equal(run("trailViewport.mode"), "follow");
+  for (let i = 0; i < 4; i += 1) element("viewportZoomOutButton").listeners.click();
+  assert.equal(run("trailViewport.span"), 512);
+  assert.equal(element("viewportZoomOutButton").disabled, true);
+  element("viewportAllButton").listeners.click();
+  assert.equal(run("trailViewport.mode"), "all");
+  assert.ok(element("trailSvg").innerHTML.includes('data-terrain-x="0"'));
+  element("viewportZoomOutButton").listeners.click();
+  assert.equal(run("trailViewport.span"), 128, "zooming from full map starts at the default local range");
+  assert.equal(run("trailViewport.mode"), "follow");
+  vpHistoryPoints = [];
+  run("refreshSelectedTrail()");
+  await settle();
+  for (const id of ["viewportFollowButton","viewportZoomInButton","viewportZoomOutButton"]) {
+    assert.equal(element(id).disabled, true, "missing player coordinates disable " + id);
+  }
+  assert.equal(run("setTrailViewportMode('follow')"), false);
+  assert.equal(run("zoomTrailViewport(2)"), false);
+
+  // Fresh, paused, and resumed live frames share the same local view; new identities do not.
+  context.fetch = async () => { throw new Error("viewport live tests should not fetch"); };
+  run('state.liveRecording=null;live.following=true;liveEl.follow.checked=true;live.key=null;live.sequence=0;resumeLiveTrailView()');
+  context.vpLive = liveRouteFrame(1, {world:"viewport-live",session:"viewport-session",x:2.25,z:2.25});
+  context.vpLive.snapshot.player_anchor = {x:2,z:2,clear:true};
+  run("applyLiveResult(vpLive);setTrailViewportMode('follow');zoomTrailViewport(2)");
+  routeDestinationElement.value = "2,6";
+  routeDestinationElement.listeners.change();
+  assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"'));
+  context.vpLive = liveRouteFrame(2, {world:"viewport-live",session:"viewport-session",x:6.25,z:2.25});
+  context.vpLive.snapshot.player_anchor = {x:6,z:2,clear:true};
+  run("applyLiveResult(vpLive)");
+  assert.equal(run("trailViewport.mode"), "follow");
+  assert.equal(run("trailViewport.span"), 32);
+  assert.ok(element("viewportStatus").textContent.includes("X 6.3 / Z 2.3"), "new frames move the local center");
+  run('unavailableLive("采集已暂停","paused")');
+  assert.equal(run("trailViewport.span"), 32);
+  assert.ok(!element("trailSvg").innerHTML.includes('class="checked-route"'));
+  assert.equal(routeDestinationElement.value, "2,6");
+  run("zoomTrailViewport(0.5)");
+  assert.ok(!element("trailSvg").innerHTML.includes('class="checked-route"'), "zoom cannot reactivate paused navigation");
+  run("stopLive();live.following=true;liveEl.follow.checked=true;resumeLiveTrailView()");
+  assert.equal(run("trailViewport.span"), 64, "same-session stop/resume preserves the last view");
+  assert.equal(run("trailViewport.mode"), "follow");
+  const vpSameHistory = replaySummary("f".repeat(64), {worldId:"viewport-live",session:"viewport-session"});
+  context.vpSameHistory = vpSameHistory;
+  context.fetch = async () => apiResponse(trailPayload(vpSameHistory, [trailPoint(2,102,6.25,2.25)]));
+  run("openExplorationTrail(vpSameHistory)");
+  await settle();
+  assert.equal(run("trailViewport.mode"), "all", "opening history resets the viewport");
+  run("setTrailViewportMode('follow');zoomTrailViewport(2);live.following=true;liveEl.follow.checked=true;resumeLiveTrailView()");
+  assert.equal(run("trailViewport.mode"), "all", "returning from same-identity history resets to full map");
+  run("setTrailViewportMode('follow');zoomTrailViewport(2)");
+  context.vpLive = liveRouteFrame(3, {world:"viewport-live",session:"viewport-new-session"});
+  run("applyLiveResult(vpLive)");
+  assert.equal(run("trailViewport.mode"), "all", "a new collector session resets to full map");
+  assert.equal(run("trailViewport.span"), 64);
+  run("setTrailViewportMode('follow');zoomTrailViewport(2)");
+  context.vpLive = liveRouteFrame(4, {world:"viewport-new-world",session:"viewport-new-session"});
+  run("applyLiveResult(vpLive)");
+  assert.equal(run("trailViewport.mode"), "all", "a new world resets to full map");
+  run("stopLive()");
+
+  // This checks the stylesheet contract; browser hit testing is verified separately.
+  const vpCssRules = [...appHtml.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  for (const name of ["trail-route","trail-route-halo","trail-grid","trail-first","trail-latest","trail-isolated"]) {
+    assert.ok(vpCssRules.some(rule => rule[1].split(",").some(selector => selector.trim() === ".trail-svg ." + name) &&
+      /pointer-events\s*:\s*none/.test(rule[2])), "decorative " + name + " lets clicks reach terrain");
+  }
+
+  console.log("Live UI: replay recording, freshness-gated live routes, request timeouts and retries, history isolation, map follow and zoom, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });
