@@ -24,7 +24,7 @@ Install and enable [`mods/dst_route_collector`](mods/dst_route_collector/README.
 python route_planner.py --ui
 ```
 
-Select “检查连接” (check connection) on the page to see the file being read and the next step. Check “实时跟随” (live following) to show live positions and navigation suggestions in the page. While the tool runs, it records new snapshots in the background without an extra recording switch. The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring.
+Select “检查连接” (check connection) on the page to see the file being read and the next step. Check “实时跟随” (live following) to show live positions and navigation suggestions in the page. While the tool runs, it records new snapshots in the background. If the log emits several snapshots at once, the tool records them in log order. The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring.
 
 You can also check the connection from the terminal:
 
@@ -68,7 +68,7 @@ Check connection → choose a target; collect coordinates, tiles, landmarks, and
   ↓
 Collector: check the player-to-tile-center segment and connections between observed neighbors
   ↓
-Client log → Python reads new snapshots in the background and updates position and direction suggestions
+Client log → Python records snapshots in log order and updates position and direction suggestions
   ↓
 Match room/task clues and use task-graph context to rank exploration directions
   ↓

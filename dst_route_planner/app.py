@@ -6,11 +6,12 @@ import mimetypes
 import threading
 import time
 import webbrowser
+from collections import OrderedDict
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import InputValidationError, direction_observations_from_dict, observation_from_dict
@@ -22,6 +23,7 @@ from dst_route_planner.live import (
     freshness_status,
     nearest_visible_target,
     read_latest_snapshot,
+    read_snapshot_batch,
 )
 from dst_route_planner.exploration import (
     MAX_EXPLORATION_BYTES,
@@ -53,6 +55,8 @@ CHECKED_ROUTES_JS_PATH = PACKAGE_DIR / "static" / "checked_routes.js"
 DEMO_JSON_PATH = PACKAGE_DIR.parent / "examples" / "panflute_observation.json"
 DEFAULT_RECORD_DIR = PACKAGE_DIR.parent / ".dst-route-planner" / "records"
 _LOG = logging.getLogger(__name__)
+BACKGROUND_PLAN_CACHE_SIZE = 512
+BACKGROUND_RECORDED_SEQUENCE_CACHE_SIZE = 2048
 
 
 def _require_mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -201,6 +205,9 @@ def _live_request(
     exploration_store: ExplorationStore | None = None,
     *,
     parsed_query: tuple[str, int] | None = None,
+    capture_recording: bool = True,
+    plan_cache: OrderedDict | None = None,
+    plan_cache_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
     target, seed = parsed_query or _parse_live_query(query, kb)
 
@@ -212,6 +219,79 @@ def _live_request(
         return {"status": "error", "error": str(exc)}
     if snapshot is None:
         return {"status": "waiting"}
+
+    return _live_snapshot_request(
+        snapshot,
+        target,
+        seed,
+        kb,
+        exploration_store,
+        capture_recording=capture_recording,
+        plan_cache=plan_cache,
+        plan_cache_lock=plan_cache_lock,
+    )
+
+
+def _snapshot_identity(snapshot: Mapping[str, Any]) -> tuple[str, str, str, int]:
+    return (
+        snapshot["world_id"],
+        snapshot["world_kind"],
+        snapshot["session_id"],
+        snapshot["sequence"],
+    )
+
+
+def _recording_identity(snapshot: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (snapshot["world_id"], snapshot["world_kind"], snapshot["session_id"])
+
+
+def _cached_plan(
+    snapshot: Mapping[str, Any],
+    target: str,
+    seed: int,
+    kb,
+    cache: OrderedDict | None,
+    cache_lock: threading.Lock | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    request = {
+        "schema_version": 1,
+        "target": target,
+        "seed": seed,
+        "current": snapshot["current"],
+        "directions": snapshot["directions"],
+    }
+    if cache is None or cache_lock is None:
+        return _plan_request(request, kb), None
+
+    key = (*_snapshot_identity(snapshot), target, seed)
+    with cache_lock:
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        try:
+            outcome = (_plan_request(request, kb), None)
+        except Exception as exc:
+            _LOG.exception("Unable to plan from a live snapshot")
+            return None, str(exc)
+        cache[key] = outcome
+        while len(cache) > BACKGROUND_PLAN_CACHE_SIZE:
+            cache.popitem(last=False)
+        return outcome
+
+
+def _live_snapshot_request(
+    snapshot: dict[str, Any],
+    target: str,
+    seed: int,
+    kb,
+    exploration_store: ExplorationStore | None = None,
+    *,
+    capture_recording: bool = True,
+    plan_cache: OrderedDict | None = None,
+    plan_cache_lock: threading.Lock | None = None,
+    stop_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Build the live response for one already validated snapshot."""
 
     now = time.time()
     try:
@@ -238,16 +318,17 @@ def _live_request(
 
     if status == "live":
         try:
-            result["plan"] = _plan_request(
-                {
-                    "schema_version": 1,
-                    "target": target,
-                    "seed": seed,
-                    "current": snapshot["current"],
-                    "directions": snapshot["directions"],
-                },
-                kb,
+            plan, plan_error = _cached_plan(
+                snapshot, target, seed, kb, plan_cache, plan_cache_lock
             )
+            if plan_error is not None:
+                return {
+                    "status": "error",
+                    "age_seconds": age,
+                    "snapshot": snapshot,
+                    "error": plan_error,
+                }
+            result["plan"] = plan
             visible_target = nearest_visible_target(snapshot, target)
             if visible_target is not None:
                 result["visible_target"] = visible_target
@@ -267,13 +348,20 @@ def _live_request(
         and age <= FRESHNESS_SECONDS
         and snapshot["world_kind"] in {"forest", "cave"}
     ):
+        if stop_event is not None and stop_event.is_set():
+            return result
         try:
-            result["recording"] = exploration_store.capture(
-                snapshot,
-                target=target,
-                seed=seed,
-                plan=result.get("plan"),
-            )
+            if capture_recording:
+                result["recording"] = exploration_store.capture(
+                    snapshot,
+                    target=target,
+                    seed=seed,
+                    plan=result.get("plan"),
+                )
+            else:
+                summary = exploration_store.summary_for_snapshot(snapshot)
+                if summary is not None:
+                    result["recording"] = summary
         except Exception as exc:
             # A failed local write must not interrupt the position or plan API.
             _LOG.exception("Unable to record the latest live snapshot")
@@ -331,10 +419,22 @@ class _PlannerHandler(BaseHTTPRequestHandler):
                     self.server.kb,
                     self.server.exploration_store,
                     parsed_query=(target, seed),
+                    capture_recording=not self.server.background_recording,
+                    plan_cache=self.server._live_plan_cache,
+                    plan_cache_lock=self.server._live_plan_cache_lock,
                 )
             except InputValidationError as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
+            if self.server.background_recording and "snapshot" in result:
+                recording_error = self.server.background_recording_error(
+                    result["snapshot"]
+                )
+                if recording_error is not None:
+                    result["recording"] = {
+                        "status": "error",
+                        "error": recording_error,
+                    }
             self._send_json(200, result)
             return
         if path == "/api/live-check":
@@ -668,19 +768,57 @@ def _background_recording_loop(server) -> None:
     while not server._background_recording_stop.is_set():
         try:
             target, seed = server.get_background_query()
-            query = urlencode({"target": target, "seed": seed})
-            result = _live_request(
-                query,
-                server.live_log,
-                server.kb,
-                server.exploration_store,
-                parsed_query=(target, seed),
-            )
-            if result.get("status") == "error":
-                _LOG.debug(
-                    "Background recording skipped the latest live result: %s",
-                    result.get("error", "live snapshot is unavailable"),
+            snapshots = read_snapshot_batch(server.live_log)
+            for snapshot in snapshots:
+                if server._background_recording_stop.is_set():
+                    return
+                if server.background_sequence_recorded(snapshot):
+                    continue
+                try:
+                    _, age = freshness_status(snapshot, now=time.time())
+                except LiveSnapshotError:
+                    continue
+                if (
+                    age > FRESHNESS_SECONDS
+                    or snapshot["world_kind"] not in {"forest", "cave"}
+                ):
+                    continue
+                result = _live_snapshot_request(
+                    snapshot,
+                    target,
+                    seed,
+                    server.kb,
+                    server.exploration_store,
+                    plan_cache=server._live_plan_cache,
+                    plan_cache_lock=server._live_plan_cache_lock,
+                    stop_event=server._background_recording_stop,
                 )
+                if result.get("status") == "error":
+                    recording = result.get("recording")
+                    if recording and recording.get("status") == "error":
+                        server.set_background_recording_error(
+                            snapshot, recording.get("error", "recording failed")
+                        )
+                    _LOG.debug(
+                        "Background recording skipped a live snapshot: %s",
+                        result.get("error", "live snapshot is unavailable"),
+                    )
+                    # Leave this sequence eligible for retry and preserve log
+                    # order so a later frame cannot make the failed frame stale.
+                    break
+                recording = result.get("recording")
+                if recording is None:
+                    if server._background_recording_stop.is_set():
+                        return
+                    break
+                if recording.get("status") == "error":
+                    server.set_background_recording_error(
+                        snapshot, recording.get("error", "recording failed")
+                    )
+                    # Retry the failed sequence before appending later frames.
+                    break
+                else:
+                    server.mark_background_sequence_recorded(snapshot)
         except Exception:
             _LOG.exception("Background live recording cycle failed")
         if server._background_recording_stop.wait(
@@ -727,6 +865,11 @@ def create_server(
             self._background_recording_thread: threading.Thread | None = None
             self._background_query_lock = threading.Lock()
             self._background_query = ("panflute", 0)
+            self._live_plan_cache: OrderedDict = OrderedDict()
+            self._live_plan_cache_lock = threading.Lock()
+            self._background_recording_state_lock = threading.Lock()
+            self._background_recorded_sequences: OrderedDict = OrderedDict()
+            self._background_recording_errors: OrderedDict = OrderedDict()
 
         def get_background_query(self) -> tuple[str, int]:
             with self._background_query_lock:
@@ -735,6 +878,41 @@ def create_server(
         def update_background_query(self, target: str, seed: int) -> None:
             with self._background_query_lock:
                 self._background_query = (target, seed)
+
+        def background_sequence_recorded(self, snapshot: Mapping[str, Any]) -> bool:
+            identity = _snapshot_identity(snapshot)
+            with self._background_recording_state_lock:
+                if identity not in self._background_recorded_sequences:
+                    return False
+                self._background_recorded_sequences.move_to_end(identity)
+                return True
+
+        def mark_background_sequence_recorded(self, snapshot: Mapping[str, Any]) -> None:
+            identity = _snapshot_identity(snapshot)
+            recording_identity = _recording_identity(snapshot)
+            with self._background_recording_state_lock:
+                self._background_recorded_sequences[identity] = None
+                self._background_recorded_sequences.move_to_end(identity)
+                self._background_recording_errors.pop(recording_identity, None)
+                while len(self._background_recorded_sequences) > BACKGROUND_RECORDED_SEQUENCE_CACHE_SIZE:
+                    self._background_recorded_sequences.popitem(last=False)
+                while len(self._background_recording_errors) > BACKGROUND_RECORDED_SEQUENCE_CACHE_SIZE:
+                    self._background_recording_errors.popitem(last=False)
+
+        def set_background_recording_error(
+            self, snapshot: Mapping[str, Any], error: str
+        ) -> None:
+            identity = _recording_identity(snapshot)
+            with self._background_recording_state_lock:
+                self._background_recording_errors[identity] = error
+                self._background_recording_errors.move_to_end(identity)
+                while len(self._background_recording_errors) > BACKGROUND_RECORDED_SEQUENCE_CACHE_SIZE:
+                    self._background_recording_errors.popitem(last=False)
+
+        def background_recording_error(self, snapshot: Mapping[str, Any]) -> str | None:
+            identity = _recording_identity(snapshot)
+            with self._background_recording_state_lock:
+                return self._background_recording_errors.get(identity)
 
         def start_background_recording(self) -> None:
             if self.live_log is None:

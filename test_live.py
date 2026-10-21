@@ -12,6 +12,7 @@ from dst_route_planner.live import (
     LiveSnapshotError,
     freshness_status,
     read_latest_snapshot,
+    read_snapshot_batch,
     validate_snapshot,
 )
 
@@ -88,6 +89,79 @@ def test_reader_finds_newest_complete_marker_with_a_log_prefix(tmp_path) -> None
     assert read_latest_snapshot(path) == newest
 
 
+def test_batch_reader_keeps_valid_marked_lines_in_order_and_skips_invalid_lines(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    first = _snapshot(session_id="first", sequence=1)
+    second = _snapshot(session_id="second", sequence=2)
+    lines = [
+        b"ordinary client output\n",
+        _line(first, "[00:00:01] log: ").encode("utf-8").replace(b"\n", b"\r\n"),
+        (LIVE_MARKER + "{malformed json}\n").encode("utf-8"),
+        LIVE_MARKER.encode("ascii") + b"\xff\n",
+        LIVE_MARKER.encode("ascii") + b'{"live_version":1,"live_version":1}\n',
+        (LIVE_MARKER + '{"live_version":1,"captured_at":NaN}\n').encode("utf-8"),
+        _line(second, "[00:00:02] log: ").encode("utf-8").replace(b"\n", b"\r\n"),
+    ]
+    path.write_bytes(b"".join(lines))
+
+    assert read_snapshot_batch(path) == [first, second]
+
+
+def test_batch_reader_waits_for_an_incomplete_tail_to_finish(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    first = _snapshot(sequence=1)
+    second = _snapshot(sequence=2)
+    second_line = _line(second).encode("utf-8")
+    path.write_bytes(_line(first).encode("utf-8") + second_line[:-2])
+
+    assert read_snapshot_batch(path) == [first]
+
+    with path.open("ab") as output:
+        output.write(b"}\n")
+    assert read_snapshot_batch(path) == [first, second]
+
+
+def test_batch_reader_discards_a_starting_partial_line_from_the_bounded_tail(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    partial = _snapshot(session_id="partial", sequence=1)
+    newest = _snapshot(session_id="newest", sequence=1)
+    partial_line = (b"x" * 128) + _line(partial).encode("utf-8")
+    newest_line = _line(newest).encode("utf-8")
+    contents = partial_line + newest_line
+    max_bytes = len(contents) - 32
+    path.write_bytes(contents)
+
+    assert read_snapshot_batch(path, max_bytes=max_bytes) == [newest]
+
+
+def test_batch_reader_handles_missing_and_rewritten_logs(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    assert read_snapshot_batch(path) == []
+
+    first = _snapshot(session_id="old-session", sequence=20)
+    path.write_bytes((_line(first) + _line(first, "second: ")).encode("utf-8"))
+    assert read_snapshot_batch(path) == [first, first]
+
+    rewritten = _snapshot(session_id="new-session", sequence=1)
+    path.write_bytes(_line(rewritten).encode("utf-8"))
+    assert read_snapshot_batch(path) == [rewritten]
+
+
+@pytest.mark.parametrize("max_bytes", [0, -1, True, 1024.0])
+def test_batch_reader_rejects_invalid_tail_sizes(tmp_path, max_bytes) -> None:
+    with pytest.raises(ValueError, match="max_bytes must be a positive integer"):
+        read_snapshot_batch(tmp_path / "client.log", max_bytes=max_bytes)
+
+
+def test_batch_reader_keeps_non_missing_os_errors_visible(tmp_path, monkeypatch) -> None:
+    def fail_open(self, *args, **kwargs):
+        raise PermissionError("log is not readable")
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(PermissionError, match="not readable"):
+        read_snapshot_batch(tmp_path / "client.log")
+
+
 def test_reader_ignores_partial_tail_but_rejects_latest_malformed_complete_line(tmp_path) -> None:
     path = tmp_path / "client.log"
     valid = _snapshot(sequence=7)
@@ -99,6 +173,7 @@ def test_reader_ignores_partial_tail_but_rejects_latest_malformed_complete_line(
 
     with path.open("a", encoding="utf-8") as output:
         output.write("}\n")
+    assert read_snapshot_batch(path) == [valid]
     with pytest.raises(LiveSnapshotError, match="missing required field"):
         read_latest_snapshot(path)
 

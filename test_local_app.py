@@ -391,6 +391,16 @@ def _write_live_snapshot(path: Path, snapshot: dict, *, prefix: str = "") -> Non
     )
 
 
+def _write_live_snapshots(path: Path, snapshots: list[dict]) -> None:
+    path.write_text(
+        "".join(
+            f"{LIVE_MARKER}{json.dumps(snapshot, separators=(',', ':'))}\n"
+            for snapshot in snapshots
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_live_endpoint_disabled_waiting_and_query_validation(local_server) -> None:
     base_url, server = local_server
     disabled_status, _, disabled = _get(base_url, "/api/live?target=panflute&seed=0")
@@ -570,7 +580,12 @@ def test_live_recording_disk_failure_does_not_break_position_or_plan(local_serve
 def test_live_endpoint_returns_error_for_malformed_latest_snapshot(local_server) -> None:
     base_url, server = local_server
     live_log = server.record_store.directory.parent / "client.log"
-    live_log.write_text(f"{LIVE_MARKER}{{}}\n", encoding="utf-8")
+    valid = _live_snapshot(app._demo()["directions"], sequence=1)
+    live_log.write_text(
+        f"{LIVE_MARKER}{json.dumps(valid, separators=(',', ':'))}\n"
+        f"{LIVE_MARKER}{{}}\n",
+        encoding="utf-8",
+    )
     server.live_log = live_log
 
     status, _, response = _get(base_url, "/api/live?target=panflute&seed=0")
@@ -1193,25 +1208,25 @@ def _track_capture_calls(monkeypatch):
     return captured_keys, wait_for_capture
 
 
-def _track_live_reads(monkeypatch):
+def _track_live_batch_reads(monkeypatch):
     condition = threading.Condition()
-    read_results: list[dict | None] = []
-    original_read = app.read_latest_snapshot
+    read_results: list[list[dict]] = []
+    original_read = app.read_snapshot_batch
 
-    def tracked_read(path):
+    def tracked_read(path, **kwargs):
         try:
-            snapshot = original_read(path)
+            snapshots = original_read(path, **kwargs)
         except Exception:
             with condition:
-                read_results.append({"error": True})
+                read_results.append([])
                 condition.notify_all()
             raise
         with condition:
-            read_results.append(snapshot)
+            read_results.append(snapshots)
             condition.notify_all()
-        return snapshot
+        return snapshots
 
-    monkeypatch.setattr(app, "read_latest_snapshot", tracked_read)
+    monkeypatch.setattr(app, "read_snapshot_batch", tracked_read)
 
     def wait_for_result(predicate, *, after_index: int = 0, timeout: float = 2.0) -> int:
         with condition:
@@ -1265,14 +1280,34 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
         pulse.wait(min(0.01, remaining))
 
 
-def test_background_recorder_runs_without_http_deduplicates_and_separates_world_kinds(
+def test_background_recorder_processes_batch_in_order_and_isolates_sessions(
     tmp_path, monkeypatch
 ) -> None:
     _, wait_for_capture = _track_capture_calls(monkeypatch)
     directions = app._demo()["directions"]
     live_log = tmp_path / "client.log"
-    forest_one = _live_snapshot(directions, sequence=1)
-    _write_live_snapshot(live_log, forest_one)
+    now = time.time()
+    forest_one = _live_snapshot(directions, captured_at=now, sequence=1)
+    forest_two = _live_snapshot(directions, captured_at=now + 0.01, sequence=2)
+    cave = _live_snapshot(
+        directions, captured_at=now + 0.02, world_kind="cave", sequence=1
+    )
+    another_session = _live_snapshot(
+        directions,
+        captured_at=now + 0.03,
+        session_id="session-2",
+        sequence=1,
+    )
+    another_world = _live_snapshot(
+        directions,
+        captured_at=now + 0.04,
+        world_id="world-def",
+        sequence=1,
+    )
+    _write_live_snapshots(
+        live_log,
+        [forest_one, forest_two, cave, another_session, another_world],
+    )
     server, _, _ = _start_background_server(tmp_path, monkeypatch, live_log)
 
     try:
@@ -1280,22 +1315,25 @@ def test_background_recorder_runs_without_http_deduplicates_and_separates_world_
         assert server._background_recording_thread is not None
         assert server._background_recording_thread.is_alive()
         wait_for_capture(forest_one)
-
-        forest_two = _live_snapshot(directions, sequence=2)
-        _write_live_snapshot(live_log, forest_two)
         wait_for_capture(forest_two)
-
-        cave = _live_snapshot(directions, world_kind="cave", sequence=1)
-        _write_live_snapshot(live_log, cave)
         wait_for_capture(cave)
-        # The same cave snapshot is read repeatedly, but its sequence is appended once.
-        wait_for_capture(cave, count=3)
+        wait_for_capture(another_session)
+        wait_for_capture(another_world)
 
         assert _recorded_frame_count(server, forest_two) == 2
         assert _recorded_frame_count(server, cave) == 1
+        forest_summary = server.exploration_store.summary_for_snapshot(forest_two)
+        forest_frames = [
+            json.loads(line)
+            for line in server.exploration_store.get_bytes(forest_summary["id"])
+            .splitlines()[1:]
+        ]
+        assert [frame["snapshot"]["sequence"] for frame in forest_frames] == [1, 2]
         summaries = server.exploration_store.list_explorations()
-        assert len(summaries) == 2
+        assert len(summaries) == 4
         assert {item["world_kind"] for item in summaries} == {"forest", "cave"}
+        assert {item["session_id"] for item in summaries} == {"session-1", "session-2"}
+        assert {item["world_id"] for item in summaries} == {"world-abc", "world-def"}
     finally:
         _close_background_server(server)
 
@@ -1303,21 +1341,19 @@ def test_background_recorder_runs_without_http_deduplicates_and_separates_world_
 def test_background_recorder_skips_waiting_errors_and_stale_then_recovers(
     tmp_path, monkeypatch
 ) -> None:
-    reads, wait_for_result = _track_live_reads(monkeypatch)
+    reads, wait_for_result = _track_live_batch_reads(monkeypatch)
     _, wait_for_capture = _track_capture_calls(monkeypatch)
     directions = app._demo()["directions"]
     live_log = tmp_path / "client.log"
     server, _, _ = _start_background_server(tmp_path, monkeypatch, live_log)
 
     try:
-        read_index = wait_for_result(lambda snapshot: snapshot is None)
-        assert reads[read_index - 1] is None
+        read_index = wait_for_result(lambda snapshots: snapshots == [])
+        assert reads[read_index - 1] == []
         assert server.exploration_store.list_explorations() == []
 
         live_log.write_text(f"{LIVE_MARKER}{{}}\n", encoding="utf-8")
-        read_index = wait_for_result(
-            lambda snapshot: snapshot == {"error": True}, after_index=read_index
-        )
+        read_index = wait_for_result(lambda snapshots: snapshots == [], after_index=read_index)
         assert server.exploration_store.list_explorations() == []
 
         stale = _live_snapshot(
@@ -1325,8 +1361,10 @@ def test_background_recorder_skips_waiting_errors_and_stale_then_recovers(
         )
         _write_live_snapshot(live_log, stale)
         read_index = wait_for_result(
-            lambda snapshot: snapshot is not None
-            and snapshot.get("captured_at") == stale["captured_at"],
+            lambda snapshots: any(
+                snapshot.get("captured_at") == stale["captured_at"]
+                for snapshot in snapshots
+            ),
             after_index=read_index,
         )
         assert _recorded_frame_count(server, stale) == 0
@@ -1341,6 +1379,83 @@ def test_background_recorder_skips_waiting_errors_and_stale_then_recovers(
         _write_live_snapshot(live_log, recovered)
         wait_for_capture(recovered)
         assert _recorded_frame_count(server, recovered) == 2
+    finally:
+        _close_background_server(server)
+
+
+def test_background_recorder_skips_stale_future_and_unsupported_then_recovers(
+    tmp_path, monkeypatch
+) -> None:
+    _, wait_for_capture = _track_capture_calls(monkeypatch)
+    directions = app._demo()["directions"]
+    live_log = tmp_path / "client.log"
+    server, _, _ = _start_background_server(tmp_path, monkeypatch, live_log)
+
+    try:
+        stale = _live_snapshot(
+            directions, captured_at=time.time() - 10, sequence=1
+        )
+        _write_live_snapshot(live_log, stale)
+        _wait_until(lambda: server.exploration_store.list_explorations() == [])
+
+        future = _live_snapshot(
+            directions, captured_at=time.time() + 10, sequence=2
+        )
+        unsupported = _live_snapshot(
+            directions, world_kind="ocean", sequence=3
+        )
+        fresh = _live_snapshot(directions, sequence=4)
+        _write_live_snapshots(live_log, [stale, future, unsupported, fresh])
+        wait_for_capture(fresh)
+
+        summary = server.exploration_store.summary_for_snapshot(fresh)
+        frames = [
+            json.loads(line)
+            for line in server.exploration_store.get_bytes(summary["id"]).splitlines()[1:]
+        ]
+        assert [frame["snapshot"]["sequence"] for frame in frames] == [4]
+    finally:
+        _close_background_server(server)
+
+
+def test_background_recorder_skips_bad_rows_and_completes_partial_tail(
+    tmp_path, monkeypatch
+) -> None:
+    captured_keys, wait_for_capture = _track_capture_calls(monkeypatch)
+    directions = app._demo()["directions"]
+    live_log = tmp_path / "client.log"
+    first = _live_snapshot(directions, sequence=1)
+    second = _live_snapshot(directions, sequence=2)
+    first_line = (
+        f"{LIVE_MARKER}{json.dumps(first, separators=(',', ':'))}\n"
+    ).encode("utf-8")
+    second_line = f"{LIVE_MARKER}{json.dumps(second, separators=(',', ':'))}".encode(
+        "utf-8"
+    )
+    live_log.write_bytes(
+        b"ordinary client output\n"
+        + f"{LIVE_MARKER}{{broken json}}\n".encode("ascii")
+        + first_line
+        + second_line[: len(second_line) // 2]
+    )
+    server, _, _ = _start_background_server(tmp_path, monkeypatch, live_log)
+
+    try:
+        wait_for_capture(first)
+        second_key = ("world-abc", "forest", "session-1", 2)
+        assert second_key not in captured_keys
+
+        with live_log.open("ab") as log_file:
+            log_file.write(second_line[len(second_line) // 2 :] + b"\n")
+        wait_for_capture(second)
+
+        summary = server.exploration_store.summary_for_snapshot(second)
+        frames = [
+            json.loads(line)
+            for line in server.exploration_store.get_bytes(summary["id"]).splitlines()[1:]
+        ]
+        assert [frame["snapshot"]["sequence"] for frame in frames] == [1, 2]
+        assert captured_keys.count(second_key) == 1
     finally:
         _close_background_server(server)
 
@@ -1398,81 +1513,181 @@ def test_live_get_updates_background_query_only_after_valid_parameters(
         _close_background_server(server, serve_thread)
 
 
-def test_background_and_http_capture_of_same_sequence_write_one_frame(
+def test_live_get_before_background_batch_cannot_skip_intermediate_frames(
     tmp_path, monkeypatch
 ) -> None:
+    captured_keys, wait_for_capture = _track_capture_calls(monkeypatch)
     directions = app._demo()["directions"]
     live_log = tmp_path / "client.log"
-    snapshot = _live_snapshot(directions, sequence=1)
-    _write_live_snapshot(live_log, snapshot)
+    snapshots = [_live_snapshot(directions, sequence=sequence) for sequence in (1, 2, 3)]
+    _write_live_snapshots(live_log, snapshots)
 
-    original_capture = app.ExplorationStore.capture
-    capture_barrier = threading.Barrier(2)
-    first_capture_entered = threading.Event()
-    second_capture_entered = threading.Event()
-    completion = threading.Condition()
-    calls = 0
-    completed = 0
-    calls_lock = threading.Lock()
+    batch_read_entered = threading.Event()
+    release_batch_read = threading.Event()
+    read_count = 0
+    original_batch_read = app.read_snapshot_batch
 
-    def overlapping_capture(self, captured_snapshot, **kwargs):
-        nonlocal calls, completed
-        with calls_lock:
-            calls += 1
-            call_number = calls
-            if call_number == 1:
-                first_capture_entered.set()
-            elif call_number == 2:
-                second_capture_entered.set()
-        if call_number <= 2:
-            capture_barrier.wait(timeout=2)
-        result = original_capture(self, captured_snapshot, **kwargs)
-        with completion:
-            completed += 1
-            completion.notify_all()
-        return result
+    def delayed_batch_read(path, **kwargs):
+        nonlocal read_count
+        read_count += 1
+        if read_count == 1:
+            batch_read_entered.set()
+            assert release_batch_read.wait(timeout=3)
+        return original_batch_read(path, **kwargs)
 
-    monkeypatch.setattr(app.ExplorationStore, "capture", overlapping_capture)
+    monkeypatch.setattr(app, "read_snapshot_batch", delayed_batch_read)
+    original_plan = app._plan_request
+    plan_count = 0
+
+    def counted_plan(*args, **kwargs):
+        nonlocal plan_count
+        plan_count += 1
+        return original_plan(*args, **kwargs)
+
+    monkeypatch.setattr(app, "_plan_request", counted_plan)
     server, serve_thread, base_url = _start_background_server(
         tmp_path, monkeypatch, live_log, serve_http=True
     )
 
     try:
-        assert first_capture_entered.wait(timeout=2)
-        http_result: list[tuple] = []
-        request_thread = threading.Thread(
-            target=lambda: http_result.append(
-                _get(base_url, "/api/live?target=panflute&seed=0")
-            ),
-            daemon=True,
+        assert batch_read_entered.wait(timeout=2)
+        first_status, _, first_result = _get(
+            base_url, "/api/live?target=panflute&seed=0"
         )
-        request_thread.start()
-        assert second_capture_entered.wait(timeout=2)
-        request_thread.join(timeout=2)
-        assert not request_thread.is_alive()
-        assert http_result[0][0] == 200
-        with completion:
-            assert completion.wait_for(lambda: completed >= 2, timeout=2)
+        assert first_status == 200
+        assert first_result["snapshot"] == snapshots[-1]
+        assert "recording" not in first_result
+        assert server.exploration_store.list_explorations() == []
 
-        assert _recorded_frame_count(server, snapshot) == 1
+        for _ in range(2):
+            status, _, result = _get(base_url, "/api/live?target=panflute&seed=0")
+            assert status == 200
+            assert result["snapshot"] == snapshots[-1]
+        assert plan_count == 1
+        assert server.exploration_store.list_explorations() == []
+
+        release_batch_read.set()
+        for snapshot in snapshots:
+            wait_for_capture(snapshot)
+        summary = server.exploration_store.summary_for_snapshot(snapshots[-1])
+        frames = [
+            json.loads(line)
+            for line in server.exploration_store.get_bytes(summary["id"]).splitlines()[1:]
+        ]
+        assert [frame["snapshot"]["sequence"] for frame in frames] == [1, 2, 3]
+        assert captured_keys.count(
+            ("world-abc", "forest", "session-1", 1)
+        ) == 1
+        _wait_until(lambda: read_count >= 3)
+        assert plan_count == 3
+        assert len(captured_keys) == 3
     finally:
+        release_batch_read.set()
+        _close_background_server(server, serve_thread)
+
+
+def test_background_write_failure_stays_visible_and_retries_without_replanning(
+    tmp_path, monkeypatch
+) -> None:
+    captured_keys, wait_for_capture = _track_capture_calls(monkeypatch)
+    directions = app._demo()["directions"]
+    first = _live_snapshot(directions, sequence=1)
+    failed = _live_snapshot(directions, sequence=2)
+    later = _live_snapshot(directions, sequence=3)
+    live_log = tmp_path / "client.log"
+    _write_live_snapshots(live_log, [first, failed])
+    original_capture = app.ExplorationStore.capture
+    retry_entered = threading.Event()
+    release_retry = threading.Event()
+    failed_sequence_attempts = 0
+
+    def fail_once_then_pause_retry(self, captured_snapshot, **kwargs):
+        nonlocal failed_sequence_attempts
+        if captured_snapshot["sequence"] == 2:
+            failed_sequence_attempts += 1
+            if failed_sequence_attempts == 1:
+                raise OSError("disk full")
+            if failed_sequence_attempts == 2:
+                retry_entered.set()
+                assert release_retry.wait(timeout=3)
+        return original_capture(self, captured_snapshot, **kwargs)
+
+    monkeypatch.setattr(app.ExplorationStore, "capture", fail_once_then_pause_retry)
+    original_plan = app._plan_request
+    plan_count = 0
+
+    def counted_plan(*args, **kwargs):
+        nonlocal plan_count
+        plan_count += 1
+        return original_plan(*args, **kwargs)
+
+    monkeypatch.setattr(app, "_plan_request", counted_plan)
+    server, serve_thread, base_url = _start_background_server(
+        tmp_path, monkeypatch, live_log, serve_http=True
+    )
+
+    try:
+        wait_for_capture(first)
+        assert retry_entered.wait(timeout=2)
+        _write_live_snapshots(live_log, [first, failed, later])
+        status, _, result = _get(base_url, "/api/live?target=panflute&seed=0")
+        assert status == 200
+        assert result["snapshot"] == later
+        assert result["recording"] == {"status": "error", "error": "disk full"}
+        assert plan_count == 3
+        assert _recorded_frame_count(server, first) == 1
+        assert ("world-abc", "forest", "session-1", 3) not in captured_keys
+
+        release_retry.set()
+        wait_for_capture(failed)
+        wait_for_capture(later)
+        summary = server.exploration_store.summary_for_snapshot(later)
+        frames = [
+            json.loads(line)
+            for line in server.exploration_store.get_bytes(summary["id"]).splitlines()[1:]
+        ]
+        assert [frame["snapshot"]["sequence"] for frame in frames] == [1, 2, 3]
+        assert plan_count == 3
+    finally:
+        release_retry.set()
         _close_background_server(server, serve_thread)
 
 
 def test_background_recorder_stops_on_server_close(tmp_path, monkeypatch) -> None:
-    _, wait_for_capture = _track_capture_calls(monkeypatch)
+    captured_keys, wait_for_capture = _track_capture_calls(monkeypatch)
     directions = app._demo()["directions"]
     live_log = tmp_path / "client.log"
-    snapshot = _live_snapshot(directions, sequence=1)
-    _write_live_snapshot(live_log, snapshot)
+    snapshots = [_live_snapshot(directions, sequence=n) for n in range(1, 5)]
+    for snapshot in snapshots:
+        snapshot["current"]["note"] = f"sequence-{snapshot['sequence']}"
+    _write_live_snapshots(live_log, snapshots)
+    plan_entered = threading.Event()
+    release_plan = threading.Event()
+    original_plan = app._plan_request
+
+    def pause_second_plan(payload, kb=app.KB):
+        if payload["current"]["note"] == "sequence-2":
+            plan_entered.set()
+            assert release_plan.wait(timeout=3)
+        return original_plan(payload, kb)
+
+    monkeypatch.setattr(app, "_plan_request", pause_second_plan)
     server, _, _ = _start_background_server(tmp_path, monkeypatch, live_log)
 
-    wait_for_capture(snapshot)
+    wait_for_capture(snapshots[0])
+    assert plan_entered.wait(timeout=2)
     recorder_thread = server._background_recording_thread
     assert recorder_thread is not None and recorder_thread.is_alive()
-    server.server_close()
+    close_thread = threading.Thread(target=server.server_close, daemon=True)
+    close_thread.start()
+    assert server._background_recording_stop.wait(timeout=1)
+    release_plan.set()
+    close_thread.join(timeout=2)
+    assert not close_thread.is_alive()
     recorder_thread.join(timeout=0.2)
     assert not recorder_thread.is_alive()
+    assert captured_keys == [("world-abc", "forest", "session-1", 1)]
+    assert _recorded_frame_count(server, snapshots[0]) == 1
 
 
 def test_background_recording_is_disabled_for_missing_log_or_explicit_opt_out(

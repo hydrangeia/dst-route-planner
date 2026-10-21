@@ -276,12 +276,12 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
     return dict(data)
 
 
-def read_latest_snapshot(
+def _read_complete_log_lines(
     path: Path | str,
     *,
-    max_bytes: int = DEFAULT_TAIL_BYTES,
-) -> dict[str, Any] | None:
-    """Read the newest complete marked line from a bounded tail of a client log."""
+    max_bytes: int,
+) -> list[bytes]:
+    """Read complete LF-terminated lines from a bounded log tail."""
     if type(max_bytes) is not int or max_bytes < 1:
         raise ValueError("max_bytes must be a positive integer.")
     try:
@@ -292,31 +292,71 @@ def read_latest_snapshot(
             log_file.seek(start)
             tail = log_file.read(max_bytes)
     except FileNotFoundError:
-        return None
+        return []
 
     if start > 0:
         first_newline = tail.find(b"\n")
         if first_newline < 0:
-            return None
+            return []
         tail = tail[first_newline + 1 :]
 
     lines = tail.split(b"\n")
     if len(lines) < 2:
-        return None
+        return []
+    return lines[:-1]
+
+
+def _snapshot_from_marked_line(line: bytes) -> dict[str, Any] | None:
     marker = LIVE_MARKER.encode("ascii")
-    for line in reversed(lines[:-1]):
-        marker_at = line.find(marker)
-        if marker_at < 0:
+    marker_at = line.find(marker)
+    if marker_at < 0:
+        return None
+    json_bytes = line[marker_at + len(marker) :].rstrip(b"\r")
+    text = json_bytes.decode("utf-8")
+    value = json.loads(
+        text,
+        object_pairs_hook=_object_no_duplicates,
+        parse_constant=_reject_json_constant,
+    )
+    return validate_snapshot(value)
+
+
+def read_snapshot_batch(
+    path: Path | str,
+    *,
+    max_bytes: int = DEFAULT_TAIL_BYTES,
+) -> list[dict[str, Any]]:
+    """Read every valid marked snapshot in order from a bounded log tail."""
+    snapshots: list[dict[str, Any]] = []
+    for line in _read_complete_log_lines(path, max_bytes=max_bytes):
+        if LIVE_MARKER.encode("ascii") not in line:
             continue
-        json_bytes = line[marker_at + len(marker) :].rstrip(b"\r")
         try:
-            text = json_bytes.decode("utf-8")
-            value = json.loads(
-                text,
-                object_pairs_hook=_object_no_duplicates,
-                parse_constant=_reject_json_constant,
-            )
-            return validate_snapshot(value)
+            snapshot = _snapshot_from_marked_line(line)
+        except (
+            LiveSnapshotError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            RecursionError,
+            ValueError,
+        ):
+            continue
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    return snapshots
+
+
+def read_latest_snapshot(
+    path: Path | str,
+    *,
+    max_bytes: int = DEFAULT_TAIL_BYTES,
+) -> dict[str, Any] | None:
+    """Read the newest complete marked line from a bounded tail of a client log."""
+    for line in reversed(_read_complete_log_lines(path, max_bytes=max_bytes)):
+        if LIVE_MARKER.encode("ascii") not in line:
+            continue
+        try:
+            return _snapshot_from_marked_line(line)
         except LiveSnapshotError:
             raise
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:

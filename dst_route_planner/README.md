@@ -74,13 +74,13 @@ python -m pytest -q
 
 ## 实时观测
 
-启用 [`客户端采集器`](../mods/dst_route_collector/README.md) 后，用 `--ui` 启动，点击“检查连接”，收到新快照后再勾选“实时跟随”。采集器把一秒一份的快照写入游戏日志，Python 读取最近的完整快照，更新坐标和方向建议。
+启用 [`客户端采集器`](../mods/dst_route_collector/README.md) 后，用 `--ui` 启动，点击“检查连接”，收到新快照后再勾选“实时跟随”。采集器把一秒一份的快照写入游戏日志；网页读取最新完整快照，更新坐标和方向建议。
 
 实时快照采用独立的 `live_version: 1`，包括 `world_id`、`world_kind`、`session_id`、`sequence`、Unix 时间 `captured_at`、`position: {x,y,z}`、`camera_heading`、`current`、`directions`，以及可选的 `landmarks: [{prefab,x,z}]` 和 `terrain: {tile_size:4,tiles:[{x,z,tile}]}`。地皮坐标为引擎给出的格中心，每格边长为 4 个世界单位；只采集玩家附近、地图已揭示的格。每份快照最多接受 256 格，同一份内的格中心不能重复。旧快照可省略 `terrain`。每格还可携带 `passable` 布尔值；`true` 或 `false` 表示格中心的地形通行检查结果，省略表示未知，`null` 或其他类型会被拒绝。每格的可选 `connections` 对象可包含布尔值 `east`、`north`，分别表示到世界坐标 `x+4`、`z+4` 相邻格的双向直连检查结果。包含这些结果时，本格及对应邻格必须都在本份快照中且 `passable: true`；省略对象或某个方向表示未知。其中观测字段沿用现有的 observation 格式。世界坐标约定北为 `+Z`、东为 `+X`；镜头角度作为独立信息提供。
 
 可选的 `player_anchor: {x,z,clear}` 记录玩家当前位置到所在格中心的接入检查。`x`、`z` 必须引用本份 `terrain` 中 `passable: true` 的格，且该格是唯一包含玩家位置的已采格；格的范围为 `[x-2,x+2)`、`[z-2,z+2)`。`clear` 是严格布尔值，`false` 保留受阻结果。该对象必须恰好包含这三个字段；旧快照可省略。
 
-`GET /api/live?target=panflute&seed=0` 返回连接状态、快照和可用的 `plan`。`plan` 与 `/api/plan` 的结果格式相同。看到所选目标时，`visible_target` 提供最近目标的坐标与直线距离。超过五秒的快照会标记为 `stale`，不再生成实时建议。当前大陆知识库处理 `forest` 世界，其他世界会显示 `unsupported_world`。
+`GET /api/live?target=panflute&seed=0` 返回连接状态、最新快照和可用的 `plan`。`plan` 与 `/api/plan` 的结果格式相同。看到所选目标时，`visible_target` 提供最近目标的坐标与直线距离。超过五秒的快照会标记为 `stale`，不再生成实时建议。接口读取最新完整的标记行；若该行无效，会返回错误，不回退到更早的快照。网页读取只用于显示，不会推进后台录制位置。当前大陆知识库处理 `forest` 世界，其他世界会显示 `unsupported_world`。
 
 这一版根据当前快照排列探索方向，也可在地图上选择已观测且可通行的格作为路线终点，沿已检查通过的相邻格连接查看最少步数路线。轨迹图保存已见目标并显示已观测地皮。采集器的 Lua 接口已对照本地源码并通过桩环境检查；首次游戏内连通验证仍待启用 mod 后完成。
 
@@ -88,7 +88,7 @@ python -m pytest -q
 
 `--ui` 和 `--check-live` 默认自动定位客户端日志；`--live-log auto` 显式选择同一行为，也可以用 `--live-log <路径>` 指定文件。Windows 使用系统当前的文档目录，包含重定向后的目录；macOS 使用 `~/Documents/Klei/DoNotStarveTogether/client_log.txt`，Linux 使用 `~/.klei/DoNotStarveTogether/client_log.txt`。默认日志位置依据 [Klei 的日志说明](https://support.klei.com/hc/en-us/articles/360029881191-Logs-and-Useful-Information-for-Bug-Reports-for-Don-t-Starve-Together)。
 
-网页的“检查连接”和终端的 `python route_planner.py --check-live` 都会显示所选日志、当前连接状态和下一步操作。检查只读取最新的完整快照，不追加回放。运行 `python route_planner.py --ui` 后，Python 每秒在后台检查最新完整快照并记录新数据；网页是否打开、是否实时跟随都不影响录制。没有新鲜快照时不会追加，已经记录的 sequence 不会重复追加。
+网页的“检查连接”和终端的 `python route_planner.py --check-live` 都会显示所选日志、当前连接状态和下一步操作。检查只读取最新的完整快照，不追加回放。运行 `python route_planner.py --ui` 后，后台独立录制探索快照；网页是否打开、是否实时跟随都不影响录制。
 
 终端检查的退出码：`0` 表示收到新鲜快照，`1` 表示还需启动游戏、启用采集或恢复游戏，`2` 表示文件读取或快照格式出错。洞穴中的新鲜快照也表示采集器已连接，方向推理仍按世界支持情况处理。
 
@@ -96,7 +96,7 @@ python -m pytest -q
 
 ## 连续探索回放
 
-运行 `python route_planner.py --ui` 时，后台读取器每秒检查客户端日志中的最新完整快照；有新鲜快照时就会写入 `.dst-route-planner/explorations/`，不依赖网页轮询。不同世界和采集会话分别保存。森林记录包含坐标、线索、目标、随机种子和方向建议；洞穴先保存收到的坐标与线索。没有新鲜快照时不追加，重复的 `sequence` 也不会重复记录。关闭网页、查看历史回放或取消“实时跟随”不会停止后台录制；只有退出 Python 工具时录制才结束。已有的命名记录继续保存当前观测快照。
+运行 `python route_planner.py --ui` 时，后台读取器每秒扫描客户端日志末尾的 1 MiB，并按日志顺序处理其中完整的快照行，写入 `.dst-route-planner/explorations/`；录制不依赖网页轮询。不同世界和采集会话分别保存。森林记录包含坐标、线索、目标、随机种子和方向建议；洞穴先保存收到的坐标与线索。坏行会跳过并继续处理后续有效行，最后一行尚未写完时留到下次扫描。仍只记录最近五秒内的新鲜快照，过期帧不补录；重复的 `sequence` 不会重复记录。扫描范围限于日志末尾 1 MiB，离线或积压期间超出此范围的历史帧不保证补录。关闭网页、查看历史回放或取消“实时跟随”不会停止后台录制；只有退出 Python 工具时录制才结束。已有的命名记录继续保存当前观测快照。
 
 初次启动时后台规划使用 `panflute` 和随机种子 `0`。之后采用最近一次有效 `GET /api/live` 请求中的 `target` 与 `seed`；网页更改目标后，会在下一次实时请求时同步给后台规划。森林回放保存对应方向建议；洞穴快照照常记录，方向推理仍按世界支持情况处理。自动读取不会改变观测 JSON 或 `replay_version: 1` 的回放格式；手动观测、命名记录和早先导出的回放仍按原有规则使用。
 
