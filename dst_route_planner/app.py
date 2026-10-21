@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import threading
 import time
 import webbrowser
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import InputValidationError, direction_observations_from_dict, observation_from_dict
@@ -43,6 +44,8 @@ from dst_route_planner.trail import TrailDataError, project_trail
 
 
 MAX_REQUEST_BYTES = 256 * 1024
+BACKGROUND_RECORDING_INTERVAL_SECONDS = 1.0
+BACKGROUND_RECORDING_JOIN_TIMEOUT_SECONDS = 2.0
 KB = build_forest_default_kb()
 PACKAGE_DIR = Path(__file__).resolve().parent
 APP_HTML_PATH = PACKAGE_DIR / "static" / "app.html"
@@ -168,12 +171,7 @@ def _demo(kb=KB) -> dict[str, Any]:
     }
 
 
-def _live_request(
-    query: str,
-    live_log: Path | None,
-    kb=KB,
-    exploration_store: ExplorationStore | None = None,
-) -> dict[str, Any]:
+def _parse_live_query(query: str, kb=KB) -> tuple[str, int]:
     parameters = parse_qs(query, keep_blank_values=True)
     unsupported = set(parameters) - {"target", "seed"}
     if unsupported:
@@ -193,6 +191,18 @@ def _live_request(
         seed = int(raw_seed)
     except ValueError as exc:
         raise InputValidationError("seed must be an integer.") from exc
+    return target, seed
+
+
+def _live_request(
+    query: str,
+    live_log: Path | None,
+    kb=KB,
+    exploration_store: ExplorationStore | None = None,
+    *,
+    parsed_query: tuple[str, int] | None = None,
+) -> dict[str, Any]:
+    target, seed = parsed_query or _parse_live_query(query, kb)
 
     if live_log is None:
         return {"status": "disabled"}
@@ -291,7 +301,13 @@ class _PlannerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = urlsplit(self.path).path
         if path == "/api/options":
-            self._send_json(200, _options(self.server.kb))
+            self._send_json(
+                200,
+                {
+                    **_options(self.server.kb),
+                    "background_recording": self.server.background_recording,
+                },
+            )
             return
         if path == "/api/demo":
             try:
@@ -301,12 +317,20 @@ class _PlannerHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": "The bundled demo could not be loaded."})
             return
         if path == "/api/live":
+            query = urlsplit(self.path).query
+            try:
+                target, seed = _parse_live_query(query, self.server.kb)
+            except InputValidationError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self.server.update_background_query(target, seed)
             try:
                 result = _live_request(
-                    urlsplit(self.path).query,
+                    query,
                     self.server.live_log,
                     self.server.kb,
                     self.server.exploration_store,
+                    parsed_query=(target, seed),
                 )
             except InputValidationError as exc:
                 self._send_json(400, {"error": str(exc)})
@@ -640,16 +664,44 @@ def _save_record_request(payload: Any, store: RecordStore, kb=KB) -> tuple[dict[
     return record, 201 if created else 200
 
 
+def _background_recording_loop(server) -> None:
+    while not server._background_recording_stop.is_set():
+        try:
+            target, seed = server.get_background_query()
+            query = urlencode({"target": target, "seed": seed})
+            result = _live_request(
+                query,
+                server.live_log,
+                server.kb,
+                server.exploration_store,
+                parsed_query=(target, seed),
+            )
+            if result.get("status") == "error":
+                _LOG.debug(
+                    "Background recording skipped the latest live result: %s",
+                    result.get("error", "live snapshot is unavailable"),
+                )
+        except Exception:
+            _LOG.exception("Background live recording cycle failed")
+        if server._background_recording_stop.wait(
+            BACKGROUND_RECORDING_INTERVAL_SECONDS
+        ):
+            return
+
+
 def create_server(
     port: int = 0,
     *,
     record_dir: Path | str | None = None,
     live_log: Path | str | None = None,
     exploration_dir: Path | str | None = None,
+    background_recording: bool = True,
 ) -> ThreadingHTTPServer:
     """Create a local-only HTTP server; port 0 asks the OS for a free port."""
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("port must be an integer from 0 through 65535.")
+    if type(background_recording) is not bool:
+        raise ValueError("background_recording must be a boolean.")
 
     class PlannerHTTPServer(ThreadingHTTPServer):
         daemon_threads = True
@@ -670,8 +722,55 @@ def create_server(
                 default_exploration_dir if exploration_dir is None else Path(exploration_dir)
             )
             self.live_log = None if live_log is None else Path(live_log)
+            self.background_recording = False
+            self._background_recording_stop = threading.Event()
+            self._background_recording_thread: threading.Thread | None = None
+            self._background_query_lock = threading.Lock()
+            self._background_query = ("panflute", 0)
 
-    return PlannerHTTPServer(("127.0.0.1", port))
+        def get_background_query(self) -> tuple[str, int]:
+            with self._background_query_lock:
+                return self._background_query
+
+        def update_background_query(self, target: str, seed: int) -> None:
+            with self._background_query_lock:
+                self._background_query = (target, seed)
+
+        def start_background_recording(self) -> None:
+            if self.live_log is None:
+                return
+            self.background_recording = True
+            self._background_recording_thread = threading.Thread(
+                target=_background_recording_loop,
+                args=(self,),
+                name="dst-route-planner-recorder",
+                daemon=True,
+            )
+            try:
+                self._background_recording_thread.start()
+            except BaseException:
+                self.background_recording = False
+                self._background_recording_thread = None
+                self._background_recording_stop.set()
+                raise
+
+        def server_close(self) -> None:
+            self._background_recording_stop.set()
+            thread = self._background_recording_thread
+            try:
+                if thread is not None and thread is not threading.current_thread():
+                    thread.join(timeout=BACKGROUND_RECORDING_JOIN_TIMEOUT_SECONDS)
+            finally:
+                super().server_close()
+
+    server = PlannerHTTPServer(("127.0.0.1", port))
+    try:
+        if background_recording and server.live_log is not None:
+            server.start_background_recording()
+        return server
+    except BaseException:
+        server.server_close()
+        raise
 
 
 def run_app(
@@ -685,9 +784,11 @@ def run_app(
     address, actual_port = server.server_address[:2]
     url = f"http://{address}:{actual_port}/"
     print(f"DST Route Planner is available at {url}")
-    if open_browser:
-        webbrowser.open(url, new=2)
+    if server.background_recording:
+        print("Background exploration recording continues until you exit the tool.")
     try:
+        if open_browser:
+            webbrowser.open(url, new=2)
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass

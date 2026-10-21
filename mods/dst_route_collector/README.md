@@ -12,9 +12,9 @@
 python route_planner.py --ui
 ```
 
-4. 在网页点“检查连接”，收到新快照后勾选“实时跟随”。移动角色，确认 X/Z 坐标跟着变化。日志路径不同时，用 `--live-log "实际路径/client_log.txt"` 启动；终端也可用 `python route_planner.py --check-live` 检查。
+4. 工具运行期间会自动在后台记录新快照。在网页点“检查连接”查看连接状态；勾选“实时跟随”可显示实时位置和导航建议。移动角色，确认 X/Z 坐标跟着变化。关闭网页或取消实时跟随不会停止录制；退出 Python 工具（终端按 Ctrl+C）后录制结束。日志路径不同时，用 `--live-log "实际路径/client_log.txt"` 启动；终端也可用 `python route_planner.py --check-live` 检查。
 
-For English setup: copy this whole folder into the DST installation's `mods/` folder, enable it as a client mod, enter a world, run the command above from the planner checkout, then select “检查连接” (check connection) and enable “实时跟随” (live following). The tool locates the client log automatically; use `--live-log "actual/path/client_log.txt"` for another location, or `python route_planner.py --check-live` for a terminal check. Move your character to check that X/Z updates.
+For English setup: copy this whole folder into the DST installation's `mods/` folder, enable it as a client mod, enter a world, and run the command above from the planner checkout. The tool automatically records new snapshots in the background while it runs. Select “检查连接” (check connection) to see the connection status; enable “实时跟随” (live following) to show live positions and navigation suggestions. Closing the page or turning off live following does not stop recording; recording ends when you exit the Python tool (press Ctrl+C in the terminal). Use `--live-log "actual/path/client_log.txt"` for another log location, or `python route_planner.py --check-live` for a terminal check. Move your character to check that X/Z updates.
 
 更新已有采集器时，重新复制这个文件夹并覆盖原文件，再重新进入世界。0.5.0 版新增玩家所在格中心与当前位置之间的检查。 / To update an existing installation, copy this folder over the previous files and re-enter the world. Version 0.5.0 adds a check between the player's current position and the center of the tile they occupy.
 

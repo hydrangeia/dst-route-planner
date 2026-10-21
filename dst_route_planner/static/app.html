@@ -330,6 +330,7 @@
         <div class="live-check-status" id="liveCheckStatus" role="status" aria-live="polite">手动检查日志路径、采集器和最近快照。</div>
       </div>
       <div class="live-replay">
+        <div id="backgroundRecordingNotice" class="record-context" hidden></div>
         <div id="liveRecordingStatus" class="record-context">实时跟随后，收到的快照会自动保存为回放。</div>
         <a class="button" id="liveReplayLink" hidden download>下载这段回放</a>
       </div>
@@ -666,6 +667,7 @@
       follow: document.getElementById("liveFollow"), status: document.getElementById("liveStatus"),
       position: document.getElementById("livePosition"), target: document.getElementById("liveTarget"),
       recordingStatus: document.getElementById("liveRecordingStatus"),
+      backgroundRecordingNotice: document.getElementById("backgroundRecordingNotice"),
       replayLink: document.getElementById("liveReplayLink")
     };
     el.terrainToggle.checked = true;
@@ -2279,6 +2281,16 @@
     function hasExtraValues(data) {
       return data.connection !== "" || data.background !== "" || data.roomHints || data.taskHints || data.note;
     }
+    function updateBackgroundRecordingNotice(enabled) {
+      const known = typeof enabled === "boolean";
+      liveEl.backgroundRecordingNotice.hidden = !known;
+      liveEl.backgroundRecordingNotice.textContent = !known ? "" : enabled
+        ? "后台录制已启动。关闭网页、查看历史或暂停实时跟随后仍会保存新快照；在终端按 Ctrl+C 退出工具，结束录制。"
+        : "当前服务未启用后台录制；实时跟随时保存收到的快照。";
+      if (enabled === true && !state.liveRecording) {
+        liveEl.recordingStatus.textContent = "后台会持续保存新快照，已有回放可在下方查看。";
+      }
+    }
     function setFromApiOptions(payload) {
       state.options = {
         targets: optionList(payload.targets), tile_types: optionList(payload.tile_types),
@@ -2292,6 +2304,7 @@
       }
       if (!state.options.targets.includes(state.target)) state.target = state.options.targets.includes("panflute") ? "panflute" : state.options.targets[0];
       renderTargetOptions(); renderPrefabOptions(); renderCards();
+      updateBackgroundRecordingNotice(payload.background_recording);
     }
     async function readJsonResponse(response) {
       let data;

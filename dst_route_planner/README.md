@@ -88,7 +88,7 @@ python -m pytest -q
 
 `--ui` 和 `--check-live` 默认自动定位客户端日志；`--live-log auto` 显式选择同一行为，也可以用 `--live-log <路径>` 指定文件。Windows 使用系统当前的文档目录，包含重定向后的目录；macOS 使用 `~/Documents/Klei/DoNotStarveTogether/client_log.txt`，Linux 使用 `~/.klei/DoNotStarveTogether/client_log.txt`。默认日志位置依据 [Klei 的日志说明](https://support.klei.com/hc/en-us/articles/360029881191-Logs-and-Useful-Information-for-Bug-Reports-for-Don-t-Starve-Together)。
 
-网页的“检查连接”和终端的 `python route_planner.py --check-live` 都会显示所选日志、当前连接状态和下一步操作。检查只读取最新的完整快照；勾选“实时跟随”后才会开始连续记录。
+网页的“检查连接”和终端的 `python route_planner.py --check-live` 都会显示所选日志、当前连接状态和下一步操作。检查只读取最新的完整快照，不追加回放。运行 `python route_planner.py --ui` 后，Python 每秒在后台检查最新完整快照并记录新数据；网页是否打开、是否实时跟随都不影响录制。没有新鲜快照时不会追加，已经记录的 sequence 不会重复追加。
 
 终端检查的退出码：`0` 表示收到新鲜快照，`1` 表示还需启动游戏、启用采集或恢复游戏，`2` 表示文件读取或快照格式出错。洞穴中的新鲜快照也表示采集器已连接，方向推理仍按世界支持情况处理。
 
@@ -96,13 +96,15 @@ python -m pytest -q
 
 ## 连续探索回放
 
-网页实时跟随时，`/api/live` 收到的新快照会自动追加到 `.dst-route-planner/explorations/`。文件按世界和采集会话分开，重复轮询同一份快照不会重复记录。大陆保存坐标、线索、目标、随机种子和方向建议；洞穴先保存收到的坐标与线索。已有的命名记录继续保存当前观测快照。
+运行 `python route_planner.py --ui` 时，后台读取器每秒检查客户端日志中的最新完整快照；有新鲜快照时就会写入 `.dst-route-planner/explorations/`，不依赖网页轮询。不同世界和采集会话分别保存。森林记录包含坐标、线索、目标、随机种子和方向建议；洞穴先保存收到的坐标与线索。没有新鲜快照时不追加，重复的 `sequence` 也不会重复记录。关闭网页、查看历史回放或取消“实时跟随”不会停止后台录制；只有退出 Python 工具时录制才结束。已有的命名记录继续保存当前观测快照。
+
+初次启动时后台规划使用 `panflute` 和随机种子 `0`。之后采用最近一次有效 `GET /api/live` 请求中的 `target` 与 `seed`；网页更改目标后，会在下一次实时请求时同步给后台规划。森林回放保存对应方向建议；洞穴快照照常记录，方向推理仍按世界支持情况处理。自动读取不会改变观测 JSON 或 `replay_version: 1` 的回放格式；手动观测、命名记录和早先导出的回放仍按原有规则使用。
 
 在“探索回放”中可查看已记录的快照数量并下载 JSONL。下载文件的首行是 `replay_version: 1` 的会话信息，包含 `id`、`world_id`、`world_kind` 和 `session_id`；后续每行包含 `replay_version`、`received_at`、`target`、`seed`、完整的 `snapshot`，以及有方向建议时的 `plan`。快照内的 `captured_at` 和 `sequence` 保留采集时刻与顺序，方便之后复盘移动过程。
 
 - `GET /api/explorations` 返回 `explorations` 摘要列表，最近的记录排在前面。
 - `GET /api/explorations/<id>` 下载这次会话的 JSONL 文件。
-- `/api/live` 的 `recording` 返回记录 ID、快照数量和保存状态；存储失败时网页提示问题，实时坐标与建议继续更新。
+- `/api/live` 的 `recording` 返回当前会话的记录 ID、快照数量和保存状态。网页请求与后台读取共用同一份回放，重复 `sequence` 不会重复追加；存储失败时网页提示问题，实时坐标与建议继续更新。
 
 `POST /api/explorations/import` 接收原始 UTF-8 `application/x-ndjson` 内容。有效回放必须满足严格的版本、会话身份和帧序号校验；每份文件最多 10,000 帧、32 MiB。旧回放可以没有地皮或 `player_anchor`，缺失字段保持为空。
 

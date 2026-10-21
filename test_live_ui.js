@@ -1122,7 +1122,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   context.fetch = async url => {
     initCalls.push(url);
     if (url === "/api/options") return apiResponse({
-      targets: ["panflute", "moonbase"], tile_types: ["GRASS"], prefabs: ["grass"],
+      targets: ["panflute", "moonbase"], tile_types: ["GRASS"], prefabs: ["grass"], background_recording: true,
       directions: ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"]
     });
     if (url === "/api/records") return apiResponse({records: []});
@@ -1130,6 +1130,10 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     throw new Error("unexpected fetch " + url);
   };
   await run("initialize()");
+  assert.equal(element("backgroundRecordingNotice").hidden, false);
+  assert.ok(element("backgroundRecordingNotice").textContent.includes("关闭网页") &&
+    element("backgroundRecordingNotice").textContent.includes("Ctrl+C"),
+    "startup explains the background recorder's lifetime separately from live display");
   assert.ok(initCalls.includes("/api/explorations"));
   assert.equal(run("state.explorations[0].id"), initSummary.id);
   assert.ok(element("explorationList").innerHTML.includes("/api/explorations/" + initSummary.id));
@@ -2069,6 +2073,17 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     assert.ok(vpCssRules.some(rule => rule[1].split(",").some(selector => selector.trim() === ".trail-svg ." + name) &&
       /pointer-events\s*:\s*none/.test(rule[2])), "decorative " + name + " lets clicks reach terrain");
   }
+
+  run("updateBackgroundRecordingNotice(true)");
+  const backgroundNotice = element("backgroundRecordingNotice").textContent;
+  run("stopLive()");
+  assert.equal(element("backgroundRecordingNotice").textContent, backgroundNotice,
+    "stopping browser live following does not claim to stop server recording");
+  run("updateBackgroundRecordingNotice(false)");
+  assert.ok(element("backgroundRecordingNotice").textContent.includes("未启用后台录制"));
+  run('updateBackgroundRecordingNotice("true")');
+  assert.equal(element("backgroundRecordingNotice").hidden, true,
+    "unknown and older option payloads cannot claim an active recorder");
 
   console.log("Live UI: replay recording, freshness-gated live routes, request timeouts and retries, history isolation, map follow and zoom, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

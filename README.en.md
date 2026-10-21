@@ -24,7 +24,7 @@ Install and enable [`mods/dst_route_collector`](mods/dst_route_collector/README.
 python route_planner.py --ui
 ```
 
-Select “检查连接” (check connection) on the page to see the file being read and the next step. Once fresh snapshots arrive, check “实时跟随” (live following). The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring.
+Select “检查连接” (check connection) on the page to see the file being read and the next step. Check “实时跟随” (live following) to show live positions and navigation suggestions in the page. While the tool runs, it records new snapshots in the background without an extra recording switch. The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring.
 
 You can also check the connection from the terminal:
 
@@ -40,7 +40,7 @@ On the trail map, choose “路线终点” (route endpoint) or click an observe
 
 During live following, a paused collector, an error, a manual stop, or a last valid snapshot older than five seconds pauses navigation. The map shows “导航已暂停” (navigation paused) and hides the purple live route and next-step guidance while keeping observed terrain, the last trail position, the route endpoint, and its target source. A live request that takes five seconds to complete times out; after the timeout, the page waits one second before retrying. Navigation resumes automatically when a fresh snapshot arrives; you do not need to toggle live following. Saved replay routes remain visible.
 
-While live following is active, the tool saves newly received snapshots locally, including coordinates, nearby clues, the current target, and direction suggestions. Download a JSONL file from “探索回放” (exploration replays) to keep the exploration session; saved replays remain available after restarting. Each world and collector session has its own recording.
+While the tool runs, it saves new snapshots to local JSONL files, including coordinates, nearby clues, the current target, and the direction suggestion at that time. Download a recording from “探索回放” (exploration replays); saved files remain available after restarting. Closing the page, viewing history, or turning off live following does not interrupt recording. Recording ends when you exit the Python tool (press Ctrl+C in the terminal). Each world and collector session has its own recording.
 
 “探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review it. Viewing a replay pauses live following; check it again to return to the current session. In “探索回放” (exploration replays), choose “导入回放” (Import replay) to open a file picker, then select a JSONL file downloaded from the tool. It uploads automatically. After a successful upload, the page opens the imported trail if the current view has not changed. If you switch views or worlds during upload, the page keeps the current view; choose “查看导入轨迹” (View imported trail) to open the imported replay manually. Imported trails include positions, terrain, observed targets, and grid routes. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
 
@@ -68,7 +68,7 @@ Check connection → choose a target; collect coordinates, tiles, landmarks, and
   ↓
 Collector: check the player-to-tile-center segment and connections between observed neighbors
   ↓
-Client log → external Python; update the current position and directional clues
+Client log → Python reads new snapshots in the background and updates position and direction suggestions
   ↓
 Match room/task clues and use task-graph context to rank exploration directions
   ↓
@@ -82,7 +82,7 @@ Player moves or a new connection check arrives → update the route
   ↓
 Collection pause / error / manual stop / stale snapshot → pause; request timeout → wait one second → retry; fresh snapshot → resume (no retries after stop or in history)
   ↓
-New snapshots → local replay → trail and route (full map or follow position) with observed tiles, latest position, and observed targets
+New snapshots → local replay → page shows the trail and route (full map or follow position) with observed tiles, latest position, and observed targets
   ↓
 Saved replay → view its trail and route, or download JSONL → import replay → view trail
   ↓
