@@ -93,6 +93,7 @@ def test_check_live_status_messages_and_exit_codes(
     assert ("(disabled)" if status == "disabled" else str(selected_log)) in output
     assert "private-world-id" not in output
     assert "private-session-id" not in output
+    assert "Observation summary:" not in output
     if status in {"live", "stale"}:
         assert "age" in output
         assert "x=-4" in output
@@ -108,6 +109,57 @@ def test_check_live_status_messages_and_exit_codes(
         assert "start the interface with --ui and enable live following" in output
     if status == "stale":
         assert "return to DST and unpause live collection" in output
+
+
+@pytest.mark.parametrize(
+    ("status", "terrain_available", "expected_terrain", "exit_code"),
+    [
+        (
+            "live",
+            True,
+            "terrain 5 tiles (3 passable, 1 blocked, 1 unknown)",
+            0,
+        ),
+        ("stale", False, "terrain not provided", 1),
+    ],
+)
+def test_check_live_prints_optional_observation_summary(
+    monkeypatch,
+    capsys,
+    status: str,
+    terrain_available: bool,
+    expected_terrain: str,
+    exit_code: int,
+) -> None:
+    selected_log = Path("client_log.txt")
+    response = {
+        "check_version": 1,
+        "status": status,
+        "log_path": str(selected_log),
+        "age_seconds": 0.2 if status == "live" else 8.0,
+        "position": {"x": 0, "y": 0, "z": 0},
+        "world_kind": "forest",
+        "observation_summary": {
+            "landmarks": 2,
+            "terrain_available": terrain_available,
+            "terrain_tiles": 5,
+            "passable_tiles": 3,
+            "blocked_tiles": 1,
+            "unknown_tiles": 1,
+            "clear_connections": 2,
+            "blocked_connections": 1,
+            "player_anchor": "unknown",
+        },
+    }
+    monkeypatch.setattr(cli, "resolve_live_log_path", lambda value: selected_log)
+    monkeypatch.setattr(cli, "inspect_live_log", lambda path: response)
+    monkeypatch.setattr(sys, "argv", ["route_planner.py", "--check-live"])
+
+    assert main() == exit_code
+    output = capsys.readouterr().out
+    assert "Observation summary: 2 landmarks;" in output
+    assert expected_terrain in output
+    assert "connections 2 clear, 1 blocked; player anchor unknown." in output
 
 
 def test_check_live_with_explicit_unicode_path_does_not_create_files(

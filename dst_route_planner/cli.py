@@ -289,6 +289,23 @@ def _report_live_check(result: dict) -> int:
             f"position x={float(position['x']):g}, y={float(position['y']):g}, "
             f"z={float(position['z']):g})."
         )
+        summary = result.get("observation_summary")
+        if summary is not None:
+            if summary["terrain_available"]:
+                terrain = (
+                    f"terrain {summary['terrain_tiles']} tiles "
+                    f"({summary['passable_tiles']} passable, "
+                    f"{summary['blocked_tiles']} blocked, "
+                    f"{summary['unknown_tiles']} unknown)"
+                )
+            else:
+                terrain = "terrain not provided"
+            print(
+                f"Observation summary: {summary['landmarks']} landmarks; {terrain}; "
+                f"connections {summary['clear_connections']} clear, "
+                f"{summary['blocked_connections']} blocked; "
+                f"player anchor {summary['player_anchor']}."
+            )
         if status == "live":
             print("Next: start the interface with --ui and enable live following.")
             return 0

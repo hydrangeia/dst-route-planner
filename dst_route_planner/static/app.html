@@ -727,7 +727,36 @@
           (value.age_seconds === undefined || !value.position || value.world_kind === undefined || value.sequence === undefined)) {
         throw new Error("连接检查结果缺少快照信息。");
       }
+      if (value.observation_summary !== undefined) {
+        const summary = value.observation_summary;
+        const summaryFields = ["landmarks", "terrain_available", "terrain_tiles", "passable_tiles", "blocked_tiles",
+          "unknown_tiles", "clear_connections", "blocked_connections", "player_anchor"];
+        if ((value.status !== "live" && value.status !== "stale") || !summary || typeof summary !== "object" || Array.isArray(summary) ||
+            Object.keys(summary).length !== summaryFields.length || !summaryFields.every(field => Object.prototype.hasOwnProperty.call(summary, field))) {
+          throw new Error("连接检查结果中的观测摘要格式无效。");
+        }
+        const countFields = ["landmarks", "terrain_tiles", "passable_tiles", "blocked_tiles", "unknown_tiles", "clear_connections", "blocked_connections"];
+        if (countFields.some(field => !Number.isSafeInteger(summary[field]) || summary[field] < 0) ||
+            typeof summary.terrain_available !== "boolean" ||
+            !["clear", "blocked", "unknown"].includes(summary.player_anchor)) {
+          throw new Error("连接检查结果中的观测摘要格式无效。");
+        }
+        if (summary.passable_tiles + summary.blocked_tiles + summary.unknown_tiles !== summary.terrain_tiles ||
+            (!summary.terrain_available && (summary.terrain_tiles !== 0 || summary.passable_tiles !== 0 || summary.blocked_tiles !== 0 ||
+              summary.unknown_tiles !== 0 || summary.clear_connections !== 0 || summary.blocked_connections !== 0 || summary.player_anchor !== "unknown"))) {
+          throw new Error("连接检查结果中的观测摘要格式无效。");
+        }
+      }
       return value;
+    }
+    function formatObservationSummary(summary, status) {
+      if (!summary) return "";
+      const heading = status === "stale" ? "最后快照摘要（已过期）" : "最新快照摘要";
+      const terrain = summary.terrain_available
+        ? `地皮：${summary.terrain_tiles} 格（可通行 ${summary.passable_tiles} / 受阻 ${summary.blocked_tiles} / 未知 ${summary.unknown_tiles}）`
+        : "地皮：未提供";
+      const playerAnchor = summary.player_anchor === "clear" ? "通过" : summary.player_anchor === "blocked" ? "受阻" : "未提供";
+      return `\n${heading}\n地标：${summary.landmarks} 个\n${terrain}\n邻格连接：通过 ${summary.clear_connections} / 受阻 ${summary.blocked_connections}\n玩家接入：${playerAnchor}`;
     }
     function formatLiveCheckResult(value) {
       const path = value.log_path === null ? "未配置" : value.log_path;
@@ -745,9 +774,11 @@
         case "waiting":
           return "日志已找到，暂未收到快照。请安装并启用客户端采集器，然后进入世界。\n" + pathLine;
         case "live":
-          return "连接正常 · " + world + "世界 · 玩家位置" + location + age + " · 快照 " + value.sequence + "\n" + pathLine;
+          return "连接正常 · " + world + "世界 · 玩家位置" + location + age + " · 快照 " + value.sequence + "\n" + pathLine +
+            formatObservationSummary(value.observation_summary, value.status);
         case "stale":
-          return "已找到日志，但最近快照已过期。请切回 DST 并解除暂停。 · " + world + "世界" + location + age + "\n" + pathLine;
+          return "已找到日志，但最近快照已过期。请切回 DST 并解除暂停。 · " + world + "世界" + location + age + "\n" + pathLine +
+            formatObservationSummary(value.observation_summary, value.status);
         case "error":
           return "读取日志失败：" + (value.error || "未提供错误详情") + "。请确认日志路径正确且当前用户有读取权限后重试。\n" + pathLine;
       }

@@ -1369,8 +1369,82 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.ok(element("liveCheckStatus").textContent.includes("连接正常 · 洞穴世界"));
   assert.ok(element("liveCheckStatus").textContent.includes("日志路径：" + diagnosticPath));
   assert.ok(element("liveCheckStatus").textContent.includes("X 4.0 / Y 1.0 / Z 9.0"));
+  assert.ok(!element("liveCheckStatus").textContent.includes("快照摘要"), "legacy live-check responses keep their original text without an observation summary");
   assert.equal(element("liveCheckStatus").innerHTML, "", "diagnostic paths render only as text, never as HTML");
   assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "a diagnostic response does not mutate live, observation, plan, replay, or trail state");
+
+  const validObservationSummary = {
+    landmarks: 0, terrain_available: true, terrain_tiles: 3, passable_tiles: 1, blocked_tiles: 1,
+    unknown_tiles: 1, clear_connections: 2, blocked_connections: 1, player_anchor: "clear"
+  };
+  context.fetch = async () => apiResponse({
+    check_version: 1, status: "live", log_path: "D:\\summary.log", age_seconds: 0,
+    position: {x: 4, y: 0, z: 9}, world_kind: "forest", sequence: 13, observation_summary: validObservationSummary
+  });
+  await element("liveCheckButton").listeners.click();
+  assert.ok(element("liveCheckStatus").textContent.includes("最新快照摘要"));
+  assert.ok(element("liveCheckStatus").textContent.includes("地标：0 个"), "zero landmarks are shown as a count, not treated as a failed connection");
+  assert.ok(element("liveCheckStatus").textContent.includes("地皮：3 格（可通行 1 / 受阻 1 / 未知 1）"));
+  assert.ok(element("liveCheckStatus").textContent.includes("邻格连接：通过 2 / 受阻 1"));
+  assert.ok(element("liveCheckStatus").textContent.includes("玩家接入：通过"));
+  assert.equal(element("liveCheckStatus").innerHTML, "", "summary content remains plain text");
+  assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "a live summary leaves live, form, replay, recording, and history state untouched");
+
+  const unavailableTerrainSummary = {
+    landmarks: 0, terrain_available: false, terrain_tiles: 0, passable_tiles: 0, blocked_tiles: 0,
+    unknown_tiles: 0, clear_connections: 0, blocked_connections: 0, player_anchor: "unknown"
+  };
+  context.fetch = async () => apiResponse({
+    check_version: 1, status: "live", log_path: "D:\\summary.log", age_seconds: 0,
+    position: {x: 4, y: 0, z: 9}, world_kind: "forest", sequence: 14, observation_summary: unavailableTerrainSummary
+  });
+  await run("checkLiveConnection()");
+  assert.ok(element("liveCheckStatus").textContent.includes("地皮：未提供"));
+  assert.ok(element("liveCheckStatus").textContent.includes("玩家接入：未提供"));
+  assert.ok(element("liveCheckStatus").textContent.includes("邻格连接：通过 0 / 受阻 0"));
+  assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "an unavailable-terrain summary leaves other UI state untouched");
+
+  context.fetch = async () => apiResponse({
+    check_version: 1, status: "stale", log_path: "D:\\summary.log", age_seconds: 11.25,
+    position: {x: 4, y: 0, z: 9}, world_kind: "forest", sequence: 15, observation_summary: validObservationSummary
+  });
+  await run("checkLiveConnection()");
+  assert.ok(element("liveCheckStatus").textContent.includes("最近快照已过期"));
+  assert.ok(element("liveCheckStatus").textContent.includes("解除暂停"));
+  assert.ok(element("liveCheckStatus").textContent.includes("11.3 秒前"));
+  assert.ok(element("liveCheckStatus").textContent.includes("最后快照摘要（已过期）"));
+  assert.ok(!element("liveCheckStatus").textContent.includes("最新快照摘要"), "stale summaries are labeled as the last snapshot");
+  assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "a stale summary leaves live, form, replay, recording, and history state untouched");
+
+  const malformedSummaries = [
+    {...validObservationSummary, landmarks: "0"},
+    {...validObservationSummary, terrain_tiles: Infinity},
+    {...validObservationSummary, terrain_tiles: Number.MAX_SAFE_INTEGER + 1},
+    {...validObservationSummary, passable_tiles: 1.5},
+    {...validObservationSummary, blocked_connections: -1},
+    {...validObservationSummary, terrain_available: 1},
+    {...validObservationSummary, player_anchor: "maybe"},
+    {...validObservationSummary, unknown_tiles: 0},
+    {...unavailableTerrainSummary, clear_connections: 1},
+    {...unavailableTerrainSummary, player_anchor: "clear"},
+    {...validObservationSummary, extra: "raw"}
+  ];
+  for (const summary of malformedSummaries) {
+    context.fetch = async () => apiResponse({
+      check_version: 1, status: "live", log_path: "D:\\invalid-summary.log", age_seconds: 0,
+      position: {x: 4, y: 0, z: 9}, world_kind: "forest", sequence: 16, observation_summary: summary
+    });
+    await run("checkLiveConnection()");
+    assert.ok(element("liveCheckStatus").textContent.includes("连接检查失败：连接检查结果中的观测摘要格式无效"),
+      "malformed optional observation summaries use the existing diagnostic error display");
+    assert.ok(element("liveCheckStatus").textContent.includes("日志路径：未能读取"));
+    assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "a rejected summary leaves other UI state untouched");
+  }
+  context.fetch = async () => apiResponse({check_version: 1, status: "waiting", log_path: "D:\\invalid-status.log", observation_summary: unavailableTerrainSummary});
+  await run("checkLiveConnection()");
+  assert.ok(element("liveCheckStatus").textContent.includes("连接检查失败：连接检查结果中的观测摘要格式无效"),
+    "observation summaries are accepted only on live or stale results");
+  assert.deepEqual(liveStateForDiagnostics(), diagnosticStateBefore, "a summary on a waiting response leaves other UI state untouched");
 
   const statusCases = [
     {status: "disabled", phrase: "--ui"},

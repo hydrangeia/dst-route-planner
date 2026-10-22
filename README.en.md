@@ -30,7 +30,7 @@ Replace the example path with the game's actual `mods/` folder. You can also cop
 python route_planner.py --ui
 ```
 
-Select “检查连接” (check connection) on the page to see the file being read and the next step. Check “实时跟随” (live following) to show live positions and navigation suggestions in the page. While the tool runs, it records new snapshots in the background. If the log emits several snapshots at once, the tool records them in log order. The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring.
+Select “检查连接” (check connection) to see the log path, coordinates, and observation summary, review terrain, landmarks, and passability checks, and follow the next step. Check “实时跟随” (live following) to show live positions and navigation suggestions in the page. While the tool runs, it records new snapshots in the background. If the log emits several snapshots at once, the tool records them in log order. The collector supplies coordinates and nearby clues once per second; the page recalculates directions automatically and shows straight-line distance when a target is visible. Move a little to check that coordinates change, then start exploring.
 
 You can also check the connection from the terminal:
 
@@ -72,7 +72,9 @@ Each save updates the record's current observations; click Save again after maki
 ```text
 Install the collector → enable it in the game's client mod list and enter a world → start the tool; locate the log automatically
   ↓
-Check connection → choose a target; collect coordinates, tiles, landmarks, and ground passability each second
+Check connection → review the latest valid position, freshness, and observation summary → choose a target
+  ↓
+Collect coordinates, tiles, landmarks, and ground passability each second
   ↓
 Collector: check the player-to-tile-center segment and connections between observed neighbors
   ↓

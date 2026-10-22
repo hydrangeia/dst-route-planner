@@ -101,6 +101,35 @@ def resolve_live_log_path(value: str | os.PathLike[str] | None = "auto") -> Path
     return Path(value).expanduser()
 
 
+def _observation_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Summarize only counts from an already validated snapshot."""
+    terrain_available = "terrain" in snapshot
+    tiles = snapshot["terrain"]["tiles"] if terrain_available else []
+    connections = [
+        connected
+        for tile in tiles
+        for connected in tile.get("connections", {}).values()
+    ]
+    anchor = snapshot.get("player_anchor")
+    return {
+        "landmarks": len(snapshot.get("landmarks", [])),
+        "terrain_available": terrain_available,
+        "terrain_tiles": len(tiles),
+        "passable_tiles": sum(tile.get("passable") is True for tile in tiles),
+        "blocked_tiles": sum(tile.get("passable") is False for tile in tiles),
+        "unknown_tiles": sum("passable" not in tile for tile in tiles),
+        "clear_connections": sum(connected is True for connected in connections),
+        "blocked_connections": sum(connected is False for connected in connections),
+        "player_anchor": (
+            "unknown"
+            if anchor is None
+            else "clear"
+            if anchor["clear"]
+            else "blocked"
+        ),
+    }
+
+
 def inspect_live_log(
     live_log: Path | str | None, *, now: float | None = None
 ) -> dict[str, Any]:
@@ -155,5 +184,6 @@ def inspect_live_log(
         position=dict(snapshot["position"]),
         world_kind=snapshot["world_kind"],
         sequence=snapshot["sequence"],
+        observation_summary=_observation_summary(snapshot),
     )
     return result
