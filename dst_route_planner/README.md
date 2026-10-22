@@ -18,6 +18,18 @@ python route_planner.py --sample-graph --seed 17
 
 `--seed` 默认为 `0`，同样的输入会使用同一组抽样连接图。`--sample-graph` 可以把一张连接图输出成 JSON。
 
+### 安装客户端采集器
+
+从仓库根目录运行安装命令，并传入已经存在的 DST `mods/` 目录：
+
+```powershell
+python route_planner.py --install-collector "D:\SteamLibrary\steamapps\common\Don't Starve Together\mods"
+```
+
+命令只会复制或更新 `collector.lua`、`modmain.lua` 和 `modinfo.lua` 到该目录下的 `dst_route_collector/`，并保留目标文件夹中的其他文件和其他 mod。替换内容有变化的旧 Lua 文件前，会把旧文件备份到仓库的 `.dst-route-planner/collector-backups/`；再次运行且文件内容相同时，不会改动目标文件或备份。命令会报告安装目标、采集器版本、备份位置（如有）和后续操作。随后在游戏客户端模组列表启用采集器、重新进入世界，运行 `python route_planner.py --check-live` 检查连接，再用 `python route_planner.py --ui` 打开网页。
+
+也可以按 [`采集器说明`](../mods/dst_route_collector/README.md) 手动复制整个 `mods/dst_route_collector` 文件夹。
+
 启动本地网页的其他选项：
 
 ```powershell
@@ -146,7 +158,7 @@ python -m pytest -q
 
 回放投影保留 `connections`；同一格的新观测整体替换旧值，省略字段会清除旧结果。旧回放不推断连接，仍可查看原有轨迹和地皮。
 
-采集器 0.2.0 起提供地皮中心，0.3.0 起提供地形通行检查，0.4.0 起提供邻格直连检查，0.5.0 起提供玩家接入检查。更新已有安装时重新复制采集器文件夹，再进入世界；已有玩家轨迹和目标标记可继续回看。
+采集器 0.2.0 起提供地皮中心，0.3.0 起提供地形通行检查，0.4.0 起提供邻格直连检查，0.5.0 起提供玩家接入检查。更新已有安装时可重新运行上面的安装命令或手动复制采集器文件夹，然后重新进入世界；已有玩家轨迹和目标标记可继续回看。
 
 ### 格网路线
 

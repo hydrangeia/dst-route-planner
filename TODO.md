@@ -25,6 +25,7 @@
 采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
 
 - [x] 启动时自动定位客户端日志，提供网页和终端的一次连接检查，显示读取路径与下一步操作。 / Locate the client log automatically on startup and provide page/terminal connection checks with the selected path and next steps.
+- [x] 提供客户端采集器安装命令，按明确给出的现有 `mods/` 路径安装，仅更新三个运行时 Lua 文件，并备份发生变化的旧文件。 / Add a client collector installer that takes an explicit existing `mods/` path, updates only its three runtime Lua files, and backs up replaced files.
 - [ ] 在游戏中验证日志输出、坐标方向、地标采集、地形通行、玩家接入段与邻格直连状态，记录一次完整探索过程。 / Verify log output, coordinate directions, landmarks, ground passability, player entry segments, and neighbor connections in game, and record a complete exploration run.
 - [x] 记录连续坐标、观测和可用的方向建议，按世界与会话保存本机 JSONL 回放，并支持重启后下载。 / Record successive coordinates, observations, and available direction suggestions in local JSONL replays by world and session, and make them available after restarting.
 - [x] Python 工具运行期间在后台读取新鲜快照并继续录制；关闭或最小化网页、查看历史或取消实时跟随都不影响录制，退出工具后停止。 / While the Python tool runs, read fresh snapshots and continue recording in the background; closing or minimizing the page, viewing history, or turning off live following does not interrupt recording, which stops when the tool exits.

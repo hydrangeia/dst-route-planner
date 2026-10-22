@@ -10,6 +10,7 @@ from dst_route_planner.connection import (
     inspect_live_log,
     resolve_live_log_path,
 )
+from dst_route_planner.collector_install import CollectorInstallError, install_collector
 from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import load_direction_observations, observation_from_dict
 from dst_route_planner.knowledge import build_forest_default_kb
@@ -256,6 +257,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample-graph", action="store_true", help="Print a sampled mainland task connection graph as JSON and exit.")
     parser.add_argument("--ui", action="store_true", help="Start the local browser interface.")
     parser.add_argument("--check-live", action="store_true", help="Check the client collector connection once and exit.")
+    parser.add_argument(
+        "--install-collector",
+        type=Path,
+        metavar="MODS_DIR",
+        help="Install or update the client collector in the game's mods folder.",
+    )
     parser.add_argument("--port", type=_port_number, default=8765, help="Local interface port (default: 8765).")
     parser.add_argument("--no-browser", action="store_true", help="Start the interface without opening a browser.")
     parser.add_argument(
@@ -330,6 +337,37 @@ def main() -> int:
         or args.current_json is not None
     ):
         parser.error("--check-live cannot be combined with other planner modes or observations.")
+    if args.install_collector is not None and (
+        args.ui
+        or args.check_live
+        or args.sample_graph
+        or args.demo
+        or args.list_targets
+        or args.observe_json is not None
+        or args.current_json is not None
+    ):
+        parser.error(
+            "--install-collector cannot be combined with --ui, --check-live, "
+            "--sample-graph, --demo, --list-targets, --observe-json, or --current-json."
+        )
+
+    if args.install_collector is not None:
+        try:
+            result = install_collector(args.install_collector)
+        except (CollectorInstallError, OSError) as error:
+            print(f"Unable to install collector: {error}", file=sys.stderr)
+            return 2
+        print(f"Collector install: {result['status']}")
+        print(f"Destination: {result['destination']}")
+        print(f"Version: {result['version']}")
+        if result["backup_path"] is not None:
+            print(f"Backup: {result['backup_path']}")
+        print(
+            "Next: enable the client collector in DST's Mods menu and re-enter the world, "
+            "then run `python route_planner.py --check-live` and "
+            "`python route_planner.py --ui`."
+        )
+        return 0
 
     if args.ui:
         from dst_route_planner.app import run_app

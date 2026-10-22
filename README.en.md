@@ -18,7 +18,13 @@ On Windows, you can also double-click `start_planner.bat`. The page opens in you
 
 ## Connect live observations
 
-Install and enable [`mods/dst_route_collector`](mods/dst_route_collector/README.md) as a client mod, then enter a world. The tool finds the client log automatically on startup. On Windows, double-click `start_planner.bat`, or run:
+First install the repository's [`mods/dst_route_collector`](mods/dst_route_collector/README.md) into the game's `mods/` folder, which must already exist. On Windows, run this from the repository folder:
+
+```powershell
+python route_planner.py --install-collector "D:\SteamLibrary\steamapps\common\Don't Starve Together\mods"
+```
+
+Replace the example path with the game's actual `mods/` folder. You can also copy the whole folder by following the collector guide. After installation, enable DST Route Planner Live Collector in the game's client mod list and enter a world. The tool finds the client log automatically on startup. On Windows, double-click `start_planner.bat`, or run:
 
 ```powershell
 python route_planner.py --ui
@@ -48,7 +54,7 @@ In “探索回放” (exploration replays), choose “导入回放” (Import r
 
 The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists up to the 10 most recent sightings, with time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there. Choose “前往所在格” (Go to observed tile) in the list or click a map diamond to set the observed, passable tile at that recorded location as the route endpoint. The route shows which target sighting it came from and leads to the tile center.
 
-“显示已观测地皮” (show observed tiles) adds the collected terrain beneath the trail, with colors for grass, forest, rock, marsh, water, and other tiles. The layer grows as you move and stays in saved replays; blank areas have not been collected. Caves also support positions, trails, and terrain recording; direction inference is still to come. Hatching marks tile centers that fail the ground-terrain check. Hover over a tile to see its passability; missing checks are shown as unknown. Turn the layer off to view just the trail and targets. To update an existing collector, copy the repository's `mods/dst_route_collector` into the game's `mods/` folder again, then re-enter the world.
+“显示已观测地皮” (show observed tiles) adds the collected terrain beneath the trail, with colors for grass, forest, rock, marsh, water, and other tiles. The layer grows as you move and stays in saved replays; blank areas have not been collected. Caves also support positions, trails, and terrain recording; direction inference is still to come. Hatching marks tile centers that fail the ground-terrain check. Hover over a tile to see its passability; missing checks are shown as unknown. Turn the layer off to view just the trail and targets. To update an existing collector, rerun the install command above or follow the collector guide's manual copy steps, then re-enter the world.
 
 Enable “显示邻格检查” (show neighbor checks) to view checked connections between observed neighboring tiles. The legend distinguishes clear and blocked connections in both live maps and saved replays; connections without a result stay blank.
 
@@ -64,7 +70,7 @@ The page includes demo observations and lets you import or export observation JS
 Each save updates the record's current observations; click Save again after making changes.
 
 ```text
-Enable the collector and enter a world → start the tool; locate the log automatically
+Install the collector → enable it in the game's client mod list and enter a world → start the tool; locate the log automatically
   ↓
 Check connection → choose a target; collect coordinates, tiles, landmarks, and ground passability each second
   ↓

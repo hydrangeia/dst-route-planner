@@ -197,3 +197,109 @@ def test_ui_startup_oserror_returns_clean_error(monkeypatch, capsys) -> None:
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "Unable to start the local interface: address already in use\n"
+
+
+@pytest.mark.parametrize(
+    ("status", "backup_path"),
+    [
+        ("installed", None),
+        ("updated", "/tmp/collector backup"),
+        ("unchanged", None),
+    ],
+)
+def test_install_collector_forwards_unicode_path_and_reports_result(
+    monkeypatch, capsys, tmp_path, status: str, backup_path: str | None
+) -> None:
+    mods_dir = tmp_path / "DST 游戏" / "My Mods"
+    destination = mods_dir / "dst_route_collector"
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        cli,
+        "install_collector",
+        lambda path: calls.append(path)
+        or {
+            "status": status,
+            "destination": str(destination),
+            "version": "0.6.0",
+            "backup_path": backup_path,
+            "files": ["modmain.lua"],
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["route_planner.py", "--install-collector", str(mods_dir)],
+    )
+
+    assert main() == 0
+    assert calls == [mods_dir]
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert f"Collector install: {status}" in captured.out
+    assert f"Destination: {destination}" in captured.out
+    assert "Version: 0.6.0" in captured.out
+    if backup_path is None:
+        assert "Backup:" not in captured.out
+    else:
+        assert f"Backup: {backup_path}" in captured.out
+    assert "enable the client collector in DST's Mods menu and re-enter the world" in captured.out
+    assert "python route_planner.py --check-live" in captured.out
+    assert "python route_planner.py --ui" in captured.out
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (cli.CollectorInstallError("missing bundled files"), "missing bundled files"),
+        (OSError("permission denied"), "permission denied"),
+    ],
+)
+def test_install_collector_failures_return_clean_error(
+    monkeypatch, capsys, error: Exception, message: str
+) -> None:
+    monkeypatch.setattr(cli, "install_collector", lambda mods_dir: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["route_planner.py", "--install-collector", "DST mods"],
+    )
+
+    assert main() == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"Unable to install collector: {message}\n"
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--ui"],
+        ["--check-live"],
+        ["--sample-graph"],
+        ["--demo"],
+        ["--list-targets"],
+        ["--observe-json", "observations.json"],
+        ["--current-json", "current.json"],
+    ],
+)
+def test_install_collector_rejects_other_modes_before_install(
+    monkeypatch, capsys, extra_args: list[str]
+) -> None:
+    calls: list[Path] = []
+    monkeypatch.setattr(cli, "install_collector", lambda path: calls.append(path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["route_planner.py", "--install-collector", "DST mods", *extra_args],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 2
+    assert "--install-collector cannot be combined" in captured.err
+    assert captured.out == ""
+    assert calls == []

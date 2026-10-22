@@ -4,19 +4,23 @@
 
 ## 安装与连接
 
-1. 将仓库中的整个 `mods/dst_route_collector` 文件夹复制到 DST 安装目录的 `mods/` 下。
-2. 在游戏的客户端模组列表中启用 DST Route Planner Live Collector，进入一个世界。
-3. 双击规划器的 `start_planner.bat`，或在仓库目录启动。工具会自动定位客户端日志：
+在仓库目录运行安装命令，并把参数设为已经存在的 DST `mods/` 目录：
+
+```powershell
+python route_planner.py --install-collector "D:\SteamLibrary\steamapps\common\Don't Starve Together\mods"
+```
+
+也可以手动将整个 `mods/dst_route_collector` 文件夹复制到 DST 的 `mods/` 下。之后在游戏的客户端模组列表启用 DST Route Planner Live Collector 并进入一个世界，再双击规划器的 `start_planner.bat` 或在仓库目录启动。工具会自动定位客户端日志：
 
 ```powershell
 python route_planner.py --ui
 ```
 
-4. 工具运行期间会自动在后台记录新快照。在网页点“检查连接”查看连接状态；勾选“实时跟随”可显示实时位置和导航建议。移动角色，确认 X/Z 坐标跟着变化。关闭网页或取消实时跟随不会停止录制；退出 Python 工具（终端按 Ctrl+C）后录制结束。日志路径不同时，用 `--live-log "实际路径/client_log.txt"` 启动；终端也可用 `python route_planner.py --check-live` 检查。
+工具运行期间会自动在后台记录新快照。在网页点“检查连接”查看连接状态；勾选“实时跟随”可显示实时位置和导航建议。移动角色，确认 X/Z 坐标跟着变化。关闭网页或取消实时跟随不会停止录制；退出 Python 工具（终端按 Ctrl+C）后录制结束。日志路径不同时，用 `--live-log "实际路径/client_log.txt"` 启动；终端也可用 `python route_planner.py --check-live` 检查。
 
-For English setup: copy this whole folder into the DST installation's `mods/` folder, enable it as a client mod, enter a world, and run the command above from the planner checkout. The tool automatically records new snapshots in the background while it runs. Select “检查连接” (check connection) to see the connection status; enable “实时跟随” (live following) to show live positions and navigation suggestions. Closing the page or turning off live following does not stop recording; recording ends when you exit the Python tool (press Ctrl+C in the terminal). Use `--live-log "actual/path/client_log.txt"` for another log location, or `python route_planner.py --check-live` for a terminal check. Move your character to check that X/Z updates.
+For English setup, run the command above from the planner checkout and pass the existing DST `mods/` folder. You can also copy this whole folder manually. Then enable DST Route Planner Live Collector in the game's client mod list and enter a world. Start the planner after that. The tool automatically records new snapshots in the background while it runs. Select “检查连接” (check connection) to see the connection status; enable “实时跟随” (live following) to show live positions and navigation suggestions. Closing the page or turning off live following does not stop recording; recording ends when you exit the Python tool (press Ctrl+C in the terminal). Use `--live-log "actual/path/client_log.txt"` for another log location, or `python route_planner.py --check-live` for a terminal check. Move your character to check that X/Z updates.
 
-更新已有采集器时，重新复制这个文件夹并覆盖原文件，再重新进入世界。0.5.0 版新增玩家所在格中心与当前位置之间的检查。 / To update an existing installation, copy this folder over the previous files and re-enter the world. Version 0.5.0 adds a check between the player's current position and the center of the tile they occupy.
+更新现有安装时，可重新运行安装命令或手动复制采集器文件夹，然后在游戏中重新进入世界。0.5.0 版新增玩家当前位置到所在格中心的接入检查。 / To update an existing installation, rerun the install command or copy the collector folder manually, then re-enter the world. Version 0.5.0 adds an entry check from the player's current position to the center of the tile they occupy.
 
 ## 采集内容
 
