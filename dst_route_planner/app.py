@@ -199,6 +199,8 @@ def _parse_live_query(query: str, kb=KB) -> tuple[str, int]:
 
 
 def _parse_trail_query(query: str) -> int | None:
+    if not query:
+        return None
     try:
         parameters = parse_qs(query, keep_blank_values=True, strict_parsing=True)
     except ValueError as exc:

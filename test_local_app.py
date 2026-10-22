@@ -1829,3 +1829,14 @@ def test_exploration_trail_api_cutoff_and_query_validation_happen_before_read(
         )
         assert status == 400, query
         assert "error" in body
+
+
+def test_empty_trail_query_skips_strict_parser_for_python_310(monkeypatch) -> None:
+    def strict_parser(query, **kwargs):
+        raise ValueError("bad query field: empty string")
+
+    monkeypatch.setattr(app, "parse_qs", strict_parser)
+
+    assert app._parse_trail_query("") is None
+    with pytest.raises(app.InputValidationError, match="invalid trail query string"):
+        app._parse_trail_query("through_sequence")
