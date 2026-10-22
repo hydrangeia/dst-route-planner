@@ -70,6 +70,10 @@ function trailPayload(summary, points, landmarks = undefined, landmarksTruncated
     ...(terrain === undefined ? {} : {terrain})
   };
 }
+function trailPlaybackPayload(summary, points, throughSequence, totalFrameCount, landmarks = undefined, terrain = undefined) {
+  return {...trailPayload(summary, points, landmarks, false, terrain),
+    playback: {through_sequence: throughSequence, total_frame_count: totalFrameCount}};
+}
 run('state.options={targets:["panflute","moonbase"],tile_types:["GRASS"],prefabs:["grass"],directions:DIRS.slice()}; live.following=true;');
 function replaySummary(id, options = {}) {
   return {
@@ -1043,14 +1047,14 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.equal(run("trailState.mode"), "history");
   assert.equal(run("trailState.id"), raceB.id);
   await settle();
-  assert.equal(run("trailState.terrainTiles.find(tile => tile.x === 50).passable"), false,
-    "historical trail merging preserves the newer local blocked check over saved terrain");
-  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.terrainTiles.find(tile => tile.x === 50).connections)")), {east: false},
-    "historical trail merging preserves the newer local connection results over saved terrain");
+  assert.equal(run("trailState.terrainTiles.find(tile => tile.x === 50).passable"), true,
+    "history displays the terrain saved in the selected replay without merging newer live checks");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.terrainTiles.find(tile => tile.x === 50).connections)")), {east: true},
+    "history displays the saved connection result without newer live checks");
   assert.equal(trailCallCounts.get(raceB.id), 4, "opening a replay refreshes cached trail data when its frame count advanced");
   assert.equal(run("trailState.points.length"), 4);
-  assert.ok(!Object.hasOwn(JSON.parse(run("JSON.stringify(trailState.points.find(point=>point.sequence===1))")), "player_anchor"),
-    "history cache merging does not resurrect a same-sequence anchor cleared by the local frame");
+  assert.equal(run("trailState.points.find(point=>point.sequence===1).player_anchor.clear"), true,
+    "saved history keeps its recorded anchor instead of replacing it with a newer local point");
   assert.ok(element("trailStatus").textContent.includes("历史回放"));
   assert.ok(JSON.parse(run("JSON.stringify(trailState.landmarks)")).some(item => item.prefab === "panflute" && item.x === 49),
     "saved history opens remembered target positions");
@@ -1105,6 +1109,211 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   pendingTrails.get(historyC.id)(apiResponse(trailPayload(historyC, [trailPoint(3, 10, 900, 0)])));
   await settle();
   assert.equal(run("trailState.points.length"), 0, "stopping invalidates a pending historical trail response");
+
+  // Historical frame review requests server-projected prefixes by the recorded sequence.
+  const playbackSummary = replaySummary("a".repeat(64), {
+    worldId: "playback-world", session: "playback-session", frames: 3
+  });
+  const playbackPoints = [trailPoint(2, 1200, 0, 0), trailPoint(5, 1500, 4, 0), trailPoint(12, 2200, 8, 0)];
+  const playbackLandmarks = [remembered("panflute", 4, 0, 5, 5, 1500, 1500),
+    remembered("panflute", 12, 0, 12, 12, 2200, 2200)];
+  const playbackTerrain = [terrainCell(0, 0, "GRASS", 2, 1200, false),
+    terrainCell(4, 0, "MARSH", 5, 1500, true), terrainCell(8, 0, "ROCKY", 12, 2200, true)];
+  const playbackBaseUrl = "/api/explorations/" + playbackSummary.id + "/trail";
+  context.playbackSummary = playbackSummary;
+  context.playbackFuturePoint = trailPoint(20, 3000, 200, 0);
+  context.playbackFutureLandmark = remembered("panflute", 200, 0, 20, 20, 3000, 3000);
+  context.playbackFutureTerrain = terrainCell(200, 0, "FOREST", 20, 3000, true);
+  run(`trailState.live={identity:explorationReplayIdentity(playbackSummary),id:playbackSummary.id,
+    localPoints:[playbackFuturePoint],storedPoints:[],trimmed:false,localLandmarks:[playbackFutureLandmark],
+    storedLandmarks:[],landmarksTruncated:false,landmarkError:"",localTerrain:[playbackFutureTerrain],
+    storedTerrain:[],localTerrainAvailable:true,storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};`);
+  const playbackUrls = [];
+  const playbackAppendedPoints = [...playbackPoints, trailPoint(20, 3000, 12, 0)];
+  const playbackAppendedTerrain = [...playbackTerrain, terrainCell(12, 0, "FOREST", 20, 3000, true)];
+  context.fetch = async url => {
+    playbackUrls.push(url);
+    if (url === playbackBaseUrl) {
+      return apiResponse(trailPayload(playbackSummary, playbackPoints, playbackLandmarks, false,
+        {tile_size: 4, tiles: playbackTerrain, truncated: false}));
+    }
+    const match = url.match(/\?through_sequence=(\d+)$/);
+    if (!match) throw new Error("unexpected playback request " + url);
+    const sequence = Number(match[1]);
+    const points = playbackPoints.filter(point => point.sequence <= sequence);
+    const landmarks = playbackLandmarks.filter(item => item.last_sequence <= sequence);
+    const tiles = playbackTerrain.filter(item => item.last_sequence <= sequence);
+    return apiResponse(trailPlaybackPayload(playbackSummary, points, sequence, 4, landmarks,
+      {tile_size: 4, tiles, truncated: false}));
+  };
+  run(`openExplorationTrail(${JSON.stringify(playbackSummary)})`);
+  await settle();
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.playback.timeline.map(frame=>frame.sequence))")), [2, 5, 12],
+    "the full response keeps the sparse recorded frame index independently of the visible prefix");
+  assert.equal(run("trailState.points.length"), 3, "opening history displays only the saved trail even when local live data is newer");
+  assert.equal(run("trailState.landmarks.length"), 2, "opening history does not merge unsaved local sightings");
+  assert.equal(run("trailState.terrainTiles.length"), 3, "opening history does not merge unsaved local terrain");
+  assert.ok(playbackUrls.includes(playbackBaseUrl), "opening a replay still requests the unchanged full-trail URL");
+  assert.equal(element("trailPlaybackControls").hidden, false);
+  assert.equal(element("trailPlaybackRange").min, "0");
+  assert.equal(element("trailPlaybackRange").max, "2");
+  assert.equal(element("trailPlaybackRange").value, "2", "history opens at the latest recorded frame");
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 3 / 3 帧 · 序号 12 ·"),
+    "history status identifies the latest frame, its actual sequence, and capture time");
+
+  run('checkedRouteSelection.identity=trailState.identity;checkedRouteSelection.destination={x:4,z:0};checkedRouteSelection.source={prefab:"panflute",x:4,z:0};');
+  element("trailPlaybackRange").value = "1";
+  element("trailPlaybackRange").listeners.change();
+  await settle();
+  assert.ok(playbackUrls.includes(playbackBaseUrl + "?through_sequence=5"),
+    "the slider sends the selected sparse frame sequence in the cutoff URL");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2, 5]);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.landmarks.map(item=>item.last_sequence))")), [5],
+    "a prefix response shows only sightings known at the selected frame");
+  assert.ok(JSON.parse(run("JSON.stringify(trailState.terrainTiles)")).every(tile => tile.last_sequence <= 5),
+    "a prefix response shows no terrain checks from later frames");
+  assert.equal(run("checkedRouteSelection.destination"), null,
+    "changing the cursor clears a route endpoint that could reveal a later clue");
+  assert.equal(run("checkedRouteSelection.source"), null, "changing the cursor also clears the route source");
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 2 / 3 帧 · 序号 5"));
+
+  element("trailPlaybackNextButton").listeners.click();
+  await settle();
+  assert.ok(playbackUrls.includes(playbackBaseUrl + "?through_sequence=12"),
+    "next advances through the frame index and sends its actual sequence");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2, 5, 12]);
+  element("trailPlaybackPreviousButton").listeners.click();
+  await settle();
+  assert.equal(run("trailState.playback.appliedIndex"), 1, "previous returns to the earlier recorded frame");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2, 5]);
+
+  context.fetch = async url => {
+    playbackUrls.push(url);
+    if (url === playbackBaseUrl) return apiResponse(trailPayload(playbackSummary, playbackAppendedPoints,
+      [...playbackLandmarks, context.playbackFutureLandmark], false,
+      {tile_size: 4, tiles: playbackAppendedTerrain, truncated: false}));
+    const match = url.match(/\?through_sequence=(\d+)$/);
+    if (!match) throw new Error("unexpected appended-history request " + url);
+    const sequence = Number(match[1]);
+    const points = playbackAppendedPoints.filter(point => point.sequence <= sequence);
+    const landmarks = [...playbackLandmarks, context.playbackFutureLandmark].filter(item => item.last_sequence <= sequence);
+    const tiles = playbackAppendedTerrain.filter(item => item.last_sequence <= sequence);
+    return apiResponse(trailPlaybackPayload(playbackSummary, points, sequence, 4, landmarks,
+      {tile_size: 4, tiles, truncated: false}));
+  };
+  element("trailPlaybackLatestButton").listeners.click();
+  await settle();
+  assert.equal(playbackUrls.at(-1), playbackBaseUrl, "jump to latest refreshes the full trail to pick up appended frames");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.playback.timeline.map(frame=>frame.sequence))")), [2, 5, 12, 20]);
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 4 / 4 帧 · 序号 20"));
+
+  let resolveOlderPrefix;
+  let resolveNewerPrefix;
+  context.fetch = url => new Promise(resolve => {
+    if (url.endsWith("through_sequence=2")) resolveOlderPrefix = resolve;
+    else if (url.endsWith("through_sequence=5")) resolveNewerPrefix = resolve;
+    else throw new Error("unexpected race request " + url);
+  });
+  element("trailPlaybackRange").value = "0";
+  element("trailPlaybackRange").listeners.change();
+  element("trailPlaybackRange").value = "1";
+  element("trailPlaybackRange").listeners.change();
+  resolveNewerPrefix(apiResponse(trailPlaybackPayload(playbackSummary, playbackPoints.slice(0, 2), 5, 4,
+    playbackLandmarks.slice(0, 1), {tile_size: 4, tiles: playbackTerrain.slice(0, 2), truncated: false})));
+  await settle();
+  resolveOlderPrefix(apiResponse(trailPlaybackPayload(playbackSummary, playbackPoints.slice(0, 1), 2, 4, [],
+    {tile_size: 4, tiles: playbackTerrain.slice(0, 1), truncated: false})));
+  await settle();
+  assert.equal(run("trailState.playback.appliedIndex"), 1,
+    "a late response from an older cursor cannot replace the most recent selection");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2, 5]);
+
+  context.fetch = async () => { throw new Error("cutoff unavailable"); };
+  element("trailPlaybackRange").value = "0";
+  element("trailPlaybackRange").listeners.change();
+  await settle();
+  assert.ok(run("trailState.playback.error").includes("cutoff unavailable"), "cutoff failures are shown in replay status");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2, 5],
+    "a failed cutoff leaves the last successful prefix visible");
+  context.fetch = async url => {
+    assert.equal(url, playbackBaseUrl + "?through_sequence=2");
+    return apiResponse(trailPlaybackPayload(playbackSummary, playbackPoints.slice(0, 1), 2, 4, [],
+      {tile_size: 4, tiles: playbackTerrain.slice(0, 1), truncated: false}));
+  };
+  element("refreshTrailButton").listeners.click();
+  await settle();
+  assert.equal(run("trailState.playback.error"), "", "refresh retries the failed cutoff at the same selected frame");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2]);
+
+  let resolveStaleLivePrefix;
+  context.fetch = () => new Promise(resolve => { resolveStaleLivePrefix = resolve; });
+  element("trailPlaybackRange").value = "2";
+  element("trailPlaybackRange").listeners.change();
+  run("resumeLiveTrailView()");
+  const livePointsBeforeStalePrefix = JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))"));
+  resolveStaleLivePrefix(apiResponse(trailPlaybackPayload(playbackSummary, playbackPoints, 12, 4,
+    playbackLandmarks, {tile_size: 4, tiles: playbackTerrain, truncated: false})));
+  await settle();
+  assert.equal(run("trailState.mode"), "live");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), livePointsBeforeStalePrefix,
+    "a cutoff response cannot replace the live view after resuming collection");
+  assert.equal(element("trailPlaybackControls").hidden, true, "replay controls hide after returning to live mode");
+
+  const replaySwitch = replaySummary("b".repeat(64), {worldId: "switch-world", session: "switch-session"});
+  let resolveStaleReplayPrefix;
+  context.fetch = url => {
+    if (url === playbackBaseUrl + "?through_sequence=2") return new Promise(resolve => { resolveStaleReplayPrefix = resolve; });
+    if (url === "/api/explorations/" + replaySwitch.id + "/trail") {
+      return Promise.resolve(apiResponse(trailPayload(replaySwitch, [trailPoint(40, 4000, 400, 0)])));
+    }
+    throw new Error("unexpected replay-switch request " + url);
+  };
+  run(`openExplorationTrail(${JSON.stringify(playbackSummary)})`);
+  await settle();
+  element("trailPlaybackRange").value = "0";
+  element("trailPlaybackRange").listeners.change();
+  run(`openExplorationTrail(${JSON.stringify(replaySwitch)})`);
+  await settle();
+  resolveStaleReplayPrefix(apiResponse(trailPlaybackPayload(playbackSummary, playbackPoints.slice(0, 1), 2, 4, [],
+    {tile_size: 4, tiles: playbackTerrain.slice(0, 1), truncated: false})));
+  await settle();
+  assert.equal(run("trailState.id"), replaySwitch.id, "a stale cutoff cannot replace a different replay");
+  assert.equal(run("trailState.points[0].sequence"), 40);
+
+  const emptyPlayback = replaySummary("c".repeat(64), {worldId: "empty-playback", frames: 0});
+  context.fetch = async url => {
+    assert.equal(url, "/api/explorations/" + emptyPlayback.id + "/trail");
+    return apiResponse(trailPayload(emptyPlayback, []));
+  };
+  run(`openExplorationTrail(${JSON.stringify(emptyPlayback)})`);
+  await settle();
+  assert.equal(element("trailPlaybackControls").hidden, true, "empty histories hide unusable frame controls");
+  assert.ok(element("trailPlaybackStatus").textContent.includes("没有可回看的坐标帧"));
+  const singlePlayback = replaySummary("d".repeat(64), {worldId: "single-playback", frames: 1});
+  context.fetch = async url => {
+    assert.equal(url, "/api/explorations/" + singlePlayback.id + "/trail");
+    return apiResponse(trailPayload(singlePlayback, [trailPoint(7, 7000, 70, 0)]));
+  };
+  run(`openExplorationTrail(${JSON.stringify(singlePlayback)})`);
+  await settle();
+  assert.equal(element("trailPlaybackControls").hidden, true, "a one-frame history hides controls with no useful range");
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 1 / 1 帧 · 序号 7"));
+
+  const largePlayback = replaySummary("e".repeat(64), {worldId: "large-playback", frames: 520});
+  const largePlaybackPoints = Array.from({length: 520}, (_, index) => trailPoint(index * 3 + 1, index + 1, index, 0));
+  context.fetch = async url => {
+    assert.equal(url, "/api/explorations/" + largePlayback.id + "/trail");
+    return apiResponse(trailPayload(largePlayback, largePlaybackPoints));
+  };
+  run(`openExplorationTrail(${JSON.stringify(largePlayback)})`);
+  await settle();
+  assert.equal(run("trailState.playback.timeline.length"), 520,
+    "the history index retains all available frames beyond the former 500-frame display limit");
+  assert.equal(element("trailPlaybackRange").max, "519");
+
+  run("resumeLiveTrailView()");
+  assert.equal(element("trailPlaybackControls").hidden, true);
+  assert.equal(element("trailPlaybackStatus").hidden, true, "playback status is hidden outside historical mode");
 
   run('trailState.mode="idle";trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:""};trailState.landmarks=[];trailState.landmarksTruncated=false;trailState.landmarkError="";state.liveRecording=null;');
   run(`for(let i=0;i<10002;i++){recordLiveTrailSnapshot({world_id:"bound-world",world_kind:"forest",session_id:"bound-session",sequence:i,captured_at:i,position:{x:i,z:0}});}`);

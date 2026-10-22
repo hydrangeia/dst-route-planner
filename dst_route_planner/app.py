@@ -198,6 +198,37 @@ def _parse_live_query(query: str, kb=KB) -> tuple[str, int]:
     return target, seed
 
 
+def _parse_trail_query(query: str) -> int | None:
+    try:
+        parameters = parse_qs(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise InputValidationError("invalid trail query string.") from exc
+    unsupported = set(parameters) - {"through_sequence"}
+    if unsupported:
+        names = ", ".join(sorted(unsupported))
+        raise InputValidationError(f"unsupported query parameter(s): {names}.")
+    values = parameters.get("through_sequence", [])
+    if len(values) > 1:
+        raise InputValidationError("through_sequence must be supplied exactly once.")
+    if not values:
+        return None
+    raw_sequence = values[0]
+    if not raw_sequence.isascii() or not raw_sequence.isdigit():
+        raise InputValidationError("through_sequence must be a positive base-10 integer.")
+    # Match Python 3.11's default decimal conversion limit on Python 3.10 too.
+    if len(raw_sequence) > 4300:
+        raise InputValidationError("through_sequence must be a positive base-10 integer.")
+    try:
+        sequence = int(raw_sequence)
+    except ValueError as exc:
+        raise InputValidationError(
+            "through_sequence must be a positive base-10 integer."
+        ) from exc
+    if sequence <= 0:
+        raise InputValidationError("through_sequence must be a positive base-10 integer.")
+    return sequence
+
+
 def _live_request(
     query: str,
     live_log: Path | None,
@@ -452,6 +483,11 @@ class _PlannerHandler(BaseHTTPRequestHandler):
         trail_prefix = "/api/explorations/"
         trail_suffix = "/trail"
         if path.startswith(trail_prefix) and path.endswith(trail_suffix):
+            try:
+                through_sequence = _parse_trail_query(urlsplit(self.path).query)
+            except InputValidationError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
             exploration_id = path[len(trail_prefix) : -len(trail_suffix)]
             if not exploration_id:
                 self._send_json(404, {"error": "Route not found."})
@@ -459,7 +495,7 @@ class _PlannerHandler(BaseHTTPRequestHandler):
             try:
                 normalized_id = self.server.exploration_store.normalize_id(exploration_id)
                 content = self.server.exploration_store.get_bytes(normalized_id)
-                trail = project_trail(content)
+                trail = project_trail(content, through_sequence=through_sequence)
             except InvalidExplorationIdError as exc:
                 self._send_json(400, {"error": str(exc)})
                 return

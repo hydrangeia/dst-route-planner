@@ -124,6 +124,8 @@ python -m pytest -q
 
 `GET /api/explorations/<id>/trail` 返回 `trail_version: 1`、会话标识、`frame_count`、`points` 和 `bounds`。每个点包含 `sequence`、`captured_at`、`x`、`z`，以及该帧提供时的 `player_anchor`；下一帧缺少接入检查时不会继承上一帧。边界包含 `min_x`、`max_x`、`min_z`、`max_z`，没有位置时为 `null`。接口只投影已有回放，不修改记录。
 
+`GET /api/explorations/<id>/trail?through_sequence=N` 要求正整数 `N`，只用 `sequence <= N` 的快照生成轨迹投影，并在原有字段外增加 `playback` 元数据：`through_sequence` 回显请求截止序号，`total_frame_count` 为整段回放的快照总数。序号可以不连续；网页把进度滑块位置映射到实际观测帧，所以前后翻帧不会显示空帧。省略查询参数时，接口继续返回原样的完整轨迹。
+
 轨迹图的“已见目标”按当前所选目标筛选，最多显示最近看到的十个位置。菱形标记上的编号与列表一致；列表包含坐标、最近看到的时间，以及相对最新玩家观测的方位和直线距离。离开目标附近后，标记仍保留在本次会话与历史回放中。当前视野内目标的距离继续在实时观测区域显示。
 
 轨迹接口新增 `landmarks` 和 `landmarks_truncated`。每个地标包含 `prefab`、`x`、`z`、`first_seen`、`last_seen`、`first_sequence` 和 `last_sequence`。同一 prefab 的完全相同坐标合并为一个观测位置；不同坐标分别记录。每个会话的投影最多保留最近观测到的 500 个位置，超过时设置截断标记；原始 JSONL 回放仍保留完整快照。未记录地标的旧回放返回空列表。`bounds` 继续只表示玩家轨迹范围，网页绘图会一起纳入当前展示的目标位置。

@@ -1763,3 +1763,69 @@ def test_run_app_closes_background_recorder_when_browser_open_fails(
     recorder_thread = server._background_recording_thread
     assert recorder_thread is not None
     assert not recorder_thread.is_alive()
+
+
+def test_exploration_trail_api_cutoff_and_query_validation_happen_before_read(
+    local_server, monkeypatch
+) -> None:
+    base_url, server = local_server
+    _, _, demo = _get(base_url, "/api/demo")
+    summary = None
+    for sequence in (1, 3, 8):
+        snapshot = _live_snapshot(demo["directions"], sequence=sequence)
+        snapshot["position"].update(x=sequence, z=sequence * 2)
+        snapshot["terrain"] = {
+            "tile_size": 4,
+            "tiles": [{"x": sequence, "z": 1, "tile": f"T{sequence}"}],
+        }
+        summary = server.exploration_store.capture(
+            snapshot, target="panflute", seed=0
+        )
+    assert summary is not None
+
+    prefix_status, _, prefix = _get(
+        base_url, f"/api/explorations/{summary['id']}/trail?through_sequence=2"
+    )
+    assert prefix_status == 200
+    assert prefix["playback"] == {"through_sequence": 2, "total_frame_count": 3}
+    assert prefix["frame_count"] == 1
+    assert [point["sequence"] for point in prefix["points"]] == [1]
+    assert prefix["bounds"] == {"min_x": 1, "max_x": 1, "min_z": 2, "max_z": 2}
+    assert [tile["tile"] for tile in prefix["terrain"]["tiles"]] == ["T1"]
+
+    gap_status, _, gap = _get(
+        base_url, f"/api/explorations/{summary['id']}/trail?through_sequence=5"
+    )
+    assert gap_status == 200
+    assert gap["playback"] == {"through_sequence": 5, "total_frame_count": 3}
+    assert [point["sequence"] for point in gap["points"]] == [1, 3]
+
+    full_status, _, full = _get(
+        base_url, f"/api/explorations/{summary['id']}/trail"
+    )
+    assert full_status == 200
+    assert full["frame_count"] == 3
+    assert "playback" not in full
+
+    def unexpected_read(_):
+        pytest.fail("invalid trail queries must be rejected before reading a journal")
+
+    monkeypatch.setattr(server.exploration_store, "get_bytes", unexpected_read)
+    invalid_queries = [
+        "through_sequence=0",
+        "through_sequence=-1",
+        "through_sequence=",
+        "through_sequence",
+        "through_sequence=abc",
+        "through_sequence=1.5",
+        "through_sequence=true",
+        "through_sequence=1&through_sequence=2",
+        "other=1",
+        "through_sequence=" + "9" * 5000,
+    ]
+    for query in invalid_queries:
+        status, _, body = _get(
+            base_url, f"/api/explorations/{summary['id']}/trail?{query}"
+        )
+        assert status == 400, query
+        assert "error" in body

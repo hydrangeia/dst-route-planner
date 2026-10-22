@@ -42,7 +42,9 @@ During live following, a paused collector, an error, a manual stop, or a last va
 
 While the tool runs, it saves new snapshots to local JSONL files, including coordinates, nearby clues, the current target, and the direction suggestion at that time. Download a recording from “探索回放” (exploration replays); saved files remain available after restarting. Closing the page, viewing history, or turning off live following does not interrupt recording. Recording ends when you exit the Python tool (press Ctrl+C in the terminal). Each world and collector session has its own recording.
 
-“探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review it. Viewing a replay pauses live following; check it again to return to the current session. In “探索回放” (exploration replays), choose “导入回放” (Import replay) to open a file picker, then select a JSONL file downloaded from the tool. It uploads automatically. After a successful upload, the page opens the imported trail if the current view has not changed. If you switch views or worlds during upload, the page keeps the current view; choose “查看导入轨迹” (View imported trail) to open the imported replay manually. Imported trails include positions, terrain, observed targets, and grid routes. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
+“探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review it. Viewing a replay pauses live following; check it again to return to the current session. An existing or imported replay opens at its latest observed frame. Use “回放进度” (Replay progress), “上一帧” (Previous frame), “下一帧” (Next frame), or “跳到最新” (Go to latest) to step through recorded frames. Each frame shows only positions, terrain, connections, and targets observed by then. These history controls are hidden during live following while background recording continues.
+
+In “探索回放” (exploration replays), choose “导入回放” (Import replay) to open a file picker, then select a JSONL file downloaded from the tool. It uploads automatically. After a successful upload, the page opens the imported trail if the current view has not changed. If you switch views or worlds during upload, the page keeps the current view; choose “查看导入轨迹” (View imported trail) to open the imported replay manually. Imported trails include positions, terrain, observed targets, and grid routes. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
 
 The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists up to the 10 most recent sightings, with time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there. Choose “前往所在格” (Go to observed tile) in the list or click a map diamond to set the observed, passable tile at that recorded location as the route endpoint. The route shows which target sighting it came from and leads to the tile center.
 
@@ -84,7 +86,9 @@ Collection pause / error / manual stop / stale snapshot → pause; request timeo
   ↓
 New snapshots → local replay → page shows the trail and route (full map or follow position) with observed tiles, latest position, and observed targets
   ↓
-Saved replay → view its trail and route, or download JSONL → import replay → view trail
+Saved replay → view its trail and route → progress slider / previous or next frame → review observations through that frame
+  ↓
+Download JSONL → import replay → view its trail and route
   ↓
 Keep moving → collect, calculate, and update again
   ↓

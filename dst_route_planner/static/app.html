@@ -89,6 +89,15 @@
     .viewport-tools .button[aria-pressed="true"] { border-color: #789378; color: var(--green-dark); background: #edf4e9; }
     .viewport-tools .button:disabled { cursor: not-allowed; }
     .viewport-status { min-height: 18px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .trail-playback-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+    .trail-playback-controls[hidden], .trail-playback-status[hidden] { display: none; }
+    .trail-playback-range { display: grid; flex: 1 1 220px; gap: 4px; color: #53665a; font-size: 11px; font-weight: 700; }
+    .trail-playback-range input { width: 100%; accent-color: var(--green); }
+    .trail-playback-buttons { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+    .trail-playback-controls .button { min-height: 32px; padding: 5px 9px; font-size: 11px; }
+    .trail-playback-controls .button:disabled { cursor: not-allowed; }
+    .trail-playback-status { min-height: 17px; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .trail-playback-status.error { color: #823c31; }
     .trail-svg { display: block; width: min(100%, 440px); height: auto; margin: 7px auto 0; }
     .trail-svg .trail-grid { stroke: #e5ebe1; stroke-width: 1; pointer-events: none; }
     .trail-svg .trail-axis { stroke: #aebcad; stroke-width: 1.15; pointer-events: none; }
@@ -346,6 +355,17 @@
           </div>
           <span class="viewport-status" id="viewportStatus" role="status" aria-live="polite">全图 · 暂无坐标可跟随</span>
         </div>
+        <div class="trail-playback-controls" id="trailPlaybackControls" hidden>
+          <label class="trail-playback-range" for="trailPlaybackRange"><span>回放进度</span>
+            <input id="trailPlaybackRange" type="range" min="0" max="0" value="0" step="1" aria-label="回放进度" aria-describedby="trailPlaybackStatus">
+          </label>
+          <div class="trail-playback-buttons" role="group" aria-label="历史回放帧控制">
+            <button class="button" id="trailPlaybackPreviousButton" type="button">上一帧</button>
+            <button class="button" id="trailPlaybackNextButton" type="button">下一帧</button>
+            <button class="button" id="trailPlaybackLatestButton" type="button">跳到最新</button>
+          </div>
+        </div>
+        <div class="trail-playback-status" id="trailPlaybackStatus" role="status" aria-live="polite" hidden></div>
         <div class="route-tools" aria-label="地图路线">
           <label for="routeDestinationSelect"><span>路线终点</span><select id="routeDestinationSelect" aria-label="选择路线终点"><option value="">选择终点</option></select></label>
           <button class="button" id="clearRouteDestinationButton" type="button" disabled>清除终点</button>
@@ -535,6 +555,12 @@
       explorationsStatus: document.getElementById("explorationsStatus"),
       explorationList: document.getElementById("explorationList"),
       trailSvg: document.getElementById("trailSvg"), trailStatus: document.getElementById("trailStatus"),
+      trailPlaybackControls: document.getElementById("trailPlaybackControls"),
+      trailPlaybackRange: document.getElementById("trailPlaybackRange"),
+      trailPlaybackPrevious: document.getElementById("trailPlaybackPreviousButton"),
+      trailPlaybackNext: document.getElementById("trailPlaybackNextButton"),
+      trailPlaybackLatest: document.getElementById("trailPlaybackLatestButton"),
+      trailPlaybackStatus: document.getElementById("trailPlaybackStatus"),
       viewportAllButton: document.getElementById("viewportAllButton"),
       viewportFollowButton: document.getElementById("viewportFollowButton"),
       viewportZoomInButton: document.getElementById("viewportZoomInButton"),
@@ -779,6 +805,8 @@
     const trailState = {
       mode: "idle", revision: 0, id: null, identity: null, summary: null,
       points: [], error: "", loading: false, trimmed: false, requests: new Map(),
+      playback: { timeline: [], selectedIndex: -1, appliedIndex: -1,
+        requestId: 0, loading: false, error: "" },
       landmarks: [], landmarksTruncated: false, landmarkError: "",
       terrainTiles: [], terrainAvailable: false, terrainTruncated: false, terrainError: "",
       live: { identity: null, id: null, localPoints: [], storedPoints: [], trimmed: false,
@@ -1008,7 +1036,7 @@
       }
       return {present: true, tiles};
     }
-    function validateTrailPayload(value, summary) {
+    function validateTrailPayload(value, summary, playbackExpectation = null) {
       if (!value || typeof value !== "object" || Array.isArray(value) || value.trail_version !== 1 ||
           value.id !== summary.id || value.world_id !== summary.world_id ||
           value.world_kind !== summary.world_kind || value.session_id !== summary.session_id ||
@@ -1030,6 +1058,29 @@
       const landmarks = validateTrailLandmarks(value);
       const terrain = Object.prototype.hasOwnProperty.call(value, "terrain")
         ? validateTrailTerrain(value.terrain) : {present: false, tiles: [], truncated: false, error: ""};
+      if (playbackExpectation) {
+        const playback = value.playback;
+        const throughSequence = playbackExpectation.throughSequence;
+        if (!playback || typeof playback !== "object" || Array.isArray(playback) ||
+            playback.through_sequence !== throughSequence ||
+            !Number.isSafeInteger(playback.total_frame_count) || playback.total_frame_count < 0 ||
+            playback.total_frame_count < playbackExpectation.minimumTotalFrameCount ||
+            points.some(point => point.sequence > throughSequence) ||
+            landmarks.landmarks.some(item => item.last_sequence > throughSequence) ||
+            terrain.tiles.some(tile => tile.last_sequence > throughSequence)) {
+          throw new Error("历史帧数据包含超出所选序号的内容。请刷新轨迹后重试。");
+        }
+        const prefixBounds = points.length ? {
+          min_x: Math.min(...points.map(point => point.x)), max_x: Math.max(...points.map(point => point.x)),
+          min_z: Math.min(...points.map(point => point.z)), max_z: Math.max(...points.map(point => point.z))
+        } : null;
+        const boundsMismatch = prefixBounds === null ? value.bounds !== null : !value.bounds ||
+          value.bounds.min_x !== prefixBounds.min_x || value.bounds.max_x !== prefixBounds.max_x ||
+          value.bounds.min_z !== prefixBounds.min_z || value.bounds.max_z !== prefixBounds.max_z;
+        if (boundsMismatch) {
+          throw new Error("历史帧坐标范围与所选序号不匹配。请刷新轨迹后重试。");
+        }
+      }
       return { id: value.id, world_id: value.world_id, world_kind: value.world_kind,
         session_id: value.session_id, frame_count: value.frame_count, bounds: value.bounds,
         points: limited.points, trimmed: limited.trimmed || unique.length !== points.length,
@@ -1526,7 +1577,68 @@
       if (!control || typeof control.focus !== "function") return;
       try { control.focus({preventScroll: true}); } catch (_) { control.focus(); }
     }
+    function formatReplayFrameTime(capturedAt) {
+      const date = new Date(capturedAt * 1000);
+      if (!Number.isFinite(date.getTime())) return "时间未知";
+      return date.toLocaleString("zh-CN", {year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false});
+    }
+    function renderTrailPlayback() {
+      const playback = trailState.playback;
+      const history = trailState.mode === "history";
+      const timeline = playback.timeline;
+      const lastIndex = timeline.length - 1;
+      const selectedIndex = Number.isSafeInteger(playback.selectedIndex)
+        ? Math.max(0, Math.min(lastIndex, playback.selectedIndex)) : -1;
+      const appliedIndex = Number.isSafeInteger(playback.appliedIndex)
+        ? Math.max(0, Math.min(lastIndex, playback.appliedIndex)) : -1;
+      const cursorSupported = timeline.length > 1 && timeline.every(frame =>
+        Number.isSafeInteger(frame.sequence) && frame.sequence > 0);
+      el.trailPlaybackControls.hidden = !history || !cursorSupported;
+      el.trailPlaybackStatus.hidden = !history;
+      el.trailPlaybackStatus.className = "trail-playback-status" + (playback.error || trailState.error ? " error" : "");
+      el.trailPlaybackRange.min = "0";
+      el.trailPlaybackRange.max = String(Math.max(0, lastIndex));
+      el.trailPlaybackRange.value = String(selectedIndex < 0 ? 0 : selectedIndex);
+      const canChoose = history && cursorSupported;
+      el.trailPlaybackRange.disabled = !canChoose;
+      el.trailPlaybackPrevious.disabled = !canChoose || selectedIndex <= 0;
+      el.trailPlaybackNext.disabled = !canChoose || selectedIndex < 0 || selectedIndex >= lastIndex;
+      el.trailPlaybackLatest.disabled = !canChoose;
+      if (!history) {
+        el.trailPlaybackStatus.textContent = "";
+        return;
+      }
+      if (playback.error) {
+        const requested = timeline[selectedIndex];
+        const shown = timeline[appliedIndex];
+        el.trailPlaybackStatus.textContent = "历史第 " + (selectedIndex + 1) + " / " + timeline.length + " 帧读取失败" +
+          (requested ? " · 序号 " + requested.sequence : "") + "：" + playback.error +
+          (shown ? " 当前仍显示第 " + (appliedIndex + 1) + " / " + timeline.length + " 帧。点击“刷新轨迹”重试。" : "");
+        return;
+      }
+      if (trailState.error && !timeline.length) {
+        el.trailPlaybackStatus.textContent = "历史回放读取失败：" + trailState.error + " 可点击“刷新轨迹”重试。";
+        return;
+      }
+      if (playback.loading && timeline[selectedIndex]) {
+        const frame = timeline[selectedIndex];
+        el.trailPlaybackStatus.textContent = "正在读取历史第 " + (selectedIndex + 1) + " / " + timeline.length +
+          " 帧 · 序号 " + frame.sequence + " · " + formatReplayFrameTime(frame.captured_at);
+        return;
+      }
+      if (!timeline.length) {
+        el.trailPlaybackStatus.textContent = trailState.loading
+          ? "正在读取探索轨迹…" : "历史回放 · 这段记录没有可回看的坐标帧。";
+        return;
+      }
+      const index = appliedIndex >= 0 ? appliedIndex : selectedIndex;
+      const frame = timeline[index];
+      el.trailPlaybackStatus.textContent = "历史回放 · 第 " + (index + 1) + " / " + timeline.length +
+        " 帧 · 序号 " + frame.sequence + " · " + formatReplayFrameTime(frame.captured_at);
+    }
     function renderTrail() {
+      renderTrailPlayback();
       const landmarkFocus = captureLandmarkControlFocus();
       const renderRevision = ++trailRenderRevision;
       syncTrailViewportIdentity();
@@ -1711,9 +1823,10 @@
         (trailState.loading ? " · 正在更新" : "");
       renderTerrainStatus(projection);
     }
-    function currentTrailSelection(revision, mode, summary, request) {
+    function currentTrailSelection(revision, mode, summary, request, playbackRequestId = null) {
       if (trailState.revision !== revision || trailState.mode !== mode || trailState.id !== summary.id ||
           trailState.identity !== explorationReplayIdentity(summary) || trailState.requests.get(summary.id) !== request) return false;
+      if (mode === "history" && playbackRequestId !== null && trailState.playback.requestId !== playbackRequestId) return false;
       if (mode === "live") return live.following && trailState.live.identity === trailState.identity && trailState.live.id === summary.id;
       return mode === "history";
     }
@@ -1756,10 +1869,14 @@
       trailState.loading = !request.payload && !request.error;
       if (trailState.loading) renderTrail();
       request.promise.then(payload => {
-        if (!currentTrailSelection(revision, mode, summary, request)) return;
+        if (!currentTrailSelection(revision, mode, summary, request, options.playbackRequestId ?? null)) return;
         trailState.loading = false;
         if (!payload) {
           trailState.error = request.error || "轨迹读取失败。";
+          if (mode === "history") {
+            trailState.playback.loading = false;
+            trailState.playback.error = trailState.playback.timeline.length ? trailState.error : "";
+          }
           renderTrail();
           return;
         }
@@ -1788,34 +1905,132 @@
           trailState.terrainError = trailState.live.terrainError || payload.terrainError;
           trailState.points = mergeTrailPoints(payload.points, trailState.live.localPoints);
         } else {
+          const playback = trailState.playback;
+          const previousFrame = playback.timeline[playback.appliedIndex];
+          const latestPoint = payload.points[payload.points.length - 1];
+          if (previousFrame && latestPoint && previousFrame.sequence !== latestPoint.sequence) clearTrailRouteSelection();
+          playback.requestId += 1;
+          playback.timeline = payload.points.map(point => ({sequence: point.sequence, captured_at: point.captured_at}));
+          playback.selectedIndex = playback.timeline.length - 1;
+          playback.appliedIndex = playback.selectedIndex;
+          playback.loading = false;
+          playback.error = "";
           const liveMatch = trailState.live.id === summary.id && trailState.live.identity === trailState.identity;
-          trailState.trimmed = payload.trimmed || (liveMatch && trailState.live.trimmed);
-          const mergedLandmarks = mergeTrailLandmarks(payload.landmarks,
-            liveMatch ? trailState.live.localLandmarks : [],
-            payload.landmarksTruncated, liveMatch && trailState.live.landmarksTruncated);
-          trailState.landmarks = mergedLandmarks.landmarks;
-          trailState.landmarksTruncated = mergedLandmarks.trimmed;
-          trailState.landmarkError = payload.landmarkError || (liveMatch ? trailState.live.landmarkError : "");
-          const mergedTerrain = mergeTrailTerrain(payload.terrainTiles,
-            liveMatch ? trailState.live.localTerrain : [], payload.terrainTruncated,
-            liveMatch && trailState.live.terrainTruncated);
-          trailState.terrainTiles = mergedTerrain.tiles;
-          trailState.terrainAvailable = payload.terrainAvailable || (liveMatch && trailState.live.localTerrainAvailable);
-          trailState.terrainTruncated = mergedTerrain.truncated;
-          trailState.terrainError = payload.terrainError || (liveMatch ? trailState.live.terrainError : "");
-          trailState.points = liveMatch ? mergeTrailPoints(payload.points, trailState.live.localPoints) : payload.points;
+          trailState.trimmed = payload.trimmed;
+          trailState.landmarks = payload.landmarks;
+          trailState.landmarksTruncated = payload.landmarksTruncated;
+          trailState.landmarkError = payload.landmarkError;
+          trailState.terrainTiles = payload.terrainTiles;
+          trailState.terrainAvailable = payload.terrainAvailable;
+          trailState.terrainTruncated = payload.terrainTruncated;
+          trailState.terrainError = payload.terrainError;
+          trailState.points = payload.points;
           if (liveMatch) {
             trailState.live.storedPoints = payload.points;
             trailState.live.storedLandmarks = payload.landmarks;
             trailState.live.landmarksTruncated = payload.landmarksTruncated;
+            trailState.live.landmarkError = payload.landmarkError;
             trailState.live.storedTerrain = payload.terrainTiles;
             trailState.live.storedTerrainAvailable = payload.terrainAvailable;
-            trailState.live.terrainTruncated = trailState.live.terrainTruncated || payload.terrainTruncated;
-            trailState.live.terrainError = payload.terrainError || trailState.live.terrainError;
+            trailState.live.terrainTruncated = payload.terrainTruncated;
+            trailState.live.terrainError = payload.terrainError;
           }
         }
         renderTrail();
       });
+    }
+    function applyHistoryPrefix(payload) {
+      trailState.trimmed = payload.trimmed;
+      trailState.points = payload.points;
+      trailState.landmarks = payload.landmarks;
+      trailState.landmarksTruncated = payload.landmarksTruncated;
+      trailState.landmarkError = payload.landmarkError;
+      trailState.terrainTiles = payload.terrainTiles;
+      trailState.terrainAvailable = payload.terrainAvailable;
+      trailState.terrainTruncated = payload.terrainTruncated;
+      trailState.terrainError = payload.terrainError;
+    }
+    function clearTrailRouteSelection() {
+      checkedRouteSelection.identity = trailState.identity;
+      checkedRouteSelection.destination = null;
+      checkedRouteSelection.source = null;
+      checkedRouteSelection.optionsSignature = null;
+    }
+    function currentHistoryPlaybackRequest(requestId, viewRevision, summary) {
+      return trailState.revision === viewRevision && trailState.mode === "history" &&
+        trailState.id === summary.id && trailState.identity === explorationReplayIdentity(summary) &&
+        trailState.playback.requestId === requestId;
+    }
+    function resetTrailPlayback() {
+      const playback = trailState.playback;
+      playback.requestId += 1;
+      playback.timeline = [];
+      playback.selectedIndex = -1;
+      playback.appliedIndex = -1;
+      playback.loading = false;
+      playback.error = "";
+    }
+    async function requestHistoryFrame(index, options = {}) {
+      if (trailState.mode !== "history" || !trailState.summary) return false;
+      const playback = trailState.playback;
+      const timeline = playback.timeline;
+      const frame = timeline[index];
+      if (!frame || !Number.isSafeInteger(frame.sequence) || frame.sequence < 1) return false;
+      if (!options.force && !playback.loading && !playback.error && index === playback.appliedIndex) {
+        playback.selectedIndex = index;
+        renderTrailPlayback();
+        return true;
+      }
+      const requestId = ++playback.requestId;
+      const viewRevision = trailState.revision;
+      const summary = trailState.summary;
+      const minimumTotalFrameCount = playback.timeline.length;
+      playback.selectedIndex = index;
+      playback.loading = true;
+      playback.error = "";
+      trailState.loading = true;
+      renderTrail();
+      try {
+        const url = "/api/explorations/" + encodeURIComponent(summary.id) + "/trail?through_sequence=" +
+          encodeURIComponent(String(frame.sequence));
+        const response = await fetch(url, {headers: {"Accept": "application/json"}});
+        const payload = validateTrailPayload(await readJsonResponse(response), summary,
+          {throughSequence: frame.sequence, minimumTotalFrameCount});
+        if (!currentHistoryPlaybackRequest(requestId, viewRevision, summary)) return false;
+        const cursorChanged = playback.appliedIndex !== index;
+        applyHistoryPrefix(payload);
+        playback.appliedIndex = index;
+        playback.loading = false;
+        playback.error = "";
+        trailState.loading = false;
+        trailState.error = "";
+        if (cursorChanged) clearTrailRouteSelection();
+        renderTrail();
+        return true;
+      } catch (error) {
+        if (!currentHistoryPlaybackRequest(requestId, viewRevision, summary)) return false;
+        playback.loading = false;
+        playback.error = error && error.message ? error.message : "请稍后重试。";
+        trailState.loading = false;
+        renderTrail();
+        return false;
+      }
+    }
+    function refreshLatestHistoryFrame() {
+      if (trailState.mode !== "history" || !trailState.summary) return false;
+      const playback = trailState.playback;
+      const latestIndex = playback.timeline.length - 1;
+      const requestId = ++playback.requestId;
+      playback.selectedIndex = latestIndex;
+      playback.loading = true;
+      playback.error = "";
+      trailState.loading = true;
+      trailState.error = "";
+      const summary = trailState.summary;
+      const revision = trailState.revision;
+      renderTrail();
+      loadTrailForSelection(summary, revision, "history", {force: true, playbackRequestId: requestId});
+      return true;
     }
     function deactivateLiveTrailView() {
       trailState.revision += 1;
@@ -1825,6 +2040,7 @@
     }
     function resumeLiveTrailView() {
       const returningFromHistory = trailState.mode === "history";
+      if (returningFromHistory) resetTrailPlayback();
       pauseRouteNavigation("waiting", false);
       const liveTrail = trailState.live;
       if (returningFromHistory) resetTrailViewport(liveTrail.identity);
@@ -1960,6 +2176,7 @@
       stopLive("已暂停实时跟随，正在查看历史轨迹。");
       trailState.mode = "history";
       trailState.revision += 1;
+      resetTrailPlayback();
       trailState.id = normalized.id;
       trailState.identity = explorationReplayIdentity(normalized);
       resetTrailViewport(trailState.identity);
@@ -1967,20 +2184,14 @@
       trailState.error = "";
       trailState.loading = false;
       trailState.trimmed = false;
-      const liveMatch = trailState.live.id === normalized.id && trailState.live.identity === trailState.identity;
-      trailState.trimmed = liveMatch && trailState.live.trimmed;
-      const mergedLandmarks = mergeTrailLandmarks([], liveMatch ? trailState.live.localLandmarks : [],
-        false, liveMatch && trailState.live.landmarksTruncated);
-      trailState.landmarks = mergedLandmarks.landmarks;
-      trailState.landmarksTruncated = mergedLandmarks.trimmed;
-      trailState.landmarkError = liveMatch ? trailState.live.landmarkError : "";
-      const initialTerrain = mergeTrailTerrain([], liveMatch ? trailState.live.localTerrain : [],
-        false, liveMatch && trailState.live.terrainTruncated);
-      trailState.terrainTiles = initialTerrain.tiles;
-      trailState.terrainAvailable = liveMatch && !!(trailState.live.storedTerrainAvailable || trailState.live.localTerrainAvailable);
-      trailState.terrainTruncated = initialTerrain.truncated;
-      trailState.terrainError = liveMatch ? trailState.live.terrainError : "";
-      trailState.points = liveMatch ? mergeTrailPoints(trailState.live.storedPoints, trailState.live.localPoints) : [];
+      trailState.landmarks = [];
+      trailState.landmarksTruncated = false;
+      trailState.landmarkError = "";
+      trailState.terrainTiles = [];
+      trailState.terrainAvailable = false;
+      trailState.terrainTruncated = false;
+      trailState.terrainError = "";
+      trailState.points = [];
       renderTrail();
       loadTrailForSelection(normalized, trailState.revision, "history");
       return true;
@@ -1988,6 +2199,16 @@
     function refreshSelectedTrail() {
       if (!trailState.summary || (trailState.mode !== "live" && trailState.mode !== "history")) {
         el.trailStatus.textContent = "当前还没有可刷新的回放轨迹。";
+        return;
+      }
+      if (trailState.mode === "history") {
+        const playback = trailState.playback;
+        const latestIndex = playback.timeline.length - 1;
+        if (latestIndex >= 0 && playback.selectedIndex >= 0 && playback.selectedIndex < latestIndex) {
+          void requestHistoryFrame(playback.selectedIndex, {force: true});
+        } else {
+          void refreshLatestHistoryFrame();
+        }
         return;
       }
       trailState.error = "";
@@ -3170,6 +3391,17 @@
       if (state.importedExplorationSummary) openExplorationTrail(state.importedExplorationSummary);
     });
     el.refreshTrail.addEventListener("click", refreshSelectedTrail);
+    el.trailPlaybackRange.addEventListener("change", () => {
+      const index = Number(el.trailPlaybackRange.value);
+      if (Number.isSafeInteger(index)) void requestHistoryFrame(index);
+    });
+    el.trailPlaybackPrevious.addEventListener("click", () => {
+      void requestHistoryFrame(trailState.playback.selectedIndex - 1);
+    });
+    el.trailPlaybackNext.addEventListener("click", () => {
+      void requestHistoryFrame(trailState.playback.selectedIndex + 1);
+    });
+    el.trailPlaybackLatest.addEventListener("click", refreshLatestHistoryFrame);
     el.viewportAllButton.addEventListener("click", () => setTrailViewportMode("all"));
     el.viewportFollowButton.addEventListener("click", () => setTrailViewportMode("follow"));
     el.viewportZoomInButton.addEventListener("click", () => zoomTrailViewport(2));

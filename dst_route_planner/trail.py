@@ -12,14 +12,31 @@ class TrailDataError(ValueError):
     """Raised when a validated replay cannot be projected as a trail."""
 
 
-def project_trail(replay: bytes) -> dict[str, Any]:
-    """Project a validated JSONL replay into player positions, terrain, and sightings."""
+def project_trail(
+    replay: bytes, *, through_sequence: int | None = None
+) -> dict[str, Any]:
+    """Project a replay, optionally limited to knowledge through one sequence."""
+    if through_sequence is not None and (
+        type(through_sequence) is not int or through_sequence <= 0
+    ):
+        raise ValueError("through_sequence must be a positive integer.")
+
     lines = replay.splitlines()
     if not lines:
         raise TrailDataError("journal is empty.")
     try:
         header = json.loads(lines[0].decode("utf-8"))
-        frames = [json.loads(line.decode("utf-8")) for line in lines[1:]]
+        all_frames = [json.loads(line.decode("utf-8")) for line in lines[1:]]
+        total_frame_count = len(all_frames)
+        frames = (
+            all_frames
+            if through_sequence is None
+            else [
+                frame
+                for frame in all_frames
+                if frame["snapshot"]["sequence"] <= through_sequence
+            ]
+        )
         landmarks_by_key: dict[tuple[str, int | float, int | float], dict[str, Any]] = {}
         landmarks_truncated = False
         terrain_by_key: dict[tuple[int | float, int | float], dict[str, Any]] = {}
@@ -151,6 +168,11 @@ def project_trail(replay: bytes) -> dict[str, Any]:
                 "truncated": terrain_truncated,
             },
         }
+        if through_sequence is not None:
+            result["playback"] = {
+                "through_sequence": through_sequence,
+                "total_frame_count": total_frame_count,
+            }
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise TrailDataError("journal could not be projected as a trail.") from exc
 

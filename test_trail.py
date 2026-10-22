@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from dst_route_planner.exploration import exploration_id
 from dst_route_planner.trail import project_trail
 
@@ -365,3 +367,174 @@ def test_project_trail_caps_terrain_at_2500_by_latest_sequence_then_coordinates(
     assert terrain["tiles"][2304]["x"] == 0
     assert terrain["tiles"][2304]["last_sequence"] == 1
     assert terrain["tiles"][-1]["x"] == 195
+
+
+def test_project_trail_cutoff_excludes_future_points_terrain_and_sightings() -> None:
+    content = _journal(
+        [(1, 10, 0, 0), (3, 30, 4, 0), (5, 50, 500, -100)],
+        landmarks_by_frame=[
+            [{"prefab": "pigking", "x": 10, "z": 20}],
+            [{"prefab": "pigking", "x": 10, "z": 20}],
+            [
+                {"prefab": "pigking", "x": 10, "z": 20},
+                {"prefab": "panflute", "x": 50, "z": 60},
+            ],
+        ],
+        terrain_by_frame=[
+            [
+                {
+                    "x": 0,
+                    "z": 0,
+                    "tile": "GRASS",
+                    "passable": True,
+                    "connections": {"east": True},
+                },
+                {"x": 4, "z": 0, "tile": "FOREST", "passable": True},
+            ],
+            [
+                {
+                    "x": 0,
+                    "z": 0,
+                    "tile": "FOREST",
+                    "passable": True,
+                    "connections": {"east": False},
+                },
+                {"x": 4, "z": 0, "tile": "MARSH", "passable": True},
+                {"x": 8, "z": 8, "tile": "MARSH", "passable": False},
+            ],
+            [
+                {
+                    "x": 0,
+                    "z": 0,
+                    "tile": "DECIDUOUS",
+                    "passable": True,
+                    "connections": {"east": True},
+                },
+                {"x": 4, "z": 0, "tile": "DECIDUOUS", "passable": True},
+                {"x": 8, "z": 8, "tile": "DECIDUOUS", "passable": True},
+                {
+                    "x": 99,
+                    "z": 99,
+                    "tile": "ROCKY",
+                    "passable": True,
+                    "connections": {"north": False},
+                },
+                {"x": 99, "z": 103, "tile": "ROCKY", "passable": True},
+            ],
+        ],
+        player_anchors_by_frame=[
+            {"x": 0, "z": 0, "clear": True},
+            {"x": 4, "z": 0, "clear": False},
+            {"x": 500, "z": -100, "clear": True},
+        ],
+    )
+
+    trail = project_trail(content, through_sequence=3)
+
+    assert trail["playback"] == {"through_sequence": 3, "total_frame_count": 3}
+    assert trail["frame_count"] == 2
+    assert trail["points"] == [
+        {
+            "sequence": 1,
+            "captured_at": 10,
+            "x": 0,
+            "z": 0,
+            "player_anchor": {"x": 0, "z": 0, "clear": True},
+        },
+        {
+            "sequence": 3,
+            "captured_at": 30,
+            "x": 4,
+            "z": 0,
+            "player_anchor": {"x": 4, "z": 0, "clear": False},
+        },
+    ]
+    assert trail["bounds"] == {"min_x": 0, "max_x": 4, "min_z": 0, "max_z": 0}
+    assert trail["landmarks"] == [
+        {
+            "prefab": "pigking",
+            "x": 10,
+            "z": 20,
+            "first_seen": 10,
+            "last_seen": 30,
+            "first_sequence": 1,
+            "last_sequence": 3,
+        }
+    ]
+    assert trail["terrain"] == {
+        "tile_size": 4,
+        "tiles": [
+            {
+                "x": 0,
+                "z": 0,
+                "tile": "FOREST",
+                "last_seen": 30,
+                "last_sequence": 3,
+                "passable": True,
+                "connections": {"east": False},
+            },
+            {
+                "x": 4,
+                "z": 0,
+                "tile": "MARSH",
+                "last_seen": 30,
+                "last_sequence": 3,
+                "passable": True,
+            },
+            {
+                "x": 8,
+                "z": 8,
+                "tile": "MARSH",
+                "last_seen": 30,
+                "last_sequence": 3,
+                "passable": False,
+            },
+        ],
+        "truncated": False,
+    }
+
+
+def test_project_trail_cutoff_handles_sequence_gaps_and_before_first_frame() -> None:
+    content = _journal(
+        [(3, 30, 1, 2), (7, 70, 9, 9)],
+        landmarks_by_frame=[
+            [{"prefab": "pigking", "x": 10, "z": 20}],
+            [{"prefab": "panflute", "x": 50, "z": 60}],
+        ],
+        terrain_by_frame=[
+            [{"x": 1, "z": 2, "tile": "GRASS"}],
+            [{"x": 9, "z": 9, "tile": "ROCKY"}],
+        ],
+    )
+
+    gap = project_trail(content, through_sequence=5)
+    before_first = project_trail(content, through_sequence=2)
+
+    assert gap["playback"] == {"through_sequence": 5, "total_frame_count": 2}
+    assert gap["frame_count"] == 1
+    assert [point["sequence"] for point in gap["points"]] == [3]
+    assert gap["bounds"] == {"min_x": 1, "max_x": 1, "min_z": 2, "max_z": 2}
+    assert {item["prefab"] for item in gap["landmarks"]} == {"pigking"}
+    assert [tile["tile"] for tile in gap["terrain"]["tiles"]] == ["GRASS"]
+    assert before_first["playback"] == {"through_sequence": 2, "total_frame_count": 2}
+    assert before_first["frame_count"] == 0
+    assert before_first["points"] == []
+    assert before_first["bounds"] is None
+    assert before_first["landmarks"] == []
+    assert before_first["terrain"] == {"tile_size": 4, "tiles": [], "truncated": False}
+
+
+def test_project_trail_none_cutoff_preserves_full_shape() -> None:
+    content = _journal([(1, 10, 0, 0), (3, 30, 1, 2)])
+    full = project_trail(content)
+
+    assert project_trail(content, through_sequence=None) == full
+    assert "playback" not in full
+
+
+@pytest.mark.parametrize("invalid", [True, False, 0, -1, 1.0, "1"])
+def test_project_trail_rejects_invalid_cutoffs(invalid) -> None:
+    content = _journal([(1, 10, 0, 0)])
+
+    with pytest.raises(ValueError, match="positive integer"):
+        project_trail(content, through_sequence=invalid)
