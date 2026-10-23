@@ -42,7 +42,7 @@ If your log lives elsewhere, use `--live-log "actual/path/client_log.txt"`. Expl
 
 Directions use fixed world coordinates: north is `+Z` and east is `+X`. The map opens fitted to all observed areas. Select “全图” (Full map) to restore that view, or “跟随位置” (Follow position) to keep the latest position in a local view; “放大” (Zoom in) and “缩小” (Zoom out) change its range.
 
-On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds the route with the fewest grid steps over checked clear neighbor links. Collector 0.5.0 also checks the segment from your current position to your tile center. When that check passes, the route starts at your actual position and shows its total length and the next direction and coordinates. A blocked entry segment is reported; older data can still show tile-center routes. Routes recalculate as the player moves or new checks arrive, including in saved replays. The endpoint is the selected tile center, and each grid step is 4 world units. If no path connects the tiles, the page shows “未连通” (not connected). Switching worlds or collector sessions clears the endpoint.
+On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds the route with the fewest grid steps over checked clear neighbor links. Collector 0.5.0 also checks the segment from your current position to your tile center. When that check passes, the route starts at your actual position and shows its total length and the next direction and coordinates. Next-step guidance also gives a ground direction relative to that frame’s camera heading (for example, “screen right”); it updates with new snapshots as you turn the camera, and replays use the selected frame’s heading. A blocked entry segment is reported; older data can still show tile-center routes. Routes recalculate as the player moves or new checks arrive, including in saved replays. The endpoint is the selected tile center, and each grid step is 4 world units. If no path connects the tiles, the page shows “未连通” (not connected). Switching worlds or collector sessions clears the endpoint.
 
 During live following, a paused collector, an error, a manual stop, or a last valid snapshot older than five seconds pauses navigation. The map shows “导航已暂停” (navigation paused) and hides the purple live route and next-step guidance while keeping observed terrain, the last trail position, the route endpoint, and its target source. A live request that takes five seconds to complete times out; after the timeout, the page waits one second before retrying. Navigation resumes automatically when a fresh snapshot arrives; you do not need to toggle live following. Saved replay routes remain visible.
 
@@ -86,7 +86,7 @@ The page updates suggestions and straight-line distance to a visible target
   ↓
 Observed target list or map diamond → Go to observed tile → set the route endpoint
   ↓
-Use the player position to find a route and show the next move
+Use the player position to find a route and show the next move’s world direction, coordinates, and camera-relative ground direction
   ↓
 Player moves or a new connection check arrives → update the route
   ↓

@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const {findRoute, locatePassableTile} = require("./dst_route_planner/static/checked_routes.js");
+const {findRoute, locatePassableTile, cameraRelativeDirection} = require("./dst_route_planner/static/checked_routes.js");
 
 function cell(x, z, passable = true, connections) {
   return {
@@ -228,4 +228,86 @@ assert.equal(farEnough.status, "found");
 assert.ok(Number.isFinite(farEnough.distance), "large checked routes keep finite total distances");
 assert.equal(farEnough.steps, 2499);
 
-console.log("Checked-grid routes: route and target lookup statuses, boundaries, strict edges, player anchors, BFS, and 2500 cells passed");
+const screenDirections = ["up", "upper_right", "right", "lower_right",
+  "down", "lower_left", "left", "upper_left"];
+const groundDirections = [
+  [1, 0, "down"],
+  [1, 1, "lower_right"],
+  [0, 1, "right"],
+  [-1, 1, "upper_right"],
+  [-1, 0, "up"],
+  [-1, -1, "upper_left"],
+  [0, -1, "left"],
+  [1, -1, "lower_left"],
+];
+const cameraOffsets = [
+  {heading: 0, offset: 0},
+  {heading: 45, offset: 1},
+  {heading: 90, offset: 2},
+  {heading: 180, offset: 4},
+  {heading: 270, offset: 6},
+  {heading: 315, offset: 7},
+];
+for (const {heading, offset} of cameraOffsets) {
+  for (const [x, z, headingZeroDirection] of groundDirections) {
+    const zeroIndex = screenDirections.indexOf(headingZeroDirection);
+    const expected = screenDirections[(zeroIndex + offset) % screenDirections.length];
+    assert.equal(cameraRelativeDirection({x: 0, z: 0}, {x, z}, heading), expected,
+      "camera heading rotates each of the eight world directions into screen space");
+  }
+}
+
+const diagonal = Math.SQRT1_2;
+const basisChecks = [
+  [0, -1, 0, "up"], [0, 0, 1, "right"],
+  [90, 0, -1, "up"], [90, -1, 0, "right"],
+  [180, 1, 0, "up"], [180, 0, -1, "right"],
+  [270, 0, 1, "up"], [270, 1, 0, "right"],
+  [45, -diagonal, -diagonal, "up"], [45, -diagonal, diagonal, "right"],
+  [315, -diagonal, diagonal, "up"], [315, diagonal, diagonal, "right"],
+];
+for (const [heading, x, z, expected] of basisChecks) {
+  assert.equal(cameraRelativeDirection({x: 0, z: 0}, {x, z}, heading), expected,
+    "camera up and right basis vectors match the DST camera orientation");
+}
+assert.equal(cameraRelativeDirection({x: 0, z: 0}, {x: 0, z: 1}, 0), "right");
+assert.equal(cameraRelativeDirection({x: 0, z: 0}, {x: 0, z: 1}, 90), "down",
+  "changing camera heading rotates the same ground movement on screen");
+assert.equal(cameraRelativeDirection({x: 0, z: 0}, {x: 1, z: 0}, 45), "lower_left");
+
+for (const [heading, equivalent] of [[-45, 315], [450, 90], [360 * 1000000000000 + 45, 45],
+  [Number.MAX_VALUE, Number.MAX_VALUE % 360]]) {
+  assert.equal(
+    cameraRelativeDirection({x: 0, z: 0}, {x: 1, z: 2}, heading),
+    cameraRelativeDirection({x: 0, z: 0}, {x: 1, z: 2}, equivalent),
+    "finite headings are reduced modulo 360 before trigonometry"
+  );
+}
+
+for (const invalid of [null, [], {x: "0", z: 0}, {x: null, z: 0}, {x: true, z: 0},
+  {x: NaN, z: 0}, {x: 0, z: Infinity}, {x: 0}, {z: 0}]) {
+  assert.equal(cameraRelativeDirection(invalid, {x: 1, z: 0}, 0), null,
+    "invalid or sparse source coordinates are rejected");
+  assert.equal(cameraRelativeDirection({x: 0, z: 0}, invalid, 0), null,
+    "invalid or sparse destination coordinates are rejected");
+}
+for (const heading of [null, "90", true, NaN, Infinity, -Infinity]) {
+  assert.equal(cameraRelativeDirection({x: 0, z: 0}, {x: 1, z: 0}, heading), null,
+    "heading must be a finite number");
+}
+assert.equal(cameraRelativeDirection({x: 1, z: 2}, {x: 1, z: 2}, 0), null,
+  "zero displacement has no direction");
+assert.equal(cameraRelativeDirection(
+  {x: -Number.MAX_VALUE, z: 0}, {x: Number.MAX_VALUE, z: 0}, 0), null,
+  "a coordinate subtraction that overflows is rejected");
+assert.equal(cameraRelativeDirection(
+  {x: 0, z: 0}, {x: Number.MAX_VALUE, z: Number.MAX_VALUE}, 0), "lower_right",
+  "large finite coordinates are scaled before projection");
+assert.equal(cameraRelativeDirection(
+  {x: Number.MAX_VALUE / 2, z: -Number.MAX_VALUE / 2},
+  {x: Number.MAX_VALUE, z: Number.MAX_VALUE / 2}, 0), "lower_right",
+  "large finite deltas remain safe during camera projection");
+assert.equal(cameraRelativeDirection(
+  {x: 0, z: 0}, {x: Number.MIN_VALUE, z: 0}, 0), "down",
+  "subnormal but nonzero displacement remains directional");
+console.log("Checked-grid routes: routes, camera directions, target lookup, boundaries, anchors, BFS, and 2500 cells passed");

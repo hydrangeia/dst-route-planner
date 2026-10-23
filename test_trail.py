@@ -17,6 +17,7 @@ def _journal(
     landmarks_by_frame: list[list[dict]] | None = None,
     terrain_by_frame: list[list[dict]] | None = None,
     player_anchors_by_frame: list[dict | None] | None = None,
+    camera_headings_by_frame: list[int | float | None] | None = None,
 ) -> bytes:
     journal_id = exploration_id(world_id, world_kind, session_id)
     header = {
@@ -55,6 +56,12 @@ def _journal(
             and player_anchors_by_frame[frame_index] is not None
         ):
             frame["snapshot"]["player_anchor"] = player_anchors_by_frame[frame_index]
+        if (
+            camera_headings_by_frame is not None
+            and frame_index < len(camera_headings_by_frame)
+            and camera_headings_by_frame[frame_index] is not None
+        ):
+            frame["snapshot"]["camera_heading"] = camera_headings_by_frame[frame_index]
         lines.append(json.dumps(frame, separators=(",", ":")))
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -121,6 +128,24 @@ def test_project_trail_copies_only_each_frames_player_anchor() -> None:
         },
     ]
     assert "player_anchor" not in trail
+
+
+def test_project_trail_keeps_camera_heading_with_its_own_frame_and_cutoff() -> None:
+    content = _journal(
+        [(1, 30, 0, 0), (3, 20, 0, 0), (7, 10, 0, 0)],
+        camera_headings_by_frame=[-90, None, 450.0],
+    )
+
+    full = project_trail(content)
+    assert full["points"] == [
+        {"sequence": 1, "captured_at": 30, "x": 0, "z": 0, "camera_heading": -90},
+        {"sequence": 3, "captured_at": 20, "x": 0, "z": 0},
+        {"sequence": 7, "captured_at": 10, "x": 0, "z": 0, "camera_heading": 450.0},
+    ]
+    prefix = project_trail(content, through_sequence=3)
+    assert prefix["points"] == full["points"][:2]
+    assert prefix["playback"] == {"through_sequence": 3, "total_frame_count": 3}
+    assert "camera_heading" not in prefix["points"][-1]
 
 
 def test_project_trail_keeps_sessions_separate_and_empty_bounds_null() -> None:

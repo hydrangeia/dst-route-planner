@@ -16,6 +16,7 @@
     {name: "north", dx: 0, dz: 4},
   ];
   const DIRECTION_ORDER = {east: 0, north: 1, west: 2, south: 3};
+  const CAMERA_DIRECTIONS = ["up", "upper_right", "right", "lower_right", "down", "lower_left", "left", "upper_left"];
 
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -23,6 +24,27 @@
 
   function isFinitePoint(value) {
     return isRecord(value) && Number.isFinite(value.x) && Number.isFinite(value.z);
+  }
+
+  function cameraRelativeDirection(from, to, heading) {
+    if (!isFinitePoint(from) || !isFinitePoint(to) || !Number.isFinite(heading)) return null;
+
+    // DST's camera basis follows cameras/followcamera.lua Apply/GetHeading (lines 232-283, 328-333).
+    const normalizedHeading = ((heading % 360) + 360) % 360;
+    const radians = normalizedHeading * Math.PI / 180;
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    if (!Number.isFinite(dx) || !Number.isFinite(dz) || (dx === 0 && dz === 0)) return null;
+
+    const scale = Math.max(Math.abs(dx), Math.abs(dz));
+    const scaledX = dx / scale;
+    const scaledZ = dz / scale;
+    const sin = Math.sin(radians);
+    const cos = Math.cos(radians);
+    const horizontal = -sin * scaledX + cos * scaledZ;
+    const vertical = -cos * scaledX - sin * scaledZ;
+    const octant = Math.round(Math.atan2(horizontal, vertical) / (Math.PI / 4));
+    return CAMERA_DIRECTIONS[(octant + CAMERA_DIRECTIONS.length) % CAMERA_DIRECTIONS.length];
   }
 
   function coordinateKey(x, z) {
@@ -333,5 +355,5 @@
     };
   }
 
-  return {findRoute, locatePassableTile};
+  return {findRoute, locatePassableTile, cameraRelativeDirection};
 });

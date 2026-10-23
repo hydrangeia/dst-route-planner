@@ -778,6 +778,7 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             demo["directions"], sequence=sequence, captured_at=captured_at
         )
         snapshot["position"].update(x=x, z=z)
+        snapshot["camera_heading"] = sequence * 45
         snapshot["terrain"] = {"tile_size": 4, "tiles": terrain_by_frame[sequence - 1]}
         if anchors_by_frame[sequence - 1] is not None:
             snapshot["player_anchor"] = anchors_by_frame[sequence - 1]
@@ -817,14 +818,22 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
             {
                 "sequence": 1,
                 "captured_at": captured_times[0],
+                "camera_heading": 45,
                 "x": -12,
                 "z": 3.5,
                 "player_anchor": {"x": -12, "z": 4, "clear": True},
             },
-            {"sequence": 2, "captured_at": captured_times[1], "x": -12, "z": 3.5},
+            {
+                "sequence": 2,
+                "captured_at": captured_times[1],
+                "camera_heading": 90,
+                "x": -12,
+                "z": 3.5,
+            },
             {
                 "sequence": 3,
                 "captured_at": captured_times[2],
+                "camera_heading": 135,
                 "x": 8.25,
                 "z": -20,
                 "player_anchor": {"x": 8, "z": -20, "clear": False},
@@ -926,6 +935,7 @@ def test_exploration_trail_api_projects_positions_and_ignores_partial_tail(local
         {
             "sequence": 1,
             "captured_at": other_session["captured_at"],
+            "camera_heading": 270.0,
             "x": 500,
             "z": 600,
         }
@@ -1774,6 +1784,7 @@ def test_exploration_trail_api_cutoff_and_query_validation_happen_before_read(
     for sequence in (1, 3, 8):
         snapshot = _live_snapshot(demo["directions"], sequence=sequence)
         snapshot["position"].update(x=sequence, z=sequence * 2)
+        snapshot["camera_heading"] = sequence * 30
         snapshot["terrain"] = {
             "tile_size": 4,
             "tiles": [{"x": sequence, "z": 1, "tile": f"T{sequence}"}],
@@ -1789,6 +1800,7 @@ def test_exploration_trail_api_cutoff_and_query_validation_happen_before_read(
     assert prefix_status == 200
     assert prefix["playback"] == {"through_sequence": 2, "total_frame_count": 3}
     assert prefix["frame_count"] == 1
+    assert prefix["points"][0]["camera_heading"] == 30
     assert [point["sequence"] for point in prefix["points"]] == [1]
     assert prefix["bounds"] == {"min_x": 1, "max_x": 1, "min_z": 2, "max_z": 2}
     assert [tile["tile"] for tile in prefix["terrain"]["tiles"]] == ["T1"]
@@ -1799,12 +1811,14 @@ def test_exploration_trail_api_cutoff_and_query_validation_happen_before_read(
     assert gap_status == 200
     assert gap["playback"] == {"through_sequence": 5, "total_frame_count": 3}
     assert [point["sequence"] for point in gap["points"]] == [1, 3]
+    assert [point["camera_heading"] for point in gap["points"]] == [30, 90]
 
     full_status, _, full = _get(
         base_url, f"/api/explorations/{summary['id']}/trail"
     )
     assert full_status == 200
     assert full["frame_count"] == 3
+    assert [point["camera_heading"] for point in full["points"]] == [30, 90, 240]
     assert "playback" not in full
 
     def unexpected_read(_):

@@ -137,6 +137,8 @@ def project_trail(
             }
             if "player_anchor" in snapshot:
                 point["player_anchor"] = dict(snapshot["player_anchor"])
+            if "camera_heading" in snapshot:
+                point["camera_heading"] = snapshot["camera_heading"]
             points.append(point)
         result = {
             "trail_version": 1,

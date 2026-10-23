@@ -48,9 +48,10 @@ Object.defineProperty(routeDestinationElement, "innerHTML", {
 });
 function run(code) { return vm.runInContext(code, context); }
 function apiResponse(payload) { return {ok: true, json: async () => payload}; }
-function trailPoint(sequence, capturedAt, x, z, playerAnchor = undefined) {
+function trailPoint(sequence, capturedAt, x, z, playerAnchor = undefined, cameraHeading = undefined) {
   return {sequence, captured_at: capturedAt, x, z,
-    ...(playerAnchor === undefined ? {} : {player_anchor: playerAnchor})};
+    ...(playerAnchor === undefined ? {} : {player_anchor: playerAnchor}),
+    ...(cameraHeading === undefined ? {} : {camera_heading: cameraHeading})};
 }
 function remembered(prefab, x, z, firstSequence, lastSequence, firstSeen = firstSequence, lastSeen = lastSequence) {
   return {prefab, x, z, first_seen: firstSeen, last_seen: lastSeen, first_sequence: firstSequence, last_sequence: lastSequence};
@@ -105,6 +106,7 @@ function frame(session = "one", sequence = 1, recording = null, worldId = "world
   if (Object.prototype.hasOwnProperty.call(trail, "landmarks")) result.snapshot.landmarks = trail.landmarks;
   if (Object.prototype.hasOwnProperty.call(trail, "terrain")) result.snapshot.terrain = trail.terrain;
   if (Object.prototype.hasOwnProperty.call(trail, "player_anchor")) result.snapshot.player_anchor = trail.player_anchor;
+  if (Object.prototype.hasOwnProperty.call(trail, "camera_heading")) result.snapshot.camera_heading = trail.camera_heading;
   return result;
 }
 const projection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:10,z:0},{sequence:3,captured_at:3,x:0,z:10}])");
@@ -367,6 +369,21 @@ assert.deepEqual(anchoredValidation.points.map(point => point.player_anchor), [
   {x: 2, z: 2, clear: false}, {x: 6, z: 2, clear: true}, undefined
 ], "trail point normalization retains both clear values and omits unknown anchors");
 assert.ok(!Object.hasOwn(anchoredValidation.points[2], "player_anchor"));
+context.validationPayload = trailPayload(validationSummary, [
+  trailPoint(1, 10, 2, 3, undefined, -27.5), trailPoint(2, 11, 6, 3)
+]);
+const headedValidation = JSON.parse(run("JSON.stringify(validateTrailPayload(validationPayload, validationSummary))"));
+assert.deepEqual(headedValidation.points.map(point => point.camera_heading), [-27.5, undefined],
+  "historical trail normalization preserves a finite camera heading and leaves legacy headings absent");
+assert.ok(!Object.hasOwn(headedValidation.points[1], "camera_heading"));
+for (const invalidHeading of [null, "90", NaN, Infinity, -Infinity]) {
+  context.invalidCameraHeading = invalidHeading;
+  assert.equal(run("normalizeTrailPoint({sequence:1,captured_at:10,x:2,z:3,camera_heading:invalidCameraHeading}) === null"), true,
+    "a non-finite or non-number optional camera heading rejects its trail point");
+}
+context.validationPayload = trailPayload(validationSummary, [{...trailPoint(1, 10, 2, 3), camera_heading: "90"}]);
+assert.throws(() => run("validateTrailPayload(validationPayload, validationSummary)"), undefined,
+  "an invalid saved camera heading cannot be inherited from another frame");
 for (const invalidAnchor of [null, [], {x: 2, z: 2}, {x: 2, z: 2, clear: 0},
   {x: NaN, z: 2, clear: true}, {x: 2, z: Infinity, clear: true}, {x: 2, z: 2, clear: true, extra: 1}]) {
   context.validationPayload = trailPayload(validationSummary, [
@@ -1114,14 +1131,15 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   const playbackSummary = replaySummary("a".repeat(64), {
     worldId: "playback-world", session: "playback-session", frames: 3
   });
-  const playbackPoints = [trailPoint(2, 1200, 0, 0), trailPoint(5, 1500, 4, 0), trailPoint(12, 2200, 8, 0)];
+  const playbackPoints = [trailPoint(2, 1200, 0, 0, undefined, 10),
+    trailPoint(5, 1500, 4, 0, undefined, 20), trailPoint(12, 2200, 8, 0, undefined, 30)];
   const playbackLandmarks = [remembered("panflute", 4, 0, 5, 5, 1500, 1500),
     remembered("panflute", 12, 0, 12, 12, 2200, 2200)];
   const playbackTerrain = [terrainCell(0, 0, "GRASS", 2, 1200, false),
     terrainCell(4, 0, "MARSH", 5, 1500, true), terrainCell(8, 0, "ROCKY", 12, 2200, true)];
   const playbackBaseUrl = "/api/explorations/" + playbackSummary.id + "/trail";
   context.playbackSummary = playbackSummary;
-  context.playbackFuturePoint = trailPoint(20, 3000, 200, 0);
+  context.playbackFuturePoint = trailPoint(20, 3000, 200, 0, undefined, 40);
   context.playbackFutureLandmark = remembered("panflute", 200, 0, 20, 20, 3000, 3000);
   context.playbackFutureTerrain = terrainCell(200, 0, "FOREST", 20, 3000, true);
   run(`trailState.live={identity:explorationReplayIdentity(playbackSummary),id:playbackSummary.id,
@@ -1151,6 +1169,8 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.playback.timeline.map(frame=>frame.sequence))")), [2, 5, 12],
     "the full response keeps the sparse recorded frame index independently of the visible prefix");
   assert.equal(run("trailState.points.length"), 3, "opening history displays only the saved trail even when local live data is newer");
+  assert.equal(run("trailState.points.at(-1).camera_heading"), 30,
+    "opening history uses the latest saved frame heading and ignores a newer local live heading");
   assert.equal(run("trailState.landmarks.length"), 2, "opening history does not merge unsaved local sightings");
   assert.equal(run("trailState.terrainTiles.length"), 3, "opening history does not merge unsaved local terrain");
   assert.ok(playbackUrls.includes(playbackBaseUrl), "opening a replay still requests the unchanged full-trail URL");
@@ -1168,6 +1188,8 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.ok(playbackUrls.includes(playbackBaseUrl + "?through_sequence=5"),
     "the slider sends the selected sparse frame sequence in the cutoff URL");
   assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2, 5]);
+  assert.equal(run("trailState.points.at(-1).camera_heading"), 20,
+    "a cutoff history prefix uses its selected frame heading rather than a later saved or live heading");
   assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.landmarks.map(item=>item.last_sequence))")), [5],
     "a prefix response shows only sightings known at the selected frame");
   assert.ok(JSON.parse(run("JSON.stringify(trailState.terrainTiles)")).every(tile => tile.last_sequence <= 5),
@@ -1578,6 +1600,18 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     captured_at:9,position:{x:3.5,z:3},player_anchor:{x:2,z:2,clear:"bad"}});`);
   assert.equal(run("trailState.live.localPoints[0].player_anchor"), null,
     "an invalid live anchor is retained as unknown and cannot revive an older value");
+  run(`recordLiveTrailSnapshot({world_id:"anchor-world",world_kind:"forest",session_id:"anchor-session",sequence:8,
+    captured_at:10,position:{x:3.5,z:3},camera_heading:270});`);
+  assert.equal(run("trailState.live.localPoints.find(point=>point.sequence===8).camera_heading"), 270,
+    "live trail recording copies the camera heading from its own snapshot");
+  run(`recordLiveTrailSnapshot({world_id:"anchor-world",world_kind:"forest",session_id:"anchor-session",sequence:8,
+    captured_at:11,position:{x:3.5,z:3}});`);
+  assert.ok(!Object.hasOwn(JSON.parse(run("JSON.stringify(trailState.live.localPoints.find(point=>point.sequence===8))")), "camera_heading"),
+    "a same-sequence replacement without a heading clears the previous heading");
+  run(`recordLiveTrailSnapshot({world_id:"anchor-world",world_kind:"forest",session_id:"anchor-session",sequence:9,
+    captured_at:12,position:{x:3.5,z:3},camera_heading:"invalid"});`);
+  assert.equal(run("trailState.live.localPoints.some(point=>point.sequence===9)"), false,
+    "an invalid optional heading rejects that live point instead of carrying camera data forward");
   run(`trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],
     landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],localTerrainAvailable:false,
     storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};`);
@@ -1619,6 +1653,37 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     element("routeStatus").textContent.includes("距离 12.0 世界单位 · 3 步") &&
     element("routeStatus").textContent.includes("下一格向东 · X 6.0 / Z 2.0"),
     "the checked-grid route reports endpoints, distance, steps, and next move");
+  for (const [heading, label] of [[0, "屏幕下方"], [45, "屏幕左下方"], [90, "屏幕左侧"],
+    [135, "屏幕左上方"], [180, "屏幕上方"], [225, "屏幕右上方"], [270, "屏幕右侧"], [315, "屏幕右下方"]]) {
+    run(`trailState.points=[{sequence:1,captured_at:1,x:2,z:2,camera_heading:${heading}}];renderTrail()`);
+    assert.ok(element("routeStatus").textContent.includes("按快照镜头朝向：" + label),
+      "camera-relative next-step labels cover " + label);
+    assert.ok(element("routeStatus").textContent.includes("下一格向东"),
+      "camera-relative guidance keeps the world-coordinate bearing readable");
+  }
+  run('trailState.points=[{sequence:1,captured_at:1,x:2,z:2}];renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("下一格向东") &&
+    !element("routeStatus").textContent.includes("按快照镜头朝向"),
+    "legacy route points keep world-coordinate direction without a camera hint");
+  const realCameraDirection = context.CheckedRoutes.cameraRelativeDirection;
+  context.CheckedRoutes.cameraRelativeDirection = undefined;
+  run('trailState.points=[{sequence:1,captured_at:1,x:2,z:2,camera_heading:90}];renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("下一格向东") &&
+    !element("routeStatus").textContent.includes("按快照镜头朝向"),
+    "a missing camera helper leaves the existing world-coordinate route guidance intact");
+  context.CheckedRoutes.cameraRelativeDirection = realCameraDirection;
+  run('trailState.points=[{sequence:1,captured_at:1,x:2,z:2,camera_heading:NaN}];renderTrail()');
+  assert.ok(element("routeStatus").textContent.includes("下一格向东") &&
+    !element("routeStatus").textContent.includes("按快照镜头朝向"),
+    "an invalid in-memory heading cannot produce a camera hint");
+  routeDestinationElement.value = "2,2";
+  routeDestinationElement.listeners.change();
+  run('trailState.points=[{sequence:1,captured_at:1,x:2,z:2,camera_heading:90}];renderTrail()');
+  assert.equal(run("calculateCheckedRoute().status"), "arrived");
+  assert.ok(!element("routeStatus").textContent.includes("按快照镜头朝向"),
+    "an arrived route has no next-segment camera hint");
+  routeDestinationElement.value = "2,6";
+  routeDestinationElement.listeners.change();
   assert.ok(routeSvg.includes('class="checked-route"') && routeSvg.includes('class="checked-route-goal"'),
     "a found route and its goal render in the map even with both terrain overlays turned off");
   assert.ok(!routeSvg.includes('class="terrain-connection') && !routeSvg.includes('class="terrain-cell'),
@@ -1932,7 +1997,8 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   function liveRouteFrame(sequence, options = {}) {
     const reply = frame(options.session || "fresh-session", sequence, null, options.world || "fresh-world", {
       worldKind: options.worldKind || "forest", x: options.x ?? 2, z: options.z ?? 2,
-      capturedAt: 100 + sequence, terrain: {tile_size: 4, tiles: liveRouteTerrain}
+      capturedAt: 100 + sequence, terrain: {tile_size: 4, tiles: liveRouteTerrain},
+      ...(Object.prototype.hasOwnProperty.call(options, "cameraHeading") ? {camera_heading: options.cameraHeading} : {})
     });
     reply.status = options.status || "live";
     reply.age_seconds = options.age ?? 0.5;
@@ -1946,15 +2012,23 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     trailState.live={identity:null,id:null,localPoints:[],storedPoints:[],trimmed:false,localLandmarks:[],storedLandmarks:[],
       landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],localTerrainAvailable:false,
       storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};`);
-  context.liveRouteReply = liveRouteFrame(1);
+  context.liveRouteReply = liveRouteFrame(1, {cameraHeading: 0});
   run("applyLiveResult(liveRouteReply)");
   run(`checkedRouteSelection.identity=trailState.identity;checkedRouteSelection.destination={x:2,z:6};
     checkedRouteSelection.source={prefab:"panflute",x:2,z:6};el.routeDestination.value="2,6";renderTrail()`);
   assert.ok(element("trailSvg").innerHTML.includes('class="checked-route"') &&
-    element("routeStatus").textContent.includes("下一格向东"),
+    element("routeStatus").textContent.includes("下一格向东") &&
+    element("routeStatus").textContent.includes("按快照镜头朝向：屏幕下方"),
     "an accepted fresh live snapshot enables the route and its next-step hint");
   assert.equal(element("routeDestinationSource").textContent,
     "终点来自已见排箫：所记录位置 X 2.0 / Z 6.0 的格中心");
+  context.liveRouteReply = liveRouteFrame(1, {cameraHeading: 90});
+  run("applyLiveResult(liveRouteReply)");
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.slice(-1).map(point=>({x:point.x,z:point.z,heading:point.camera_heading})))")),
+    [{x: 2, z: 2, heading: 90}], "a same-sequence camera update replaces heading while the player stays still");
+  assert.ok(element("routeStatus").textContent.includes("下一格向东") &&
+    element("routeStatus").textContent.includes("按快照镜头朝向：屏幕左侧"),
+    "a same-position live camera rotation redraws the next-step hint");
 
   context.fetch = async () => { throw new Error("offline"); };
   await run("pollLive()");
@@ -1962,6 +2036,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     element("trailSvg").innerHTML.includes('class="checked-route-goal"') &&
     element("routeStatus").textContent.includes("连接暂时中断") &&
     !element("routeStatus").textContent.includes("下一格") &&
+    !element("routeStatus").textContent.includes("按快照镜头朝向") &&
     routeDestinationElement.value === "2,6" && !element("routeDestinationSource").hidden,
     "an error pauses the route while preserving its endpoint and source");
   run('unavailableLive("尚未连接日志","disabled")');
@@ -2011,6 +2086,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   run('state.result={directions:[{direction:"east",score:7}]};trailState.mode="live";live.following=true;stopLive()');
   assert.ok(element("routeStatus").textContent.includes("实时跟随已暂停") &&
     !element("trailSvg").innerHTML.includes('class="checked-route"') &&
+    !element("routeStatus").textContent.includes("按快照镜头朝向") &&
     routeDestinationElement.value === "2,6" && !element("routeDestinationSource").hidden,
     "manually stopping live following pauses guidance and keeps the selected endpoint and source");
   resolveHeldLive(apiResponse(liveRouteFrame(4)));

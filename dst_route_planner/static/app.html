@@ -870,6 +870,10 @@
         if (!anchor) return null;
         point.player_anchor = anchor;
       }
+      if (Object.prototype.hasOwnProperty.call(value, "camera_heading")) {
+        if (typeof value.camera_heading !== "number" || !Number.isFinite(value.camera_heading)) return null;
+        point.camera_heading = value.camera_heading;
+      }
       return point;
     }
     const MAX_TRAIL_POINTS = 10000;
@@ -1529,6 +1533,26 @@
           parts.push("下一格向" + direction + " · X " + trailCoordinate(route.next.x) + " / Z " + trailCoordinate(route.next.z));
         }
       }
+      if (route.status === "found" && isFiniteWorldPoint(route.start) && isFiniteWorldPoint(route.next) &&
+          (route.start.x !== route.next.x || route.start.z !== route.next.z)) {
+        const latest = trailState.points[trailState.points.length - 1];
+        const api = globalThis.CheckedRoutes;
+        if (latest && typeof latest.camera_heading === "number" && Number.isFinite(latest.camera_heading) &&
+            api && typeof api.cameraRelativeDirection === "function") {
+          try {
+            const screenDirection = api.cameraRelativeDirection(
+              {x: route.start.x, z: route.start.z}, {x: route.next.x, z: route.next.z}, latest.camera_heading);
+            const screenLabels = {up: "屏幕上方", upper_right: "屏幕右上方", right: "屏幕右侧",
+              lower_right: "屏幕右下方", down: "屏幕下方", lower_left: "屏幕左下方",
+              left: "屏幕左侧", upper_left: "屏幕左上方"};
+            if (Object.prototype.hasOwnProperty.call(screenLabels, screenDirection)) {
+              parts.push("按快照镜头朝向：" + screenLabels[screenDirection]);
+            }
+          } catch (error) {
+            // Keep the world-coordinate route guidance available if camera projection fails.
+          }
+        }
+      }
       if (projectionError) parts.push("坐标范围过大，地图路线暂不可绘制。");
       return parts.join(" · ");
     }
@@ -2105,7 +2129,9 @@
       const identity = snapshotReplayIdentity(snapshot);
       if (!identity) return;
       const pointValue = {sequence: snapshot.sequence, captured_at: snapshot.captured_at,
-        x: snapshot.position && snapshot.position.x, z: snapshot.position && snapshot.position.z};
+        x: snapshot.position && snapshot.position.x, z: snapshot.position && snapshot.position.z,
+        ...(Object.prototype.hasOwnProperty.call(snapshot, "camera_heading")
+          ? {camera_heading: snapshot.camera_heading} : {})};
       const point = normalizeTrailPoint(pointValue);
       if (point && Object.prototype.hasOwnProperty.call(snapshot, "player_anchor")) {
         point.player_anchor = normalizeTrailPlayerAnchor(snapshot.player_anchor);
