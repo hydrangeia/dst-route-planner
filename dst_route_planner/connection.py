@@ -184,6 +184,8 @@ def inspect_live_log(
         position=dict(snapshot["position"]),
         world_kind=snapshot["world_kind"],
         sequence=snapshot["sequence"],
+        camera_heading=snapshot["camera_heading"],
+        captured_at=snapshot["captured_at"],
         observation_summary=_observation_summary(snapshot),
     )
     return result

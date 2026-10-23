@@ -98,13 +98,15 @@ python -m pytest -q
 
 ## 自动定位与连接检查
 
-`--ui` 和 `--check-live` 默认自动定位客户端日志；`--live-log auto` 显式选择同一行为，也可以用 `--live-log <路径>` 指定文件。Windows 使用系统当前的文档目录，包含重定向后的目录；macOS 使用 `~/Documents/Klei/DoNotStarveTogether/client_log.txt`，Linux 使用 `~/.klei/DoNotStarveTogether/client_log.txt`。默认日志位置依据 [Klei 的日志说明](https://support.klei.com/hc/en-us/articles/360029881191-Logs-and-Useful-Information-for-Bug-Reports-for-Don-t-Starve-Together)。
+`--ui`、`--check-live` 和 `--watch-live` 默认自动定位客户端日志；`--live-log auto` 显式选择同一行为，也可以用 `--live-log <路径>` 指定文件。Windows 使用系统当前的文档目录，包含重定向后的目录；macOS 使用 `~/Documents/Klei/DoNotStarveTogether/client_log.txt`，Linux 使用 `~/.klei/DoNotStarveTogether/client_log.txt`。默认日志位置依据 [Klei 的日志说明](https://support.klei.com/hc/en-us/articles/360029881191-Logs-and-Useful-Information-for-Bug-Reports-for-Don-t-Starve-Together)。
 
 网页的“检查连接”和终端的 `python route_planner.py --check-live` 都会显示所选日志、当前连接状态和下一步操作。检查只读取最新的完整快照，不追加回放。运行 `python route_planner.py --ui` 后，后台独立录制探索快照；网页是否打开、是否实时跟随都不影响录制。
 
-终端检查的退出码：`0` 表示收到新鲜快照，`1` 表示还需启动游戏、启用采集或恢复游戏，`2` 表示文件读取或快照格式出错。洞穴中的新鲜快照也表示采集器已连接，方向推理仍按世界支持情况处理。
+`python route_planner.py --watch-live` 每秒检查一次，持续等待游戏或采集器就绪。新快照和连接状态改变时输出一行状态、序号、新鲜度、世界类型、X/Z 坐标、镜头朝向，以及地标、地皮、通行与连接检查摘要；同一份快照的新鲜度递增不会重复刷屏，超过五秒后仍会报告 `stale`。读取错误后继续等待后续有效快照；按 `Ctrl+C` 正常结束并返回 `0`，启动时无法定位日志则返回 `2`。可用 `--live-log <路径>` 指定检查文件。
 
-`GET /api/live-check` 返回 `check_version: 1`、`status` 和 `log_path`，并在可用时提供 `age_seconds`、`world_kind`、`sequence`、`position`；出错时提供 `error`。状态为 `disabled`、`missing_log`、`waiting`、`live`、`stale` 或 `error`。有最近有效快照时（`live` 或 `stale`），响应还会增加可选的 `observation_summary`，并由同一份已校验快照生成。字段包括 `landmarks`（地标数量）、`terrain_available`（是否提供地形）、`terrain_tiles`（地皮数量）、`passable_tiles`、`blocked_tiles`、`unknown_tiles`（分别为可通行、受阻和状态未知的地皮数）、`clear_connections`、`blocked_connections`（已检查连接中通过和受阻的数量）以及 `player_anchor`（`clear`、`blocked` 或 `unknown`，表示玩家到所在格中心的接入检查状态）。旧快照缺少可选数据仍可读取；未提供地形时，地皮和连接计数为 0，`player_anchor` 为 `unknown`。等待数据、日志缺失或快照无效时不提供摘要。快照过期时仍显示摘要且状态保持 `stale`；网页收到新鲜快照前不会恢复导航。`observation_summary` 是 `check_version: 1` 响应中的可选字段，不改变版本号，旧响应仍兼容。这个接口不调用规划器，也不追加回放。
+单次终端检查的退出码：`0` 表示收到新鲜快照，`1` 表示还需启动游戏、启用采集或恢复游戏，`2` 表示文件读取或快照格式出错。洞穴中的新鲜快照也表示采集器已连接，方向推理仍按世界支持情况处理。
+
+`GET /api/live-check` 返回 `check_version: 1`、`status` 和 `log_path`，并在可用时提供 `age_seconds`、`world_kind`、`sequence`、`position`，以及来自同一份快照的 `captured_at` 和 `camera_heading`；出错时提供 `error`。状态为 `disabled`、`missing_log`、`waiting`、`live`、`stale` 或 `error`。有最近有效快照时（`live` 或 `stale`），响应还会增加可选的 `observation_summary`，并由同一份已校验快照生成。字段包括 `landmarks`（地标数量）、`terrain_available`（是否提供地形）、`terrain_tiles`（地皮数量）、`passable_tiles`、`blocked_tiles`、`unknown_tiles`（分别为可通行、受阻和状态未知的地皮数）、`clear_connections`、`blocked_connections`（已检查连接中通过和受阻的数量）以及 `player_anchor`（`clear`、`blocked` 或 `unknown`，表示玩家到所在格中心的接入检查状态）。旧快照缺少可选数据仍可读取；未提供地形时，地皮和连接计数为 0，`player_anchor` 为 `unknown`。等待数据、日志缺失或快照无效时不提供摘要。快照过期时仍显示摘要且状态保持 `stale`；网页收到新鲜快照前不会恢复导航。`observation_summary` 是 `check_version: 1` 响应中的可选字段，不改变版本号，旧响应仍兼容。这个接口不调用规划器，也不追加回放。
 
 ## 连续探索回放
 

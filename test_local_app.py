@@ -645,6 +645,8 @@ def test_live_check_api_is_read_only_and_reports_age_for_caves(local_server, mon
     assert fresh["log_path"] == str(log)
     assert fresh["age_seconds"] <= 5
     assert fresh["position"] == cave["position"]
+    assert fresh["captured_at"] == cave["captured_at"]
+    assert fresh["camera_heading"] == cave["camera_heading"]
     assert fresh["world_kind"] == "cave"
     assert fresh["sequence"] == 9
     assert "world_id" not in fresh
@@ -662,6 +664,8 @@ def test_live_check_api_is_read_only_and_reports_age_for_caves(local_server, mon
     assert stale["age_seconds"] > 5
     assert stale["world_kind"] == "cave"
     assert stale["position"] == stale_cave["position"]
+    assert stale["captured_at"] == stale_cave["captured_at"]
+    assert stale["camera_heading"] == stale_cave["camera_heading"]
 
     future = _live_snapshot(demo["directions"], captured_at=time.time() + 10)
     _write_live_snapshot(log, future)

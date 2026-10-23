@@ -14,6 +14,7 @@ from dst_route_planner.collector_install import CollectorInstallError, install_c
 from dst_route_planner.inference import initial_belief, top_items, update_belief
 from dst_route_planner.io import load_direction_observations, observation_from_dict
 from dst_route_planner.knowledge import build_forest_default_kb
+from dst_route_planner.live_watch import watch_live_log
 from dst_route_planner.models import Direction, DirectionObservation, Observation
 from dst_route_planner.navigation import probabilities_by_direction, rank_directions
 from dst_route_planner.world_sampler import build_random_task_graph
@@ -258,6 +259,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ui", action="store_true", help="Start the local browser interface.")
     parser.add_argument("--check-live", action="store_true", help="Check the client collector connection once and exit.")
     parser.add_argument(
+        "--watch-live",
+        action="store_true",
+        help="Watch client collector diagnostics until Ctrl+C.",
+    )
+    parser.add_argument(
         "--install-collector",
         type=Path,
         metavar="MODS_DIR",
@@ -346,6 +352,21 @@ def main() -> int:
     args = parser.parse_args()
     if args.ui and args.check_live:
         parser.error("--ui and --check-live cannot be used together.")
+    if args.watch_live and (
+        args.ui
+        or args.check_live
+        or args.install_collector is not None
+        or args.list_targets
+        or args.sample_graph
+        or args.demo
+        or args.observe_json is not None
+        or args.current_json is not None
+    ):
+        parser.error(
+            "--watch-live cannot be combined with --ui, --check-live, "
+            "--install-collector, --sample-graph, --demo, --list-targets, "
+            "--observe-json, or --current-json."
+        )
     if args.check_live and (
         args.list_targets
         or args.sample_graph
@@ -415,6 +436,13 @@ def main() -> int:
                 }
             )
         return _report_live_check(inspect_live_log(live_log))
+    if args.watch_live:
+        try:
+            live_log = resolve_live_log_path(args.live_log)
+        except (LiveLogDiscoveryError, OSError) as error:
+            print(f"Unable to resolve the client log: {error}", file=sys.stderr)
+            return 2
+        return watch_live_log(live_log)
     kb = build_forest_default_kb()
     if args.sample_graph:
         graph = build_random_task_graph(kb, seed=args.seed)

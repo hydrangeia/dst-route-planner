@@ -134,9 +134,13 @@ def test_inspect_live_log_reports_statuses_without_mutating_the_log(tmp_path) ->
         "log_path": None,
     }
     assert "observation_summary" not in disabled
+    assert "camera_heading" not in disabled
+    assert "captured_at" not in disabled
     missing_result = connection.inspect_live_log(missing)
     assert missing_result["status"] == "missing_log"
     assert "observation_summary" not in missing_result
+    assert "camera_heading" not in missing_result
+    assert "captured_at" not in missing_result
 
     log = tmp_path / "DST 日志" / "client log.txt"
     log.parent.mkdir()
@@ -149,9 +153,12 @@ def test_inspect_live_log_reports_statuses_without_mutating_the_log(tmp_path) ->
         "log_path": str(log),
     }
     assert "observation_summary" not in waiting
+    assert "camera_heading" not in waiting
+    assert "captured_at" not in waiting
     assert log.read_bytes() == waiting_bytes
 
     fresh_snapshot = _snapshot(world_kind="cave")
+    fresh_snapshot["captured_at"] = int(time.time())
     fresh_bytes = _write_snapshot(log, fresh_snapshot)
     fresh = connection.inspect_live_log(log)
     assert fresh["check_version"] == 1
@@ -160,6 +167,10 @@ def test_inspect_live_log_reports_statuses_without_mutating_the_log(tmp_path) ->
     assert fresh["position"] == fresh_snapshot["position"]
     assert fresh["world_kind"] == "cave"
     assert fresh["sequence"] == 7
+    assert fresh["camera_heading"] == fresh_snapshot["camera_heading"]
+    assert fresh["captured_at"] == fresh_snapshot["captured_at"]
+    assert type(fresh["camera_heading"]) is type(fresh_snapshot["camera_heading"])
+    assert type(fresh["captured_at"]) is type(fresh_snapshot["captured_at"])
     assert fresh["age_seconds"] <= 5
     assert fresh["observation_summary"] == {
         "landmarks": 0,
@@ -183,6 +194,8 @@ def test_inspect_live_log_reports_statuses_without_mutating_the_log(tmp_path) ->
     assert stale["age_seconds"] > 5
     assert stale["world_kind"] == "cave"
     assert stale["position"] == stale_snapshot["position"]
+    assert stale["camera_heading"] == stale_snapshot["camera_heading"]
+    assert stale["captured_at"] == stale_snapshot["captured_at"]
     assert log.read_bytes() == stale_bytes
 
     future_snapshot = _snapshot(captured_at=time.time() + 10)
@@ -191,6 +204,8 @@ def test_inspect_live_log_reports_statuses_without_mutating_the_log(tmp_path) ->
     assert future["status"] == "error"
     assert future["error"] == "captured_at is ahead of the local clock."
     assert "position" not in future
+    assert "camera_heading" not in future
+    assert "captured_at" not in future
     assert "observation_summary" not in future
     assert log.read_bytes() == future_bytes
 
@@ -227,6 +242,8 @@ def test_inspect_live_log_summarizes_only_the_validated_snapshot(tmp_path, monke
     assert "private-session-id" not in serialized
     assert "panflute" not in serialized
     assert "spiderden" not in serialized
+    assert result["camera_heading"] == snapshot["camera_heading"]
+    assert result["captured_at"] == snapshot["captured_at"]
     assert log.read_bytes() == raw
 
 
@@ -289,6 +306,8 @@ def test_inspect_live_log_reports_invalid_content_and_io_errors(tmp_path, monkey
     assert invalid["status"] == "error"
     assert "snapshot" in invalid["error"]
     assert "observation_summary" not in invalid
+    assert "camera_heading" not in invalid
+    assert "captured_at" not in invalid
 
     def unreadable(path):
         raise PermissionError("permission denied")
@@ -298,3 +317,5 @@ def test_inspect_live_log_reports_invalid_content_and_io_errors(tmp_path, monkey
     assert unreadable_result["status"] == "error"
     assert unreadable_result["error"] == "permission denied"
     assert "observation_summary" not in unreadable_result
+    assert "camera_heading" not in unreadable_result
+    assert "captured_at" not in unreadable_result

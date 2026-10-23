@@ -197,6 +197,83 @@ def test_check_live_rejects_incompatible_modes(monkeypatch, arguments, message: 
 
 
 @pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--ui"],
+        ["--check-live"],
+        ["--install-collector", "DST mods"],
+        ["--sample-graph"],
+        ["--demo"],
+        ["--list-targets"],
+        ["--observe-json", "observations.json"],
+        ["--current-json", "current.json"],
+    ],
+)
+def test_watch_live_rejects_other_modes_before_io(
+    monkeypatch, capsys, extra_args: list[str]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cli, "resolve_live_log_path", lambda value: calls.append("resolve")
+    )
+    monkeypatch.setattr(
+        cli, "watch_live_log", lambda path: calls.append("watch")
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["route_planner.py", "--watch-live", *extra_args],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 2
+    assert "--watch-live cannot be combined" in captured.err
+    assert captured.out == ""
+    assert calls == []
+
+
+def test_watch_live_resolves_log_once_and_forwards_selected_path(monkeypatch) -> None:
+    selected_log = Path("redirected Documents") / "Klei" / "client_log.txt"
+    resolve_calls: list[Path] = []
+    watch_calls: list[Path] = []
+
+    def resolve(value):
+        resolve_calls.append(value)
+        return selected_log
+
+    monkeypatch.setattr(cli, "resolve_live_log_path", resolve)
+    monkeypatch.setattr(
+        cli,
+        "watch_live_log",
+        lambda path: watch_calls.append(path) or 0,
+    )
+    monkeypatch.setattr(sys, "argv", ["route_planner.py", "--watch-live"])
+
+    assert main() == 0
+    assert resolve_calls == [Path("auto")]
+    assert watch_calls == [selected_log]
+
+
+def test_watch_live_discovery_failure_returns_exit_two(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli,
+        "resolve_live_log_path",
+        lambda value: (_ for _ in ()).throw(
+            cli.LiveLogDiscoveryError("automatic discovery unavailable")
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["route_planner.py", "--watch-live"])
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Unable to resolve the client log: automatic discovery unavailable\n"
+
+
+@pytest.mark.parametrize(
     ("port", "message"),
     [
         ("abc", "port must be an integer"),

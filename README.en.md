@@ -38,6 +38,14 @@ You can also check the connection from the terminal:
 python route_planner.py --check-live
 ```
 
+For the first connection, watch the collector continuously:
+
+```powershell
+python route_planner.py --watch-live
+```
+
+It checks once per second and prints coordinates, camera heading, and an observation summary when a new snapshot or status change arrives. In the game, move, turn the camera, then pause and resume to check the updates; press `Ctrl+C` to end the check.
+
 If your log lives elsewhere, use `--live-log "actual/path/client_log.txt"`. Explicit `--live-log auto` uses the same automatic discovery as the default. Leave live following unchecked for manual entry.
 
 Directions use fixed world coordinates: north is `+Z` and east is `+X`. The map opens fitted to all observed areas. Select “全图” (Full map) to restore that view, or “跟随位置” (Follow position) to keep the latest position in a local view; “放大” (Zoom in) and “缩小” (Zoom out) change its range.
@@ -72,7 +80,7 @@ Each save updates the record's current observations; click Save again after maki
 ```text
 Install the collector → enable it in the game's client mod list and enter a world → start the tool; locate the log automatically
   ↓
-Check connection → review the latest valid position, freshness, and observation summary → choose a target
+Check connection / --watch-live → check movement, camera turns, pause and resume → choose a target
   ↓
 Collect coordinates, tiles, landmarks, and ground passability each second
   ↓
