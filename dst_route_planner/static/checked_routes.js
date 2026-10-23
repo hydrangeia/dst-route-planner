@@ -355,5 +355,36 @@
     };
   }
 
-  return {findRoute, locatePassableTile, cameraRelativeDirection};
+  function findNearestTarget(tiles, position, landmarks, playerAnchor) {
+    if (!Array.isArray(landmarks)) return null;
+
+    let nearest = null;
+    const candidateCount = Math.min(landmarks.length, 500);
+    for (let index = 0; index < candidateCount; index += 1) {
+      const landmark = landmarks[index];
+      if (!isFinitePoint(landmark) || typeof landmark.prefab !== "string" ||
+          landmark.prefab.trim().length === 0) {
+        continue;
+      }
+
+      const located = locatePassableTile(tiles, landmark);
+      if (located.status !== "found" || !located.tile) continue;
+
+      const route = findRoute(tiles, position, located.tile, playerAnchor);
+      if ((route.status !== "found" && route.status !== "arrived") ||
+          !Number.isFinite(route.distance) || route.distance < 0) {
+        continue;
+      }
+      if (nearest && route.distance >= nearest.route.distance) continue;
+
+      nearest = {
+        landmark: {prefab: landmark.prefab, x: landmark.x, z: landmark.z},
+        destination: {x: located.tile.x, z: located.tile.z},
+        route,
+      };
+    }
+    return nearest;
+  }
+
+  return {findRoute, locatePassableTile, cameraRelativeDirection, findNearestTarget};
 });

@@ -562,6 +562,9 @@ function landmarkListSyntheticClick(index, forcedDisabled = false) {
   }}};
   element("seenLandmarksList").listeners.click(event);
 }
+function nearestTargetSyntheticClick() {
+  element("nearestSeenTargetButton").listeners.click({target: element("nearestSeenTargetButton")});
+}
 function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = () => {}) {
   const marker = {dataset: {landmarkIndex: String(attributes.index), landmarkRevision: String(attributes.revision),
     landmarkPrefab: attributes.prefab, landmarkX: String(attributes.x), landmarkZ: String(attributes.z)}};
@@ -2443,6 +2446,175 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   run('updateBackgroundRecordingNotice("true")');
   assert.equal(element("backgroundRecordingNotice").hidden, true,
     "unknown and older option payloads cannot claim an active recorder");
+
+  const nearestTerrain = [
+    {x: 2, z: 2, tile: "GRASS", passable: true, connections: {east: true}},
+    {x: 6, z: 2, tile: "FOREST", passable: true, connections: {north: true}},
+    {x: 6, z: 6, tile: "ROCKY", passable: true},
+    {x: 2, z: 6, tile: "MARSH", passable: true, connections: {east: true}}
+  ];
+  const realNearestTarget = context.CheckedRoutes.findNearestTarget;
+  const nearestCalls = [];
+  context.CheckedRoutes.findNearestTarget = (tiles, position, candidates, anchor) => {
+    nearestCalls.push({position: JSON.parse(JSON.stringify(position)),
+      anchor: anchor === undefined ? undefined : JSON.parse(JSON.stringify(anchor)),
+      landmarks: JSON.parse(JSON.stringify(candidates))});
+    return realNearestTarget(tiles, position, candidates, anchor);
+  };
+  context.nearestTerrain = nearestTerrain;
+  context.noNearestSightings = [];
+  run(`state.target="panflute";trailState.mode="history";trailState.id="nearest-history";
+    trailState.identity="nearest-world-session";trailState.error="";trailState.loading=false;
+    trailState.landmarkError="";trailState.terrainError="";trailState.points=[{sequence:1,captured_at:1,x:2,z:2}];
+    trailState.terrainTiles=nearestTerrain;trailState.terrainAvailable=true;trailState.landmarks=noNearestSightings;
+    trailState.playback={timeline:[{sequence:1,captured_at:1}],selectedIndex:0,appliedIndex:0,requestId:0,loading:false,error:""};
+    checkedRouteSelection.destination=null;checkedRouteSelection.source=null;live.following=false;renderTrail()`);
+  assert.equal(element("nearestSeenTargetButton").disabled, true, "the nearest-target action waits for a current-target sighting");
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("暂未记录当前目标"));
+  nearestTargetSyntheticClick();
+  assert.equal(nearestCalls.length, 0, "a disabled no-sighting action is guarded by its click handler");
+
+  const manyNearestSightings = Array.from({length: 10}, (_, index) =>
+    remembered("panflute", 100 + index * 4, 100, 1, 30 - index, 1, 30 - index))
+    .concat([remembered("panflute", 2, 6, 1, 20, 1, 20), remembered("panflute", 6, 6, 1, 19, 1, 19)]);
+  context.manyNearestSightings = manyNearestSightings;
+  run("trailState.landmarks=manyNearestSightings;renderTrail()");
+  assert.equal((element("seenLandmarksList").innerHTML.match(/class="seen-landmark-item"/g) || []).length, 10,
+    "the sightings panel keeps its ten-row display limit");
+  assert.equal(element("nearestSeenTargetButton").disabled, false, "history can search recorded sightings");
+  assert.equal(nearestCalls.length, 0, "rendering the panel does not search routes for all candidates");
+  nearestTargetSyntheticClick();
+  assert.equal(nearestCalls.length, 1, "the nearest-target action searches only after a click");
+  assert.equal(nearestCalls[0].landmarks.length, 12, "the click includes retained sightings beyond the displayed ten");
+  assert.deepEqual(nearestCalls[0].landmarks.slice(0, 10).map(item => item.x),
+    [100, 104, 108, 112, 116, 120, 124, 128, 132, 136], "all candidates use deterministic newest-first order");
+  assert.equal(routeDestinationElement.value, "6,6", "a farther sighting with a shorter checked detour route wins");
+  assert.equal(element("routeDestinationSource").textContent,
+    "终点来自已见排箫：所记录位置 X 6.0 / Z 6.0 的格中心");
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("已知路线距离 8.0 世界单位"));
+  assert.equal(JSON.parse(run("JSON.stringify(calculateCheckedRoute())")).distance, 8,
+    "the selected route keeps the shortest known grid distance");
+
+  const preservedDestination = routeDestinationElement.value;
+  const preservedSource = element("routeDestinationSource").textContent;
+  context.unreachableNearestSightings = [remembered("panflute", 1000, 1000, 1, 99, 1, 99)];
+  run("trailState.landmarks=unreachableNearestSightings;renderTrail()");
+  nearestTargetSyntheticClick();
+  assert.equal(routeDestinationElement.value, preservedDestination, "no known route leaves the previous endpoint untouched");
+  assert.equal(element("routeDestinationSource").textContent, preservedSource,
+    "no known route leaves the previous endpoint source untouched");
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("没有已知路线"));
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("保持不变"));
+
+  const helperCallsBeforeMissingTarget = nearestCalls.length;
+  run('state.target="moonbase";renderTrail()');
+  assert.equal(element("nearestSeenTargetButton").disabled, true, "the action is disabled when the current target has no sightings");
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("暂未记录当前目标"));
+  nearestTargetSyntheticClick();
+  assert.equal(nearestCalls.length, helperCallsBeforeMissingTarget, "a missing-target handler call cannot invoke the route helper");
+
+  context.prefixNearestPoint = trailPoint(1, 1, 3, 2, {x: 2, z: 2, clear: true});
+  context.futureLiveNearestPoint = trailPoint(2, 2, 6, 2, {x: 6, z: 2, clear: false});
+  context.prefixNearestSightings = [remembered("panflute", 2, 6, 1, 1, 1, 1)];
+  run(`state.target="panflute";trailState.mode="history";trailState.id="nearest-prefix";
+    trailState.identity="nearest-history-prefix";trailState.error="";trailState.loading=false;
+    trailState.landmarkError="";trailState.terrainError="";trailState.terrainTiles=nearestTerrain;
+    trailState.points=[prefixNearestPoint];trailState.live.localPoints=[futureLiveNearestPoint];
+    trailState.landmarks=prefixNearestSightings;
+    trailState.playback={timeline:[{sequence:1,captured_at:1},{sequence:2,captured_at:2}],selectedIndex:0,appliedIndex:0,requestId:0,loading:false,error:""};
+    checkedRouteSelection.destination=null;checkedRouteSelection.source=null;renderTrail()`);
+  const callsBeforeHistoryRender = nearestCalls.length;
+  assert.equal(element("nearestSeenTargetButton").disabled, false, "historical playback remains eligible when its displayed frame is ready");
+  assert.equal(nearestCalls.length, callsBeforeHistoryRender, "history rendering does not run nearest-route searches");
+  nearestTargetSyntheticClick();
+  assert.deepEqual(nearestCalls.at(-1).position, {x: 3, z: 2}, "history uses the latest player position in the displayed prefix");
+  assert.deepEqual(nearestCalls.at(-1).anchor, {x: 2, z: 2, clear: true},
+    "history passes the displayed point's own player anchor");
+  assert.equal(routeDestinationElement.value, "2,6");
+  run("trailState.playback.selectedIndex=1;renderTrail()");
+  assert.ok(!element("nearestSeenTargetStatus").textContent.includes("已选择"),
+    "changing the history cursor clears the transient nearest-target notice");
+
+  run('trailState.playback.selectedIndex=0;renderTrail()');
+  nearestTargetSyntheticClick();
+  run('state.target="moonbase";renderTrail()');
+  assert.ok(!element("nearestSeenTargetStatus").textContent.includes("已选择"),
+    "changing the selected target clears the nearest-target notice");
+  run('state.target="panflute";renderTrail()');
+  nearestTargetSyntheticClick();
+  run('trailState.identity="another-nearest-world-session";renderTrail()');
+  assert.ok(!element("nearestSeenTargetStatus").textContent.includes("已选择"),
+    "changing world or session identity clears the nearest-target notice");
+
+  run('trailState.identity="nearest-history-prefix";trailState.id="nearest-prefix";renderTrail()');
+  nearestTargetSyntheticClick();
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("已选择"));
+  routeDestinationElement.value = "6,2";
+  routeDestinationElement.listeners.change();
+  assert.ok(!element("nearestSeenTargetStatus").textContent.includes("已选择"),
+    "a manual route-selector choice clears the nearest-target notice");
+  nearestTargetSyntheticClick();
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("已选择"));
+  trailDestinationSyntheticEvent("click", 2, 2);
+  assert.ok(!element("nearestSeenTargetStatus").textContent.includes("已选择"),
+    "a manual map endpoint choice clears the nearest-target notice");
+
+  const helperCallsBeforeBlockedUI = nearestCalls.length;
+  run('trailState.loading=true;renderTrail()');
+  assert.equal(element("nearestSeenTargetButton").disabled, true, "a trail refresh disables the nearest-target action");
+  nearestTargetSyntheticClick();
+  assert.equal(nearestCalls.length, helperCallsBeforeBlockedUI, "loading-state handler calls do not search routes");
+  run('trailState.loading=false;trailState.error="history failed";renderTrail()');
+  assert.equal(element("nearestSeenTargetButton").disabled, true, "a trail error disables the nearest-target action");
+  nearestTargetSyntheticClick();
+  assert.equal(nearestCalls.length, helperCallsBeforeBlockedUI, "error-state handler calls do not search routes");
+  run('trailState.error="";renderTrail()');
+
+  const priorRouteStatus = element("routeStatus").textContent;
+  const priorSourceVisibility = element("routeDestinationSource").hidden;
+  const helperWithError = context.CheckedRoutes.findNearestTarget;
+  context.CheckedRoutes.findNearestTarget = () => { throw new Error("malformed helper result"); };
+  nearestTargetSyntheticClick();
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("路线计算失败"),
+    "a malformed nearest-route helper is reported in the status line");
+  assert.equal(element("routeDestinationSource").hidden, priorSourceVisibility, "a malformed helper keeps the prior source state");
+  assert.equal(routeDestinationElement.value, "2,2", "a malformed helper keeps the prior endpoint");
+  assert.ok(element("trailSvg").innerHTML.includes("<title"), "a malformed helper does not break map rendering");
+  assert.equal(element("routeStatus").textContent, priorRouteStatus,
+    "a malformed helper leaves the existing route display intact");
+  context.CheckedRoutes.findNearestTarget = helperWithError;
+
+  context.liveNearestSightings = [remembered("panflute", 2, 6, 1, 1, 1, 1)];
+  context.liveNearestSightingsWithNew = context.liveNearestSightings.concat([remembered("panflute", 6, 2, 2, 2, 2, 2)]);
+  run(`trailState.mode="live";trailState.id=null;trailState.identity="nearest-live-world-session";
+    trailState.error="";trailState.loading=false;trailState.landmarkError="";trailState.terrainError="";
+    trailState.points=[{sequence:1,captured_at:1,x:2,z:2}];trailState.landmarks=liveNearestSightings;
+    trailState.terrainTiles=nearestTerrain;trailState.playback={timeline:[],selectedIndex:-1,appliedIndex:-1,requestId:0,loading:false,error:""};
+    live.following=true;liveEl.follow.checked=true;acceptRouteFreshness(trailState.identity,1,0);renderTrail()`);
+  assert.equal(element("nearestSeenTargetButton").disabled, false, "a fresh live route enables nearest-target search");
+  nearestTargetSyntheticClick();
+  const liveNearestDestination = routeDestinationElement.value;
+  const liveNearestSource = element("routeDestinationSource").textContent;
+  assert.equal(liveNearestDestination, "2,6");
+  assert.ok(element("routeStatus").textContent.includes("距离 12.0 世界单位"));
+  run(`acceptRouteFreshness(trailState.identity,2,0);trailState.points=[{sequence:2,captured_at:2,x:6,z:2}];
+    trailState.landmarks=liveNearestSightingsWithNew;renderTrail()`);
+  assert.equal(routeDestinationElement.value, liveNearestDestination,
+    "movement and new sightings recalculate the route without switching its endpoint");
+  assert.equal(element("routeDestinationSource").textContent, liveNearestSource,
+    "movement keeps the exact selected sighting source");
+  assert.ok(element("routeStatus").textContent.includes("距离 8.0 世界单位 · 2 步"));
+  assert.ok(element("nearestSeenTargetStatus").textContent.includes("已知路线距离 8.0 世界单位"),
+    "the selected-target status follows the recalculated route distance");
+
+  const helperCallsBeforePause = nearestCalls.length;
+  run('pauseRouteNavigation("stale",false);renderTrail()');
+  assert.equal(element("nearestSeenTargetButton").disabled, true, "a stale live snapshot disables nearest-target search");
+  nearestTargetSyntheticClick();
+  assert.equal(nearestCalls.length, helperCallsBeforePause, "the click handler guards a stale live route even if invoked directly");
+  assert.equal(routeDestinationElement.value, liveNearestDestination, "a paused click keeps the selected endpoint");
+  run("stopLive()");
+  assert.equal(element("nearestSeenTargetButton").disabled, true, "stopping live following disables nearest-target search");
 
   console.log("Live UI: replay recording, freshness-gated live routes, request timeouts and retries, history isolation, map follow and zoom, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

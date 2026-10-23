@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const {findRoute, locatePassableTile, cameraRelativeDirection} = require("./dst_route_planner/static/checked_routes.js");
+const {findRoute, locatePassableTile, cameraRelativeDirection, findNearestTarget} = require("./dst_route_planner/static/checked_routes.js");
 
 function cell(x, z, passable = true, connections) {
   return {
@@ -172,6 +172,123 @@ const lookupElapsed = Date.now() - lookupStarted;
 assert.deepEqual(largeLookup, {status: "found", tile: {x: 9996, z: 0}});
 assert.ok(lookupElapsed < 5000, "2500 terrain cells should support interactive target lookup");
 
+const nearestDetourTiles = [
+  cell(0, 0, true, {north: true}),
+  cell(0, 4, true, {north: true, east: true}),
+  cell(0, 8),
+  cell(4, 4),
+  cell(4, 0, true, {north: true}),
+];
+const misleadingLandmarks = [
+  {prefab: "close-but-long-route", x: 4, z: 0},
+  {prefab: "farther-but-short-route", x: 0, z: 8},
+];
+const nearestDetour = findNearestTarget(nearestDetourTiles, {x: 0, z: 0}, misleadingLandmarks);
+assert.equal(Math.hypot(misleadingLandmarks[0].x, misleadingLandmarks[0].z), 4);
+assert.equal(Math.hypot(misleadingLandmarks[1].x, misleadingLandmarks[1].z), 8);
+assert.equal(route(nearestDetourTiles, {x: 0, z: 0}, {x: 4, z: 0}).distance, 12);
+assert.equal(nearestDetour.landmark.prefab, "farther-but-short-route",
+  "target selection minimizes checked route distance instead of direct distance");
+assert.equal(nearestDetour.route.distance, 8);
+assert.deepEqual(nearestDetour.destination, {x: 0, z: 8});
+
+const unreachableAndUnknownTiles = [
+  cell(0, 0, true, {east: true}),
+  cell(4, 0),
+  cell(8, 0),
+  cell(12, 0, false),
+];
+const nonReachableLandmarks = [
+  {prefab: "unreachable", x: 8, z: 0},
+  {prefab: "unknown", x: 100, z: 100},
+  {prefab: "blocked", x: 12, z: 0},
+];
+assert.equal(findNearestTarget(unreachableAndUnknownTiles, {x: 0, z: 0}, nonReachableLandmarks), null,
+  "unreachable, unknown, and blocked targets are ignored");
+
+const sameTileTiles = [cell(0, 0)];
+const sameTileLandmark = [{prefab: "same-tile", x: 1, z: 1}];
+const sameTileTarget = findNearestTarget(sameTileTiles, {x: 1, z: 1}, sameTileLandmark);
+assert.equal(sameTileTarget.route.status, "arrived");
+assert.equal(sameTileTarget.route.distance, 0);
+assert.deepEqual(sameTileTarget.destination, {x: 0, z: 0},
+  "target coordinates resolve to their containing tile center");
+const sameTileAnchoredTarget = findNearestTarget(
+  sameTileTiles,
+  {x: 1, z: 1},
+  sameTileLandmark,
+  {x: 0, z: 0, clear: true}
+);
+assert.equal(sameTileAnchoredTarget.route.status, "found");
+assert.equal(sameTileAnchoredTarget.route.distance, Math.SQRT2,
+  "player-anchor distance remains part of the route, even for a same-tile target");
+assert.deepEqual(sameTileAnchoredTarget.route.path, [{x: 1, z: 1}, {x: 0, z: 0}]);
+assert.equal(findNearestTarget(sameTileTiles, {x: 1, z: 1}, sameTileLandmark,
+  {x: 0, z: 0, clear: false}), null, "a blocked player anchor yields no candidate");
+assert.equal(findNearestTarget(sameTileTiles, {x: 1, z: 1}, sameTileLandmark, null), null,
+  "an invalid explicit player anchor yields no candidate");
+
+const malformedLandmarks = [
+  null,
+  [],
+  {x: 0, z: 0},
+  {prefab: "", x: 0, z: 0},
+  {prefab: "   ", x: 0, z: 0},
+  {prefab: "bad-x", x: NaN, z: 0},
+  {prefab: "bad-z", x: 0, z: Infinity},
+  {prefab: 7, x: 0, z: 0},
+  {prefab: "valid", x: 0, z: 0},
+];
+const malformedSelection = findNearestTarget(sameTileTiles, {x: 0, z: 0}, malformedLandmarks);
+assert.equal(malformedSelection.landmark.prefab, "valid",
+  "malformed candidates are skipped while later entries remain eligible");
+assert.deepEqual(findNearestTarget(sameTileTiles, {x: 0, z: 0}, [malformedLandmarks[0]]), null);
+
+const tiedTiles = [cell(0, 0, true, {east: true, north: true}), cell(4, 0), cell(0, 4)];
+const tiedLandmarks = [
+  {prefab: "first", x: 0, z: 4},
+  {prefab: "second", x: 4, z: 0},
+];
+assert.equal(findNearestTarget(tiedTiles, {x: 0, z: 0}, tiedLandmarks).landmark.prefab, "first",
+  "equal checked distances keep the first input candidate");
+
+const elevenTileLine = Array.from({length: 11}, (_, index) =>
+  cell(index * 4, 0, true, index < 10 ? {east: true} : {}));
+const elevenLandmarks = Array.from({length: 11}, (_, index) => ({
+  prefab: "candidate-" + index,
+  x: (10 - index) * 4,
+  z: 0,
+}));
+assert.equal(findNearestTarget(elevenTileLine, {x: 0, z: 0}, elevenLandmarks).landmark.prefab,
+  "candidate-10", "selection considers entries after the recent-ten display window");
+
+const boundaryLandmarks = Array.from({length: 499}, () => ({prefab: "bad", x: NaN, z: 0}));
+boundaryLandmarks.push({prefab: "last-allowed", x: 4, z: 0});
+boundaryLandmarks.push({prefab: "over-limit", x: 0, z: 0});
+assert.equal(findNearestTarget(straight, {x: 0, z: 0}, boundaryLandmarks).landmark.prefab,
+  "last-allowed", "the 500th candidate is considered and the 501st is outside the cap");
+
+const immutableTiles = [cell(0, 0, true, {east: true}), cell(4, 0)];
+const immutablePosition = {x: 1, z: 1};
+const immutableLandmarks = [{prefab: "copy-me", x: 4, z: 0, metadata: {seen: true}}];
+const immutableAnchor = {x: 0, z: 0, clear: true};
+const immutableBefore = structuredClone({
+  tiles: immutableTiles,
+  position: immutablePosition,
+  landmarks: immutableLandmarks,
+  anchor: immutableAnchor,
+});
+findNearestTarget(immutableTiles, immutablePosition, immutableLandmarks, immutableAnchor);
+assert.deepEqual({
+  tiles: immutableTiles,
+  position: immutablePosition,
+  landmarks: immutableLandmarks,
+  anchor: immutableAnchor,
+}, immutableBefore, "target selection does not mutate its inputs");
+const legacyNearest = findNearestTarget(straight, {x: 1, z: 1}, [{prefab: "legacy", x: 4, z: 0}]);
+assert.deepEqual(legacyNearest.route, findRoute(straight, {x: 1, z: 1}, {x: 4, z: 0}),
+  "omitting the anchor preserves the legacy grid route result shape");
+
 const anchored = route(straight, {x: 1, z: 1}, {x: 4, z: 0}, {x: 0, z: 0, clear: true});
 assert.equal(anchored.status, "found");
 assert.deepEqual(anchored.start, {x: 1, z: 1}, "player-origin routes retain the actual player position");
@@ -310,4 +427,4 @@ assert.equal(cameraRelativeDirection(
 assert.equal(cameraRelativeDirection(
   {x: 0, z: 0}, {x: Number.MIN_VALUE, z: 0}, 0), "down",
   "subnormal but nonzero displacement remains directional");
-console.log("Checked-grid routes: routes, camera directions, target lookup, boundaries, anchors, BFS, and 2500 cells passed");
+console.log("Checked-grid routes: routes, camera directions, target selection, boundaries, anchors, BFS, and 2500 cells passed");

@@ -44,6 +44,7 @@
 - [x] 从已见目标列表或地图菱形一键前往记录地点所在的已观测可通行格，显示终点来源，支持实时探索与历史回放。 / Go from a target sighting in the list or map to its observed passable tile, show the endpoint source, and support live exploration and saved replays.
 - [x] 地图支持“全图”与“跟随位置”，默认适配全部已观测数据；放大、缩小调整跟随视野，并在世界、会话或历史回放切换时恢复全图。 / Add full-map and follow-position views, fit all observed data by default, adjust the follow view with zoom controls, and reset to full map when switching worlds, sessions, or saved replays.
 - [x] 路线下一步按同帧镜头朝向显示地面方向提示；转动镜头会在玩家原地时更新，历史回放使用所选帧朝向，缺少朝向的旧帧只显示世界方向，导航暂停时隐藏下一步提示。 / Show a ground-direction hint for the next route segment using the same frame’s camera heading. Camera turns update it while the player stands still; replays use the selected frame, older frames without heading show only the world direction, and paused navigation hides next-step guidance.
+- [x] 一键按已检查路线长度选择当前目标最近可达的已见记录，检查全部保留位置；选定后固定终点，支持实时探索与历史帧。 / Choose the nearest reachable sighting of the current target by checked route length, considering all retained locations; keep the selected endpoint fixed and support live exploration and historical frames.
 
 ## 1. 生成数据校对 / Generation data
 

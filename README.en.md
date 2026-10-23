@@ -52,7 +52,7 @@ While the tool runs, it saves new snapshots to local JSONL files, including coor
 
 In “探索回放” (exploration replays), choose “导入回放” (Import replay) to open a file picker, then select a JSONL file downloaded from the tool. It uploads automatically. After a successful upload, the page opens the imported trail if the current view has not changed. If you switch views or worlds during upload, the page keeps the current view; choose “查看导入轨迹” (View imported trail) to open the imported replay manually. Imported trails include positions, terrain, observed targets, and grid routes. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
 
-The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists up to the 10 most recent sightings, with time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there. Choose “前往所在格” (Go to observed tile) in the list or click a map diamond to set the observed, passable tile at that recorded location as the route endpoint. The route shows which target sighting it came from and leads to the tile center.
+The trail also marks where the selected target was previously seen. “已见目标” (observed targets) lists up to the 10 most recent sightings, with time, coordinates, direction, and straight-line distance relative to the latest player observation. Switch targets to review their sightings, including in saved replays. Each marker records the position at the time of observation; a moving or collected target may no longer be there. Choose “前往所在格” (Go to observed tile) in the list or click a map diamond to set the observed, passable tile at that recorded location as the route endpoint. The route shows which target sighting it came from and leads to the tile center. Select “前往最近可达目标” (Go to nearest reachable target) to choose the shortest checked route among all retained sightings of the current target. Once selected, that endpoint stays fixed while the route updates as you move.
 
 “显示已观测地皮” (show observed tiles) adds the collected terrain beneath the trail, with colors for grass, forest, rock, marsh, water, and other tiles. The layer grows as you move and stays in saved replays; blank areas have not been collected. Caves also support positions, trails, and terrain recording; direction inference is still to come. Hatching marks tile centers that fail the ground-terrain check. Hover over a tile to see its passability; missing checks are shown as unknown. Turn the layer off to view just the trail and targets. To update an existing collector, rerun the install command above or follow the collector guide's manual copy steps, then re-enter the world.
 
@@ -84,7 +84,7 @@ Match room/task clues and use task-graph context to rank exploration directions
   ↓
 The page updates suggestions and straight-line distance to a visible target
   ↓
-Observed target list or map diamond → Go to observed tile → set the route endpoint
+Observed target list or map diamond → Go to observed tile; or Go to nearest reachable target → set the route endpoint
   ↓
 Use the player position to find a route and show the next move’s world direction, coordinates, and camera-relative ground direction
   ↓

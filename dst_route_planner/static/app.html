@@ -158,6 +158,9 @@
     .seen-landmarks-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
     .seen-landmarks-head h4 { margin: 0; color: #53665a; font-size: 11px; }
     .seen-landmarks-note, .seen-landmarks-status { color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .seen-landmark-nearest { display: grid; justify-items: start; gap: 4px; margin-top: 6px; }
+    .seen-landmark-nearest-status { color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .seen-landmark-nearest .button { min-height: 29px; padding: 4px 8px; font-size: 10px; }
     .seen-landmarks-list { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
     .seen-landmark-item { display: grid; grid-template-columns: 19px minmax(0, 1fr); gap: 5px; align-items: start; color: #53665a; font-size: 10px; line-height: 1.4; }
     .seen-landmark-number { display: inline-grid; width: 17px; height: 17px; place-items: center; border: 1px solid #a77a4c; border-radius: 50%; color: #75491f; background: #fffdf6; font-size: 9px; font-weight: 700; }
@@ -398,6 +401,10 @@
         <div class="seen-landmarks" aria-label="已见目标">
           <div class="seen-landmarks-head"><h4>已见目标</h4><span class="seen-landmarks-note">相对最新观测 · 最近看到</span></div>
           <div class="seen-landmarks-status" id="seenLandmarksStatus" role="status" aria-live="polite">选择目标，回看最近见到的位置。</div>
+          <div class="seen-landmark-nearest">
+            <button class="button" id="nearestSeenTargetButton" type="button" disabled>前往最近可达目标</button>
+            <div class="seen-landmark-nearest-status" id="nearestSeenTargetStatus" role="status" aria-live="polite"></div>
+          </div>
           <ol class="seen-landmarks-list" id="seenLandmarksList"></ol>
         </div>
       </div>
@@ -578,6 +585,8 @@
       refreshTrail: document.getElementById("refreshTrailButton"),
       seenLandmarksStatus: document.getElementById("seenLandmarksStatus"),
       seenLandmarksList: document.getElementById("seenLandmarksList"),
+      nearestSeenTargetButton: document.getElementById("nearestSeenTargetButton"),
+      nearestSeenTargetStatus: document.getElementById("nearestSeenTargetStatus"),
       liveCheckButton: document.getElementById("liveCheckButton"),
       liveCheckStatus: document.getElementById("liveCheckStatus")
     };
@@ -846,6 +855,7 @@
         terrainTruncated: false, terrainError: "" }
     };
     const checkedRouteSelection = {identity: null, destination: null, source: null, optionsSignature: null};
+    let nearestTargetNotice = null;
     const TRAIL_VIEWPORT_MIN_SPAN = 32;
     const TRAIL_VIEWPORT_MAX_SPAN = 512;
     const trailViewport = {mode: "all", span: 64, identity: null};
@@ -1237,10 +1247,12 @@
       if (segment.length) segments.push(segment);
       return segments;
     }
-    function selectedTrailLandmarks() {
+    function selectedTrailLandmarksAll() {
       return trailState.landmarks.filter(item => item.prefab === state.target)
-        .sort((a, b) => b.last_sequence - a.last_sequence || a.x - b.x || a.z - b.z)
-        .slice(0, 10);
+        .sort((a, b) => b.last_sequence - a.last_sequence || a.x - b.x || a.z - b.z);
+    }
+    function selectedTrailLandmarks() {
+      return selectedTrailLandmarksAll().slice(0, 10);
     }
     function landmarkSeenLabel(capturedAt) {
       const age = Math.max(0, Date.now() / 1000 - capturedAt);
@@ -1280,6 +1292,21 @@
     function landmarkIdentityToken() {
       return JSON.stringify(trailState.identity || "");
     }
+    function nearestTargetContextKey() {
+      const playback = trailState.playback;
+      const timeline = playback && Array.isArray(playback.timeline) ? playback.timeline : [];
+      const selected = trailState.mode === "history" ? timeline[playback.selectedIndex] : null;
+      const applied = trailState.mode === "history" ? timeline[playback.appliedIndex] : null;
+      return JSON.stringify({identity: trailState.identity || "", id: trailState.id || "",
+        target: state.target || "", mode: trailState.mode,
+        cursor: trailState.mode === "history" ? {
+          selected: selected && Number.isSafeInteger(selected.sequence) ? selected.sequence : null,
+          applied: applied && Number.isSafeInteger(applied.sequence) ? applied.sequence : null
+        } : null});
+    }
+    function clearNearestTargetNotice() {
+      nearestTargetNotice = null;
+    }
     function landmarkRouteReason(status) {
       return status === "blocked" ? "所在格不可通行" : "所在格未采集或通行状态未知";
     }
@@ -1291,6 +1318,7 @@
           expectedX !== String(landmark.x) || expectedZ !== String(landmark.z)) return false;
       const located = locateLandmarkRouteTile(landmark);
       if (located.status !== "found" || !located.tile) return false;
+      clearNearestTargetNotice();
       checkedRouteSelection.destination = located.tile;
       checkedRouteSelection.source = {prefab: landmark.prefab, x: landmark.x, z: landmark.z};
       renderTrail();
@@ -1359,6 +1387,111 @@
       const points = trailState.points;
       const latest = Array.isArray(points) && points.length ? points[points.length - 1] : null;
       return isFiniteWorldPoint(latest) ? latest : null;
+    }
+    function nearestTargetActionReady(routeIsPaused) {
+      const history = trailState.mode === "history";
+      const latest = latestTrailPlayerPoint();
+      const hasLandmarks = selectedTrailLandmarksAll().length > 0;
+      const api = globalThis.CheckedRoutes;
+      return !trailState.loading && !(trailState.playback && trailState.playback.loading) &&
+        !trailState.error && !trailState.landmarkError && !trailState.terrainError &&
+        !!state.target && !!latest && hasLandmarks && (history || !routeIsPaused) &&
+        !!api && typeof api.findNearestTarget === "function";
+    }
+    function nearestTargetDistanceText(distance) {
+      return Number.isFinite(distance) && distance >= 0
+        ? Number(distance).toFixed(1) + " 世界单位" : "暂无已知路线";
+    }
+    function renderNearestTargetControl(checkedRoute, routeIsPaused) {
+      const contextKey = nearestTargetContextKey();
+      if (nearestTargetNotice && nearestTargetNotice.context !== contextKey) clearNearestTargetNotice();
+      if (nearestTargetNotice && nearestTargetNotice.kind === "selected" && !routeIsPaused && checkedRoute) {
+        if ((checkedRoute.status === "found" || checkedRoute.status === "arrived") &&
+            Number.isFinite(checkedRoute.distance) && checkedRoute.distance >= 0) {
+          nearestTargetNotice.distance = checkedRoute.distance;
+        } else if (checkedRoute.status !== "error") {
+          nearestTargetNotice.distance = null;
+        }
+      }
+      const ready = nearestTargetActionReady(routeIsPaused);
+      el.nearestSeenTargetButton.disabled = !ready;
+      const status = el.nearestSeenTargetStatus;
+      if (nearestTargetNotice && nearestTargetNotice.kind === "selected") {
+        const name = TARGETS[nearestTargetNotice.prefab] || nearestTargetNotice.prefab;
+        status.textContent = "已选择" + name + " · 已知路线距离 " +
+          nearestTargetDistanceText(nearestTargetNotice.distance) +
+          (routeIsPaused && trailState.mode !== "history" ? " · 实时导航已暂停。" : "。");
+        status.className = "seen-landmark-nearest-status";
+        return;
+      }
+      if (nearestTargetNotice && nearestTargetNotice.kind === "failed") {
+        status.textContent = nearestTargetNotice.message;
+        status.className = "seen-landmark-nearest-status error";
+        return;
+      }
+      status.className = "seen-landmark-nearest-status";
+      if (trailState.loading || (trailState.playback && trailState.playback.loading)) {
+        status.textContent = "正在读取当前显示的探索轨迹。";
+      } else if (trailState.error || trailState.landmarkError || trailState.terrainError) {
+        status.textContent = "轨迹、地标或地皮读取失败，暂不能查找。";
+      } else if (!latestTrailPlayerPoint()) {
+        status.textContent = "暂无玩家位置，无法计算已检查路线。";
+      } else if (!selectedTrailLandmarksAll().length) {
+        status.textContent = "暂未记录当前目标的已见位置。";
+      } else if (trailState.mode !== "history" && routeIsPaused) {
+        status.textContent = "实时导航已暂停或快照过期；恢复新鲜观测后可查找。";
+      } else if (!globalThis.CheckedRoutes || typeof globalThis.CheckedRoutes.findNearestTarget !== "function") {
+        status.textContent = "路线计算模块尚未就绪。";
+      } else {
+        status.textContent = "从当前显示的玩家位置查找当前目标的已知路线。";
+      }
+    }
+    function findNearestObservedTarget() {
+      const routeIsPaused = trailState.mode !== "history" && !liveRouteIsFresh();
+      if (!nearestTargetActionReady(routeIsPaused)) {
+        renderTrail();
+        return false;
+      }
+      const candidates = selectedTrailLandmarksAll();
+      const latest = latestTrailPlayerPoint();
+      const api = globalThis.CheckedRoutes;
+      try {
+        const playerAnchor = Object.prototype.hasOwnProperty.call(latest, "player_anchor")
+          ? latest.player_anchor : undefined;
+        const result = api.findNearestTarget(trailState.terrainTiles,
+          {x: latest.x, z: latest.z}, candidates, playerAnchor);
+        if (!result) {
+          nearestTargetNotice = {kind: "failed", context: nearestTargetContextKey(),
+            message: "当前目标的已见位置没有已知路线；原路线终点保持不变。"};
+          renderTrail();
+          return false;
+        }
+        if (!result || typeof result !== "object" || !result.landmark ||
+            typeof result.landmark.prefab !== "string" || !Number.isFinite(result.landmark.x) ||
+            !Number.isFinite(result.landmark.z) || !isFiniteWorldPoint(result.destination) ||
+            !result.route || !["found", "arrived"].includes(result.route.status) ||
+            !Number.isFinite(result.route.distance) || result.route.distance < 0) {
+          throw new Error("路线计算结果无法识别。");
+        }
+        const selected = candidates.find(item => item.prefab === result.landmark.prefab &&
+          item.x === result.landmark.x && item.z === result.landmark.z);
+        const destinationTiles = trailState.terrainTiles.filter(tile =>
+          tile.x === result.destination.x && tile.z === result.destination.z);
+        if (!selected || destinationTiles.length !== 1 || destinationTiles[0].passable !== true) {
+          throw new Error("路线计算结果与当前观测不匹配。");
+        }
+        checkedRouteSelection.destination = {x: result.destination.x, z: result.destination.z};
+        checkedRouteSelection.source = {prefab: selected.prefab, x: selected.x, z: selected.z};
+        nearestTargetNotice = {kind: "selected", context: nearestTargetContextKey(),
+          prefab: selected.prefab, x: selected.x, z: selected.z, distance: result.route.distance};
+        renderTrail();
+        return true;
+      } catch (_) {
+        nearestTargetNotice = {kind: "failed", context: nearestTargetContextKey(),
+          message: "路线计算失败；原路线终点保持不变。"};
+        renderTrail();
+        return false;
+      }
     }
     function trailProjectedPointInPlot(point) {
       return !!point && Number.isFinite(point.x) && Number.isFinite(point.y) &&
@@ -1705,6 +1838,7 @@
       const routeIsPaused = !liveRouteIsFresh();
       const checkedRoute = routeIsPaused ? null : calculateCheckedRoute();
       const routeDestination = checkedRouteSelection.destination;
+      renderNearestTargetControl(checkedRoute, routeIsPaused);
       const displayedLandmarks = selectedTrailLandmarks();
       const landmarkRouteTargets = displayedLandmarks.map(landmark => locateLandmarkRouteTile(landmark));
       renderSeenLandmarks(displayedLandmarks, landmarkRouteTargets, renderRevision);
@@ -2010,6 +2144,7 @@
       checkedRouteSelection.destination = null;
       checkedRouteSelection.source = null;
       checkedRouteSelection.optionsSignature = null;
+      clearNearestTargetNotice();
     }
     function currentHistoryPlaybackRequest(requestId, viewRevision, summary) {
       return trailState.revision === viewRevision && trailState.mode === "history" &&
@@ -3466,15 +3601,18 @@
     el.terrainToggle.addEventListener("change", renderTrail);
     el.terrainConnectionToggle.addEventListener("change", renderTrail);
     el.routeDestination.addEventListener("change", () => {
+      clearNearestTargetNotice();
       checkedRouteSelection.destination = parseCheckedRouteDestination(el.routeDestination.value);
       checkedRouteSelection.source = null;
       renderTrail();
     });
     el.clearRouteDestination.addEventListener("click", () => {
+      clearNearestTargetNotice();
       checkedRouteSelection.destination = null;
       checkedRouteSelection.source = null;
       renderTrail();
     });
+    el.nearestSeenTargetButton.addEventListener("click", findNearestObservedTarget);
     el.seenLandmarksList.addEventListener("click", event => {
       const button = event.target && typeof event.target.closest === "function"
         ? event.target.closest("button.seen-landmark-go[data-landmark-index][data-landmark-revision]") : null;
@@ -3495,6 +3633,7 @@
       if (!cell) return;
       const destination = parseCheckedRouteDestination(String(cell.dataset.terrainX) + "," + String(cell.dataset.terrainZ));
       if (!destination || !trailState.terrainTiles.some(tile => tile.x === destination.x && tile.z === destination.z && tile.passable === true)) return;
+      clearNearestTargetNotice();
       checkedRouteSelection.destination = destination;
       checkedRouteSelection.source = null;
       renderTrail();
@@ -3515,6 +3654,7 @@
       const destination = parseCheckedRouteDestination(String(cell.dataset.terrainX) + "," + String(cell.dataset.terrainZ));
       if (!destination || !trailState.terrainTiles.some(tile => tile.x === destination.x && tile.z === destination.z && tile.passable === true)) return;
       event.preventDefault();
+      clearNearestTargetNotice();
       checkedRouteSelection.destination = destination;
       checkedRouteSelection.source = null;
       renderTrail();
