@@ -2794,16 +2794,43 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   await settle();
   assert.equal(run("trailState.id"), rolloverPartOne.id);
   assert.ok(element("trailPlaybackStatus").textContent.includes("第 1 段"));
-  run("trailState.requests.clear();openExplorationTrail(" + JSON.stringify(rolloverPartTwo) + ")");
+  assert.equal(element("trailPlaybackPreviousPartButton").disabled, true,
+    "the first available part has no previous part");
+  assert.equal(element("trailPlaybackNextPartButton").disabled, false,
+    "a following part in the same session can be opened");
+  assert.ok(element("trailPlaybackNextPartButton").textContent.includes("第 2 段"));
+  element("trailPlaybackNextPartButton").listeners.click();
   await settle();
   assert.equal(run("trailState.id"), rolloverPartTwo.id, "history opens the selected sibling part by its exact ID");
   assert.ok(element("trailPlaybackStatus").textContent.includes("第 2 段"));
+  assert.equal(element("trailPlaybackPreviousPartButton").disabled, false);
+  assert.equal(element("trailPlaybackNextPartButton").disabled, true,
+    "the latest available part has no next part");
+  element("trailPlaybackPreviousPartButton").listeners.click();
+  await settle();
+  assert.equal(run("trailState.id"), rolloverPartOne.id, "previous part navigation opens the earlier replay");
+  element("trailPlaybackNextPartButton").listeners.click();
+  await settle();
+  assert.equal(run("trailState.id"), rolloverPartTwo.id);
   await run("requestHistoryFrame(0, {force:true})");
   assert.ok(historyTrailRequests.includes("/api/explorations/" + rolloverPartTwo.id + "/trail?through_sequence=2"));
   assert.ok(!historyTrailRequests.includes("/api/explorations/" + rolloverPartOne.id + "/trail?through_sequence=2"));
   assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2],
     "history cutoffs include only the selected segment through the selected sequence");
   assert.ok(element("trailPlaybackStatus").textContent.includes("第 2 段"));
+  const rolloverPartThree = replaySummary("c".repeat(64), {
+    worldId: "rollover-world", session: "rollover-session", frames: 1, segment: 3
+  });
+  const unrelatedPart = replaySummary("b".repeat(64), {
+    worldId: "rollover-world", session: "another-session", frames: 1, segment: 2
+  });
+  run("state.explorations=[" + JSON.stringify(rolloverPartOne) + "," + JSON.stringify(rolloverPartThree) + "," +
+    JSON.stringify(unrelatedPart) + "]");
+  const sparseNeighbors = run("adjacentExplorationParts(rolloverPartOne)");
+  assert.equal(sparseNeighbors.next.id, rolloverPartThree.id,
+    "part navigation skips missing segment numbers");
+  assert.equal(sparseNeighbors.previous, null,
+    "part navigation does not cross into another collector session");
 
   console.log("Live UI: replay recording, freshness-gated live routes, request timeouts and retries, history isolation, map follow and zoom, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

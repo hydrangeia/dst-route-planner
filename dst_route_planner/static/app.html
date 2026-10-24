@@ -367,6 +367,10 @@
             <button class="button" id="trailPlaybackNextButton" type="button">下一帧</button>
             <button class="button" id="trailPlaybackLatestButton" type="button">跳到最新</button>
           </div>
+          <div class="trail-playback-buttons" role="group" aria-label="历史回放分段控制">
+            <button class="button" id="trailPlaybackPreviousPartButton" type="button">上一段</button>
+            <button class="button" id="trailPlaybackNextPartButton" type="button">下一段</button>
+          </div>
         </div>
         <div class="trail-playback-status" id="trailPlaybackStatus" role="status" aria-live="polite" hidden></div>
         <div class="route-tools" aria-label="地图路线">
@@ -569,6 +573,8 @@
       trailPlaybackPrevious: document.getElementById("trailPlaybackPreviousButton"),
       trailPlaybackNext: document.getElementById("trailPlaybackNextButton"),
       trailPlaybackLatest: document.getElementById("trailPlaybackLatestButton"),
+      trailPlaybackPreviousPart: document.getElementById("trailPlaybackPreviousPartButton"),
+      trailPlaybackNextPart: document.getElementById("trailPlaybackNextPartButton"),
       trailPlaybackStatus: document.getElementById("trailPlaybackStatus"),
       viewportAllButton: document.getElementById("viewportAllButton"),
       viewportFollowButton: document.getElementById("viewportFollowButton"),
@@ -1787,7 +1793,9 @@
         ? Math.max(0, Math.min(lastIndex, playback.appliedIndex)) : -1;
       const cursorSupported = timeline.length > 1 && timeline.every(frame =>
         Number.isSafeInteger(frame.sequence) && frame.sequence > 0);
-      el.trailPlaybackControls.hidden = !history || !cursorSupported;
+      const parts = history ? adjacentExplorationParts(trailState.summary) : {previous: null, next: null};
+      const canNavigateParts = !!(parts.previous || parts.next);
+      el.trailPlaybackControls.hidden = !history || (!cursorSupported && !canNavigateParts);
       el.trailPlaybackStatus.hidden = !history;
       el.trailPlaybackStatus.className = "trail-playback-status" + (playback.error || trailState.error ? " error" : "");
       el.trailPlaybackRange.min = "0";
@@ -1798,6 +1806,12 @@
       el.trailPlaybackPrevious.disabled = !canChoose || selectedIndex <= 0;
       el.trailPlaybackNext.disabled = !canChoose || selectedIndex < 0 || selectedIndex >= lastIndex;
       el.trailPlaybackLatest.disabled = !canChoose;
+      el.trailPlaybackPreviousPart.disabled = !history || !parts.previous;
+      el.trailPlaybackNextPart.disabled = !history || !parts.next;
+      el.trailPlaybackPreviousPart.textContent = parts.previous
+        ? "上一段（第 " + replaySegment(parts.previous) + " 段）" : "上一段";
+      el.trailPlaybackNextPart.textContent = parts.next
+        ? "下一段（第 " + replaySegment(parts.next) + " 段）" : "下一段";
       if (!history) {
         el.trailPlaybackStatus.textContent = "";
         return;
@@ -2806,6 +2820,29 @@
     function explorationPartLabel(summary) {
       return "第 " + replaySegment(summary || {}) + " 段";
     }
+    function adjacentExplorationParts(summary) {
+      if (!summary) return {previous: null, next: null};
+      const currentId = summary.id;
+      const identity = explorationReplayIdentity(summary);
+      const byId = new Map();
+      for (const candidate of [...state.explorations, summary]) {
+        const normalized = normalizeExplorationSummary(candidate);
+        if (normalized && explorationReplayIdentity(normalized) === identity) byId.set(normalized.id, normalized);
+      }
+      const parts = [...byId.values()].sort((left, right) =>
+        replaySegment(left) - replaySegment(right) || left.id.localeCompare(right.id));
+      const index = parts.findIndex(part => part.id === currentId);
+      return {
+        previous: index > 0 ? parts[index - 1] : null,
+        next: index >= 0 && index < parts.length - 1 ? parts[index + 1] : null
+      };
+    }
+    function navigateExplorationPart(direction) {
+      if (trailState.mode !== "history" || (direction !== -1 && direction !== 1)) return false;
+      const parts = adjacentExplorationParts(trailState.summary);
+      const adjacent = direction < 0 ? parts.previous : parts.next;
+      return adjacent ? openExplorationTrail(adjacent) : false;
+    }
     function isReplayTimestamp(value) {
       return typeof value === "string" && value.length > 0 && value.length <= 80 && Number.isFinite(Date.parse(value));
     }
@@ -3648,6 +3685,8 @@
       void requestHistoryFrame(trailState.playback.selectedIndex + 1);
     });
     el.trailPlaybackLatest.addEventListener("click", refreshLatestHistoryFrame);
+    el.trailPlaybackPreviousPart.addEventListener("click", () => navigateExplorationPart(-1));
+    el.trailPlaybackNextPart.addEventListener("click", () => navigateExplorationPart(1));
     el.viewportAllButton.addEventListener("click", () => setTrailViewportMode("all"));
     el.viewportFollowButton.addEventListener("click", () => setTrailViewportMode("follow"));
     el.viewportZoomInButton.addEventListener("click", () => zoomTrailViewport(2));

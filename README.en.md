@@ -58,6 +58,8 @@ While the tool runs, it saves new snapshots to local JSONL files, including coor
 
 The replay list initially shows the 10 most recent items. Select “显示更多回放” (Show more replays) to reveal older ones. Each part is labeled “第 N 段” (Part N). The live trail stays continuous across parts; history shows only the selected part through its final recorded frame.
 
+While viewing a replay, use “上一段” (Previous part) and “下一段” (Next part) to move through recordings from the same world and collector session. Missing segment numbers are skipped. Frame-by-frame playback stays within the selected part.
+
 “探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review it. Viewing a replay pauses live following; check it again to return to the current session. An existing or imported replay opens at its latest observed frame. Use “回放进度” (Replay progress), “上一帧” (Previous frame), “下一帧” (Next frame), or “跳到最新” (Go to latest) to step through recorded frames. Each frame shows only positions, terrain, connections, and targets observed by then. These history controls are hidden during live following while background recording continues.
 
 In “探索回放” (exploration replays), choose “导入回放” (Import replay) to open a file picker, then select a JSONL file downloaded from the tool. It uploads automatically. After a successful upload, the page opens the imported trail if the current view has not changed. If you switch views or worlds during upload, the page keeps the current view; choose “查看导入轨迹” (View imported trail) to open the imported replay manually. Imported trails include positions, terrain, observed targets, and grid routes. North is `+Z` and east is `+X`; breaks in collection or sudden coordinate jumps leave gaps in the line.
@@ -104,7 +106,7 @@ Collection pause / error / manual stop / stale snapshot → pause; request timeo
   ↓
 New snapshots → local replay (automatically start another part before reaching a per-part limit) → page shows a continuous trail and route with observed tiles, latest position, and observed targets
   ↓
-Choose “第 N 段” (Part N) → view that part’s trail and route → progress slider / previous or next frame → review observations through its final frame
+Choose “第 N 段” (Part N) → view its trail and route → Previous part / Next part within the same session → use the slider or frame buttons to review the selected part
   ↓
 Download a part’s JSONL → import that part → view its trail and route
   ↓
