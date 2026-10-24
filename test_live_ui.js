@@ -65,6 +65,7 @@ function trailPayload(summary, points, landmarks = undefined, landmarksTruncated
   return {
     trail_version: 1, id: summary.id, world_id: summary.world_id,
     world_kind: summary.world_kind, session_id: summary.session_id,
+    ...(Object.prototype.hasOwnProperty.call(summary, "segment") ? {segment: summary.segment} : {}),
     frame_count: points.length, points,
     bounds: points.length ? {min_x: Math.min(...xs), max_x: Math.max(...xs), min_z: Math.min(...zs), max_z: Math.max(...zs)} : null,
     ...(landmarks === undefined ? {} : {landmarks, landmarks_truncated: landmarksTruncated}),
@@ -86,6 +87,7 @@ function replaySummary(id, options = {}) {
     started_at: options.startedAt || "2026-10-14T10:00:00.000Z",
     last_captured_at: options.lastCapturedAt === undefined ? "2026-10-14T10:01:00.000Z" : options.lastCapturedAt,
     status: options.status || "recording",
+    ...(options.segment === undefined ? {} : {segment: options.segment}),
     ...(options.error ? {error: options.error} : {})
   };
 }
@@ -109,6 +111,24 @@ function frame(session = "one", sequence = 1, recording = null, worldId = "world
   if (Object.prototype.hasOwnProperty.call(trail, "camera_heading")) result.snapshot.camera_heading = trail.camera_heading;
   return result;
 }
+const legacyReplay = replaySummary("9".repeat(64));
+const normalizedLegacyReplay = run("normalizeExplorationSummary(" + JSON.stringify(legacyReplay) + ")");
+assert.equal(run("replaySegment(" + JSON.stringify(legacyReplay) + ")"), 1, "an omitted segment means part one");
+assert.equal(Object.hasOwn(normalizedLegacyReplay, "segment"), false, "normalizing a legacy summary preserves its omitted segment field");
+for (const invalidSegment of [true, "2", 1, 0, -1, 1.5, null, Number.MAX_SAFE_INTEGER + 1]) {
+  const invalidSummary = {...legacyReplay, segment: invalidSegment};
+  assert.equal(run("normalizeExplorationSummary(" + JSON.stringify(invalidSummary) + ")"), null,
+    "summary segment values must be safe integers of at least two: " + String(invalidSegment));
+}
+const maxSegmentReplay = {...legacyReplay, segment: Number.MAX_SAFE_INTEGER};
+assert.equal(run("normalizeExplorationSummary(" + JSON.stringify(maxSegmentReplay) + ").segment"), Number.MAX_SAFE_INTEGER,
+  "the largest safe segment number is accepted");
+const segmentTwoReplay = replaySummary("8".repeat(64), {worldId: "segment-world", session: "segment-session", segment: 2});
+const legacyPayload = run("validateTrailPayload(" + JSON.stringify(trailPayload(legacyReplay, [trailPoint(1, 1, 3, 4)])) + "," +
+  JSON.stringify(legacyReplay) + ")");
+assert.equal(Object.hasOwn(legacyPayload, "segment"), false, "legacy trail payload normalization preserves an omitted segment field");
+assert.throws(() => run("validateTrailPayload(" + JSON.stringify(trailPayload(segmentTwoReplay, [trailPoint(1, 1, 3, 4)])) + "," +
+  JSON.stringify({...segmentTwoReplay, segment: 3}) + ")"), /轨迹数据/, "a trail segment must agree with its expected summary");
 const projection = run("projectTrailCoordinates([{sequence:1,captured_at:1,x:0,z:0},{sequence:2,captured_at:2,x:10,z:0},{sequence:3,captured_at:3,x:0,z:10}])");
 assert.ok(projection.points[1].x > projection.points[0].x, "east (+X) projects right");
 assert.ok(projection.points[2].y < projection.points[0].y, "north (+Z) projects up");
@@ -601,7 +621,9 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   await settle();
   assert.equal(element("liveReplayLink").href, "/api/explorations/" + firstId);
   assert.equal(element("liveReplayLink").hidden, false);
+  assert.ok(element("liveReplayLink").textContent.includes("第 1 段"));
   assert.ok(element("liveRecordingStatus").textContent.includes("已自动记录"));
+  assert.ok(element("liveRecordingStatus").textContent.includes("第 1 段"));
   assert.ok(element("liveRecordingStatus").textContent.includes("1 帧"));
 
   context.reply = frame("two", 5, {...first, frame_count: 2});
@@ -616,11 +638,12 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   run("applyLiveResult(reply)");
   await settle();
   assert.equal(element("liveReplayLink").href, "/api/explorations/" + limitId);
-  assert.ok(element("liveRecordingStatus").textContent.includes("已达到记录上限"));
+  assert.ok(element("liveRecordingStatus").textContent.includes("本段已满"));
+  assert.ok(element("liveRecordingStatus").textContent.includes("下一帧将自动开始新段"));
   assert.ok(element("liveRecordingStatus").textContent.includes(String(Number.MAX_SAFE_INTEGER)));
 
   const errorId = "c".repeat(64);
-  const failed = replaySummary(errorId, {session: "two", status: "error", error: "disk full"});
+  const failed = replaySummary(errorId, {session: "two", frames: Number.MAX_SAFE_INTEGER, status: "error", error: "disk full"});
   historyPayload = [failed, limited, first];
   context.reply = frame("two", 7, failed);
   run("applyLiveResult(reply)");
@@ -690,23 +713,49 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.equal(element("liveReplayLink").hidden, true, "a new world without a recording summary must not retain the old link");
   assert.ok(element("liveRecordingStatus").textContent.includes("等待当前会话"));
 
-  const persisted = Array.from({length: 12}, (_, index) => replaySummary(
+  const persisted = Array.from({length: 22}, (_, index) => replaySummary(
     index.toString(16).padStart(64, "0"),
-    {worldId: index === 0 ? '<img src=x onerror="x">' : "saved-world-" + index, frames: index + 1}
+    {worldId: index === 0 ? '<img src=x onerror="x">' : "saved-world-" + index, frames: index + 1,
+      ...(index === 0 ? {} : {segment: index + 1})}
   ));
   persisted.push({...persisted[0], id: "../../bad"});
   context.fetch = async url => {
-    if (url !== "/api/explorations") throw new Error("unexpected fetch " + url);
-    return apiResponse({explorations: persisted});
+    if (url === "/api/explorations") return apiResponse({explorations: persisted});
+    throw new Error("unexpected fetch " + url);
   };
   await run('refreshExplorations({quiet:true})');
-  assert.equal(run("state.explorations.length"), 10);
+  assert.equal(run("state.explorations.length"), 22, "the client retains every normalized replay summary");
   assert.ok(element("explorationList").innerHTML.includes("/api/explorations/" + persisted[0].id));
+  assert.ok(!element("explorationList").innerHTML.includes(persisted[10].id), "the initial page shows ten replays");
   assert.ok(element("explorationList").innerHTML.includes("&lt;img"));
   assert.ok(!element("explorationList").innerHTML.includes("<img"));
   assert.ok(!element("explorationList").innerHTML.includes("../../bad"));
-  assert.ok(element("explorationsStatus").textContent.includes("读取到 12 条有效回放，显示最近 10 条。"));
+  assert.ok(element("explorationsStatus").textContent.includes("读取到 22 条有效回放，显示最近 10 条。"));
   assert.ok(element("explorationsStatus").textContent.includes("已忽略 1 条格式不完整的项目。"));
+  assert.equal(element("showMoreExplorationsButton").hidden, false);
+  element("showMoreExplorationsButton").listeners.click();
+  assert.ok(element("explorationList").innerHTML.includes(persisted[19].id), "one click reveals ten more replays");
+  assert.ok(!element("explorationList").innerHTML.includes(persisted[20].id));
+  assert.ok(element("explorationList").innerHTML.includes("第 20 段"));
+  await run('refreshExplorations({quiet:true})');
+  assert.equal(run("state.explorations.length"), 22);
+  assert.equal(run("state.explorationsVisibleCount"), 20, "refresh keeps the useful visible count");
+  assert.ok(element("explorationList").innerHTML.includes(persisted[19].id));
+  assert.ok(!element("explorationList").innerHTML.includes(persisted[20].id));
+  element("showMoreExplorationsButton").listeners.click();
+  assert.ok(element("explorationList").innerHTML.includes(persisted[21].id), "another click reveals the remaining older parts");
+  assert.ok(element("explorationList").innerHTML.includes('/api/explorations/' + persisted[21].id));
+  assert.ok(element("explorationList").innerHTML.includes("第 22 段"));
+  assert.equal(element("showMoreExplorationsButton").hidden, true);
+  context.fetch = async url => {
+    if (url !== "/api/explorations/" + persisted[21].id + "/trail") throw new Error("unexpected old replay fetch " + url);
+    return apiResponse(trailPayload(persisted[21], [trailPoint(4, 4, 40, 50)]));
+  };
+  const olderOpenButton = {dataset: {explorationId: persisted[21].id}};
+  element("explorationList").listeners.click({target: {closest: selector => selector === "button.trail-open[data-exploration-id]" ? olderOpenButton : null}});
+  await settle();
+  assert.equal(run("trailState.id"), persisted[21].id, "an older segment opens its own trail");
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 22 段"));
 
   context.fetch = async url => {
     if (url !== "/api/explorations") throw new Error("unexpected fetch " + url);
@@ -729,7 +778,8 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.ok(element("explorationImportStatus").textContent.includes("32 MiB"));
   assert.equal(rejectedImportRequests, 0, "empty and oversized files are rejected before upload");
 
-  const importedOnce = replaySummary("0".repeat(64), {worldId: "imported-world", session: "imported-session", frames: 2});
+  const importedPartOne = replaySummary("f".repeat(64), {worldId: "imported-world", session: "imported-session", frames: 8});
+  const importedOnce = replaySummary("0".repeat(64), {worldId: "imported-world", session: "imported-session", frames: 2, segment: 2});
   const rawImportFile = {name: "run.jsonl", size: 37};
   const importRequests = [];
   function importResponse(status, summary, created) {
@@ -745,17 +795,22 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
     }
     throw new Error("unexpected import fetch " + url);
   };
-  run('state.explorations=[];renderExplorations();el.explorationsStatus.textContent="还没有探索回放。";');
+  run("state.explorations=" + JSON.stringify([importedPartOne]) + ';state.explorationsVisibleCount=10;renderExplorations();el.explorationsStatus.textContent="还没有探索回放。";');
   run('state.target="moonbase";state.seed="41";el.target.value="moonbase";el.seed.value="41";el.recordName.value="keep this name";el.worldNote.value="keep this world";state.dirs.north.note="keep observation";live.following=true;liveEl.follow.checked=true;trailState.mode="live";trailState.revision++;trailState.id=null;trailState.identity=null;trailState.summary=null;');
   context.rawImportFile = rawImportFile;
   const importedResult = await run("importExplorationFile(rawImportFile)");
   assert.equal(importedResult.id, importedOnce.id);
-  assert.equal(run("state.explorations.length"), 1);
+  assert.equal(run("state.explorations.length"), 2, "importing a sibling segment keeps the existing part");
   assert.ok(!element("explorationsStatus").textContent.includes("还没有探索回放"),
-    "importing from an empty list clears the stale no-replays status");
-  assert.ok(element("explorationsStatus").textContent.includes("显示 1 条回放") &&
+    "importing clears the stale no-replays status");
+  assert.ok(element("explorationsStatus").textContent.includes("显示 2 条回放") &&
     element("explorationsStatus").textContent.includes("含刚导入的回放"),
     "the list status reports the imported replay and its visible count");
+  assert.ok(element("explorationList").innerHTML.includes("第 1 段") &&
+    element("explorationList").innerHTML.includes("第 2 段"), "sibling imports show their segment labels");
+  assert.ok(element("explorationList").innerHTML.includes('/api/explorations/' + importedPartOne.id) &&
+    element("explorationList").innerHTML.includes('/api/explorations/' + importedOnce.id),
+    "sibling segments keep separate download URLs");
   assert.equal(importRequests.length, 1);
   assert.equal(importRequests[0].options.method, "POST");
   assert.equal(importRequests[0].options.headers["Accept"], "application/json");
@@ -2615,6 +2670,140 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.equal(routeDestinationElement.value, liveNearestDestination, "a paused click keeps the selected endpoint");
   run("stopLive()");
   assert.equal(element("nearestSeenTargetButton").disabled, true, "stopping live following disables nearest-target search");
+
+  const rolloverPartOne = replaySummary("d".repeat(64), {worldId: "rollover-world", session: "rollover-session", frames: 1});
+  const rolloverPartTwo = replaySummary("e".repeat(64), {worldId: "rollover-world", session: "rollover-session", frames: 2, segment: 2});
+  const rolloverIdentity = run("explorationReplayIdentity(" + JSON.stringify(rolloverPartOne) + ")");
+  const rolloverSnapshot = (sequence, x, z, prefab, tile) => ({
+    world_id: "rollover-world", world_kind: "forest", session_id: "rollover-session", sequence,
+    captured_at: sequence, position: {x, z}, landmarks: [{prefab, x: x + 20, z: z + 20}],
+    terrain: {tile_size: 4, tiles: [{x, z, tile, passable: true}]}
+  });
+  const partOneSnapshot = rolloverSnapshot(1, 10, 10, "panflute", "GRASS");
+  const partTwoSnapshot = rolloverSnapshot(2, 12, 12, "pigking", "FOREST");
+  const partOneStored = trailPayload(rolloverPartOne, [trailPoint(1, 1, 10, 10)],
+    [remembered("molehill", 30, 30, 1, 1)], false,
+    {tile_size: 4, tiles: [terrainCell(2, 2, "GRASS", 1, 1, true)], truncated: false});
+  const partTwoStored = trailPayload(rolloverPartTwo, [trailPoint(2, 2, 12, 12), trailPoint(3, 3, 14, 14)],
+    [remembered("beequeenhive", 40, 40, 2, 2)], false,
+    {tile_size: 4, tiles: [terrainCell(14, 14, "FOREST", 2, 2, true)], truncated: false});
+  let partOneRequestCount = 0;
+  let resolveLatePartOne;
+  let resolveCurrentPartTwo;
+  const rolloverTrailRequests = [];
+  context.fetch = url => {
+    rolloverTrailRequests.push(url);
+    if (url === "/api/explorations/" + rolloverPartOne.id + "/trail") {
+      partOneRequestCount += 1;
+      return partOneRequestCount === 1
+        ? Promise.resolve(apiResponse(partOneStored))
+        : new Promise(resolve => { resolveLatePartOne = resolve; });
+    }
+    if (url === "/api/explorations/" + rolloverPartTwo.id + "/trail") {
+      return new Promise(resolve => { resolveCurrentPartTwo = resolve; });
+    }
+    throw new Error("unexpected rollover trail request " + url);
+  };
+  run(`live.following=true;live.key=${JSON.stringify(rolloverIdentity)};live.sequence=0;liveEl.follow.checked=true;
+    trailState.mode="live";trailState.revision++;trailState.id=null;trailState.identity=${JSON.stringify(rolloverIdentity)};trailState.summary=null;
+    trailState.points=[];trailState.error="";trailState.loading=false;trailState.trimmed=false;trailState.requests.clear();
+    trailState.live={identity:${JSON.stringify(rolloverIdentity)},id:null,localPoints:[],storedPoints:[],trimmed:false,
+      localLandmarks:[],storedLandmarks:[],landmarksTruncated:false,landmarkError:"",localTerrain:[],storedTerrain:[],
+      localTerrainAvailable:false,storedTerrainAvailable:false,terrainTruncated:false,terrainError:""};
+    trailState.landmarks=[];trailState.landmarksTruncated=false;trailState.landmarkError="";trailState.terrainTiles=[];
+    trailState.terrainAvailable=false;trailState.terrainTruncated=false;trailState.terrainError="";
+    state.liveRecording=null;state.explorations=[${JSON.stringify(rolloverPartOne)},${JSON.stringify(rolloverPartTwo)}];
+    state.explorationIdsSeen.add(${JSON.stringify(rolloverPartOne.id)});state.explorationIdsSeen.add(${JSON.stringify(rolloverPartTwo.id)});
+    checkedRouteSelection.identity=null;checkedRouteSelection.destination=null;checkedRouteSelection.source=null;`);
+  context.rolloverPartOne = rolloverPartOne;
+  context.partOneSnapshot = partOneSnapshot;
+  run("updateLiveRecording(rolloverPartOne, partOneSnapshot);recordLiveTrailSnapshot(partOneSnapshot)");
+  await settle();
+  assert.equal(run("trailState.id"), rolloverPartOne.id);
+  assert.equal(run("trailState.live.localPoints.length"), 1);
+  assert.equal(run("trailState.live.storedPoints.length"), 1);
+  run(`checkedRouteSelection.identity=trailState.identity;checkedRouteSelection.destination={x:2,z:2};`);
+  run("refreshSelectedTrail()");
+  await settle();
+  assert.equal(typeof resolveLatePartOne, "function", "the old-part refresh is pending before rollover");
+  context.rolloverPartTwo = rolloverPartTwo;
+  context.partTwoSnapshot = partTwoSnapshot;
+  run("updateLiveRecording(rolloverPartTwo, partTwoSnapshot);recordLiveTrailSnapshot(partTwoSnapshot)");
+  await settle();
+  assert.equal(typeof resolveCurrentPartTwo, "function", "the new part requests its own stored trail");
+  assert.equal(run("trailState.id"), rolloverPartTwo.id);
+  assert.equal(run("trailState.identity"), rolloverIdentity, "segment IDs do not replace the world/session trail identity");
+  assert.equal(run("trailState.live.identity"), rolloverIdentity);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.localPoints.map(point=>point.sequence))")), [1, 2],
+    "local player positions continue across a same-session segment rollover");
+  assert.equal(run('trailState.live.localLandmarks.some(item=>item.prefab==="panflute")'), true);
+  assert.equal(run('trailState.live.localLandmarks.some(item=>item.prefab==="pigking")'), true,
+    "local landmarks from both segments stay in the live trail");
+  assert.equal(run('trailState.live.localTerrain.some(item=>item.tile==="GRASS")'), true);
+  assert.equal(run('trailState.live.localTerrain.some(item=>item.tile==="FOREST")'), true,
+    "local terrain from both segments stays in the live map");
+  assert.equal(run("trailState.live.storedPoints.length"), 0, "stored points from part one are cleared while part two loads");
+  assert.equal(run("trailState.live.storedLandmarks.length"), 0);
+  assert.equal(run("trailState.live.storedTerrain.length"), 0);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(checkedRouteSelection.destination)")), {x: 2, z: 2},
+    "route selection remains tied to the same world/session across parts");
+  assert.equal(element("liveReplayLink").href, "/api/explorations/" + rolloverPartTwo.id);
+  assert.ok(element("liveReplayLink").textContent.includes("第 2 段"));
+  assert.ok(element("liveRecordingStatus").textContent.includes("第 2 段"));
+  assert.ok(rolloverTrailRequests.includes("/api/explorations/" + rolloverPartTwo.id + "/trail"));
+  resolveLatePartOne(apiResponse(partOneStored));
+  await settle();
+  assert.equal(run("trailState.id"), rolloverPartTwo.id);
+  assert.equal(run("trailState.live.storedPoints.length"), 0, "a late old-part response cannot replace the active part");
+  resolveCurrentPartTwo(apiResponse(partTwoStored));
+  await settle();
+  assert.equal(run("trailState.live.storedPoints.length"), 2);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.live.storedPoints.map(point=>point.sequence))")), [2, 3],
+    "the active stored trail contains only its part's points");
+  assert.equal(run("trailState.live.storedLandmarks[0].prefab"), "beequeenhive");
+  assert.equal(run("trailState.live.storedTerrain[0].tile"), "FOREST");
+
+  const savedActiveStatus = element("liveRecordingStatus").textContent;
+  context.latePartOneSummary = {...rolloverPartOne, frame_count: 99};
+  context.decreasedPartTwoSummary = {...rolloverPartTwo, frame_count: 1};
+  context.equalCountLimitSummary = {...rolloverPartTwo, status: "limit_reached"};
+  context.rolloverLaterSnapshot = rolloverSnapshot(3, 14, 14, "spiderden", "ROCKY");
+  run("updateLiveRecording(latePartOneSummary, rolloverLaterSnapshot)");
+  assert.equal(run("state.liveRecording.id"), rolloverPartTwo.id, "a delayed summary from a lower segment is rejected");
+  assert.equal(element("liveReplayLink").href, "/api/explorations/" + rolloverPartTwo.id);
+  assert.equal(element("liveRecordingStatus").textContent, savedActiveStatus);
+  run("updateLiveRecording(decreasedPartTwoSummary, rolloverLaterSnapshot)");
+  assert.equal(run("state.liveRecording.frame_count"), 2, "a decreasing frame count in the active segment is rejected");
+  assert.equal(element("liveRecordingStatus").textContent, savedActiveStatus);
+  run("updateLiveRecording(equalCountLimitSummary, rolloverLaterSnapshot)");
+  assert.equal(run("state.liveRecording.status"), "limit_reached", "equal-count status changes remain accepted");
+  assert.ok(element("liveRecordingStatus").textContent.includes("本段已满"));
+  assert.ok(element("liveRecordingStatus").textContent.includes("下一帧将自动开始新段"));
+
+  const historyTrailRequests = [];
+  context.fetch = async url => {
+    historyTrailRequests.push(url);
+    if (url === "/api/explorations/" + rolloverPartOne.id + "/trail") return apiResponse(partOneStored);
+    if (url === "/api/explorations/" + rolloverPartTwo.id + "/trail") return apiResponse(partTwoStored);
+    if (url === "/api/explorations/" + rolloverPartTwo.id + "/trail?through_sequence=2") {
+      return apiResponse(trailPlaybackPayload(rolloverPartTwo, [trailPoint(2, 2, 12, 12)], 2, 2));
+    }
+    throw new Error("unexpected history part request " + url);
+  };
+  run("trailState.requests.clear();openExplorationTrail(" + JSON.stringify(rolloverPartOne) + ")");
+  await settle();
+  assert.equal(run("trailState.id"), rolloverPartOne.id);
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 1 段"));
+  run("trailState.requests.clear();openExplorationTrail(" + JSON.stringify(rolloverPartTwo) + ")");
+  await settle();
+  assert.equal(run("trailState.id"), rolloverPartTwo.id, "history opens the selected sibling part by its exact ID");
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 2 段"));
+  await run("requestHistoryFrame(0, {force:true})");
+  assert.ok(historyTrailRequests.includes("/api/explorations/" + rolloverPartTwo.id + "/trail?through_sequence=2"));
+  assert.ok(!historyTrailRequests.includes("/api/explorations/" + rolloverPartOne.id + "/trail?through_sequence=2"));
+  assert.deepEqual(JSON.parse(run("JSON.stringify(trailState.points.map(point=>point.sequence))")), [2],
+    "history cutoffs include only the selected segment through the selected sequence");
+  assert.ok(element("trailPlaybackStatus").textContent.includes("第 2 段"));
 
   console.log("Live UI: replay recording, freshness-gated live routes, request timeouts and retries, history isolation, map follow and zoom, trail rendering, checked-grid and landmark routes, races, and connection diagnostics passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

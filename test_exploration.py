@@ -88,6 +88,18 @@ def test_exploration_id_is_opaque_and_sessions_deduplicate_after_restart(tmp_pat
     assert len(journal_path.read_bytes().splitlines()) == 3
 
 
+def test_segment_ids_keep_legacy_identity_for_part_one() -> None:
+    import hashlib
+
+    legacy = hashlib.sha256(b'["world-abc","forest","session-1"]').hexdigest()
+    assert exploration_id("world-abc", "forest", "session-1") == legacy
+    assert exploration_id("world-abc", "forest", "session-1", segment=1) == legacy
+    assert exploration_id("world-abc", "forest", "session-1", segment=2) == hashlib.sha256(
+        b'["world-abc","forest","session-1",2]'
+    ).hexdigest()
+    assert exploration_id("world-abc", "forest", "session-1", segment=2) != legacy
+
+
 def test_partial_final_line_is_truncated_before_next_append(tmp_path, monkeypatch) -> None:
     store = ExplorationStore(tmp_path)
     first = _capture(store, 1)
@@ -218,7 +230,66 @@ print(json.dumps(result))
     assert [line.get("snapshot", {}).get("sequence") for line in lines[1:]] == [1]
 
 
-def test_frame_and_byte_limits_preserve_the_existing_download(tmp_path, monkeypatch) -> None:
+def test_separate_processes_share_session_lock_during_rollover(tmp_path, monkeypatch) -> None:
+    import dst_route_planner.exploration as exploration
+
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 1)
+    _capture(
+        ExplorationStore(tmp_path),
+        1,
+        world_id="process-rollover-world",
+        session_id="process-rollover-session",
+    )
+    script = r'''
+import json, sys, time
+import dst_route_planner.exploration as exploration
+from dst_route_planner.exploration import ExplorationStore
+
+exploration.MAX_EXPLORATION_FRAMES = 1
+snapshot = {
+    "live_version": 1,
+    "world_id": "process-rollover-world",
+    "world_kind": "forest",
+    "session_id": "process-rollover-session",
+    "sequence": 2,
+    "captured_at": time.time(),
+    "position": {"x": 2, "y": 0, "z": 0},
+    "camera_heading": 0,
+    "current": {"schema_version": 1, "tile_types": ["GRASS"]},
+    "directions": __import__("dst_route_planner.app", fromlist=["_demo"])._demo()["directions"],
+}
+print(json.dumps(ExplorationStore(sys.argv[1]).capture(snapshot, target="panflute", seed=0)))
+'''
+    project_dir = str(Path(__file__).resolve().parent)
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(tmp_path)],
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    outputs = [process.communicate(timeout=30) for process in processes]
+
+    assert all(process.returncode == 0 for process in processes), outputs
+    summaries = [json.loads(stdout) for stdout, _ in outputs]
+    assert {summary["id"] for summary in summaries} == {
+        exploration_id(
+            "process-rollover-world",
+            "forest",
+            "process-rollover-session",
+            segment=2,
+        )
+    }
+    assert all(summary["frame_count"] == 1 and summary["segment"] == 2 for summary in summaries)
+    assert len(list(tmp_path.glob("*.jsonl"))) == 2
+    part2 = tmp_path / f"{summaries[0]['id']}.jsonl"
+    assert [json.loads(line)["snapshot"]["sequence"] for line in part2.read_bytes().splitlines()[1:]] == [2]
+
+
+def test_frame_and_byte_limits_roll_over_without_changing_old_parts(tmp_path, monkeypatch) -> None:
     import dst_route_planner.exploration as exploration
 
     store = ExplorationStore(tmp_path)
@@ -226,25 +297,41 @@ def test_frame_and_byte_limits_preserve_the_existing_download(tmp_path, monkeypa
     first = _capture(store, 1)
     second = _capture(store, 2)
     path = tmp_path / f"{first['id']}.jsonl"
-    at_frame_limit = path.read_bytes()
+    original_first_part = path.read_bytes()
 
     assert second["status"] == "limit_reached"
     third = _capture(store, 3)
-    assert third["status"] == "limit_reached"
-    assert third["frame_count"] == 2
-    assert path.read_bytes() == at_frame_limit
+    assert third["status"] == "recording"
+    assert third["segment"] == 2
+    assert third["frame_count"] == 1
+    assert path.read_bytes() == original_first_part
+    second_path = tmp_path / f"{third['id']}.jsonl"
+    assert [json.loads(line)["snapshot"]["sequence"] for line in second_path.read_bytes().splitlines()[1:]] == [3]
 
     monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 10_000)
-    monkeypatch.setattr(exploration, "MAX_EXPLORATION_BYTES", len(at_frame_limit))
-    fourth = _capture(store, 4)
-    assert fourth["status"] == "limit_reached"
-    assert fourth["frame_count"] == 2
-    assert path.read_bytes() == at_frame_limit
+    byte_store_dir = tmp_path / "bytes"
+    byte_store = ExplorationStore(byte_store_dir)
+    byte_first = _capture(byte_store, 1, world_id="byte-world", session_id="byte-session")
+    byte_path = byte_store_dir / f"{byte_first['id']}.jsonl"
+    byte_original = byte_path.read_bytes()
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_BYTES", len(byte_original) + 128)
+    byte_second = _capture(byte_store, 2, world_id="byte-world", session_id="byte-session")
+
+    assert byte_second["segment"] == 2
+    assert byte_second["status"] == "recording"
+    assert byte_path.read_bytes() == byte_original
+    byte_part2 = byte_store_dir / f"{byte_second['id']}.jsonl"
+    assert [json.loads(line)["snapshot"]["sequence"] for line in byte_part2.read_bytes().splitlines()[1:]] == [2]
 
 
-def _import_replay(*sequences: int, world_id: str = "import-world", session_id: str = "import-session") -> bytes:
+def _import_replay(
+    *sequences: int,
+    world_id: str = "import-world",
+    session_id: str = "import-session",
+    segment: int = 1,
+) -> bytes:
     world_kind = "forest"
-    journal_id = exploration_id(world_id, world_kind, session_id)
+    journal_id = exploration_id(world_id, world_kind, session_id, segment=segment)
     header = {
         "replay_version": 1,
         "id": journal_id,
@@ -252,6 +339,8 @@ def _import_replay(*sequences: int, world_id: str = "import-world", session_id: 
         "world_kind": world_kind,
         "session_id": session_id,
     }
+    if segment >= 2:
+        header["segment"] = segment
     rows = [header]
     for sequence in sequences:
         rows.append(
@@ -426,3 +515,303 @@ def test_import_rejects_unrepresentable_capture_time_before_writing(tmp_path) ->
         store.import_bytes(invalid)
 
     assert not directory.exists()
+
+
+def test_full_active_part_rolls_once_and_active_summary_follows_it(tmp_path, monkeypatch) -> None:
+    import dst_route_planner.exploration as exploration
+
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 1)
+    store = ExplorationStore(tmp_path)
+    first = _capture(store, 1)
+    first_path = tmp_path / f"{first['id']}.jsonl"
+    first_bytes = first_path.read_bytes()
+    second = _capture(store, 2)
+    second_path = tmp_path / f"{second['id']}.jsonl"
+    second_bytes = second_path.read_bytes()
+
+    assert second["segment"] == 2
+    assert store.summary_for_snapshot(_snapshot(3)) == second
+    assert _capture(store, 2) == second
+    assert _capture(store, 1) == second
+    assert first_path.read_bytes() == first_bytes
+    assert second_path.read_bytes() == second_bytes
+    assert {path.stem for path in tmp_path.glob("*.jsonl")} == {first["id"], second["id"]}
+
+
+def test_imported_sibling_parts_coexist_and_only_exact_id_conflicts(tmp_path) -> None:
+    store = ExplorationStore(tmp_path)
+    legacy_raw = _import_replay(1, 2)
+    part2_raw = _import_replay(3, 4, segment=2)
+    legacy, legacy_created = store.import_bytes(legacy_raw)
+    part2, part2_created = store.import_bytes(part2_raw)
+
+    assert legacy_created is True
+    assert part2_created is True
+    assert part2["segment"] == 2
+    assert len(store.list_explorations()) == 2
+    assert store.get_bytes(legacy["id"]) == legacy_raw + b"\n"
+    assert store.get_bytes(part2["id"]) == part2_raw + b"\n"
+
+    changed_rows = [json.loads(line) for line in (part2_raw + b"\n").splitlines()]
+    changed_rows[1]["target"] = "pigking"
+    changed = b"\n".join(json.dumps(row).encode() for row in changed_rows)
+    with pytest.raises(ExplorationConflictError):
+        store.import_bytes(changed)
+
+
+@pytest.mark.parametrize(
+    ("first_segment", "first_sequences", "second_segment", "second_sequences"),
+    [
+        (2, (3, 4), 1, (10,)),
+        (1, (10,), 2, (3, 4)),
+    ],
+)
+def test_import_rejects_reversed_or_overlapping_sibling_sequence_ranges(
+    tmp_path,
+    first_segment,
+    first_sequences,
+    second_segment,
+    second_sequences,
+) -> None:
+    store = ExplorationStore(tmp_path)
+    first_raw = _import_replay(*first_sequences, segment=first_segment)
+    second_raw = _import_replay(*second_sequences, segment=second_segment)
+    first_summary, created = store.import_bytes(first_raw)
+    first_path = tmp_path / f"{first_summary['id']}.jsonl"
+    original = first_path.read_bytes()
+
+    assert created is True
+    with pytest.raises(ExplorationConflictError, match="sequence ranges"):
+        store.import_bytes(second_raw)
+
+    duplicate, duplicate_created = store.import_bytes(first_raw)
+    assert duplicate == first_summary
+    assert duplicate_created is False
+    assert first_path.read_bytes() == original
+    assert len(list(tmp_path.glob("*.jsonl"))) == 1
+
+
+def test_import_accepts_noncontiguous_sibling_ranges_in_either_order(tmp_path) -> None:
+    earlier = _import_replay(1, 2, world_id="gap-world", session_id="gap-session")
+    later = _import_replay(
+        7,
+        9,
+        world_id="gap-world",
+        session_id="gap-session",
+        segment=2,
+    )
+    for order in ((earlier, later), (later, earlier)):
+        store = ExplorationStore(tmp_path / str(len(list(tmp_path.iterdir()))))
+        summaries = [store.import_bytes(raw)[0] for raw in order]
+        assert {summary.get("segment", 1) for summary in summaries} == {1, 2}
+        assert len(store.list_explorations()) == 2
+
+
+def test_sparse_imported_part_resumes_after_store_restart(tmp_path) -> None:
+    imported_raw = _import_replay(1, 2, world_id="sparse-world", session_id="sparse-session", segment=7)
+    first_store = ExplorationStore(tmp_path)
+    imported, created = first_store.import_bytes(imported_raw)
+    assert created is True
+    assert imported["segment"] == 7
+
+    restarted = ExplorationStore(tmp_path)
+    continued = _capture(
+        restarted,
+        3,
+        world_id="sparse-world",
+        session_id="sparse-session",
+    )
+    journal = [json.loads(line) for line in restarted.get_bytes(continued["id"]).splitlines()]
+
+    assert continued["id"] == imported["id"]
+    assert continued["segment"] == 7
+    assert continued["frame_count"] == 3
+    assert [row.get("snapshot", {}).get("sequence") for row in journal[1:]] == [1, 2, 3]
+    assert journal[0]["segment"] == 7
+    assert restarted.summary_for_snapshot(
+        _snapshot(4, world_id="sparse-world", session_id="sparse-session")
+    ) == continued
+
+
+def test_segment_header_rejects_noncanonical_values(tmp_path) -> None:
+    valid = _import_replay(1, segment=2)
+    rows = [json.loads(line) for line in (valid + b"\n").splitlines()]
+    invalid_segments = (True, 2.0, 0, 1, 2**53)
+
+    for segment in invalid_segments:
+        changed = copy.deepcopy(rows)
+        changed[0]["segment"] = segment
+        raw = b"\n".join(json.dumps(row).encode() for row in changed)
+        with pytest.raises(CorruptExplorationError):
+            ExplorationStore(tmp_path / str(len(list(tmp_path.iterdir())))).import_bytes(raw)
+
+    with pytest.raises(ValueError):
+        exploration_id("world", "forest", "session", segment=True)
+    with pytest.raises(ValueError):
+        exploration_id("world", "forest", "session", segment=2.0)
+    with pytest.raises(ValueError):
+        exploration_id("world", "forest", "session", segment=0)
+    with pytest.raises(ValueError):
+        exploration_id("world", "forest", "session", segment=2**53)
+    assert len(exploration_id("world", "forest", "session", segment=2**53 - 1)) == 64
+
+
+def test_too_large_first_frame_does_not_create_empty_segments(tmp_path, monkeypatch) -> None:
+    import dst_route_planner.exploration as exploration
+
+    store = ExplorationStore(tmp_path)
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_BYTES", 10)
+    rejected = _capture(store, 1)
+
+    assert rejected["frame_count"] == 0
+    assert rejected["status"] == "limit_reached"
+    assert list(tmp_path.glob("*.jsonl")) == []
+
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_BYTES", 32 * 1024 * 1024)
+    recorded = _capture(store, 1)
+    assert recorded.get("segment") is None
+    assert recorded["frame_count"] == 1
+    assert len(list(tmp_path.glob("*.jsonl"))) == 1
+
+
+def test_frame_that_fits_part_one_but_not_longer_part_header_stays_active(tmp_path, monkeypatch) -> None:
+    import dst_route_planner.exploration as exploration
+
+    fixed_received_at = "2026-02-01T00:00:00.000000Z"
+    monkeypatch.setattr(exploration, "_timestamp", lambda: fixed_received_at)
+    first_snapshot = _snapshot(1)
+    second_snapshot = _snapshot(2)
+    first_snapshot["captured_at"] = 1_770_000_000.0
+    second_snapshot["captured_at"] = 1_770_000_000.0
+    frame_bytes = exploration._json_line(
+        {
+            "replay_version": 1,
+            "received_at": fixed_received_at,
+            "target": "panflute",
+            "seed": 13,
+            "snapshot": exploration.validate_snapshot(second_snapshot),
+            "plan": {"target": "panflute", "seed": 13},
+        }
+    )
+    first_header = exploration._json_line(
+        exploration.ExplorationStore._make_header("world-abc", "forest", "session-1")
+    )
+    second_header = exploration._json_line(
+        exploration.ExplorationStore._make_header(
+            "world-abc", "forest", "session-1", segment=2
+        )
+    )
+    assert len(first_header) + len(frame_bytes) < len(second_header) + len(frame_bytes)
+
+    store = ExplorationStore(tmp_path)
+    first = store.capture(
+        first_snapshot,
+        target="panflute",
+        seed=13,
+        plan={"target": "panflute", "seed": 13},
+    )
+    path = tmp_path / f"{first['id']}.jsonl"
+    original = path.read_bytes()
+    assert len(original) == len(first_header) + len(frame_bytes)
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_BYTES", len(original))
+
+    result = store.capture(
+        second_snapshot,
+        target="panflute",
+        seed=13,
+        plan={"target": "panflute", "seed": 13},
+    )
+
+    assert result["id"] == first["id"]
+    assert result.get("segment") is None
+    assert result["status"] == "limit_reached"
+    assert path.read_bytes() == original
+    assert len(list(tmp_path.glob("*.jsonl"))) == 1
+
+
+def test_max_segment_capacity_returns_cleanly_without_overflow(tmp_path, monkeypatch) -> None:
+    import dst_route_planner.exploration as exploration
+
+    maximum = exploration.MAX_EXPLORATION_SEGMENT
+    store = ExplorationStore(tmp_path)
+    raw = _import_replay(
+        1,
+        world_id="max-segment-world",
+        session_id="max-segment-session",
+        segment=maximum,
+    )
+    imported, _ = store.import_bytes(raw)
+    path = tmp_path / f"{imported['id']}.jsonl"
+    original = path.read_bytes()
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 1)
+
+    result = _capture(
+        store,
+        2,
+        world_id="max-segment-world",
+        session_id="max-segment-session",
+    )
+
+    assert result["id"] == imported["id"]
+    assert result["segment"] == maximum
+    assert result["status"] == "limit_reached"
+    assert path.read_bytes() == original
+    assert len(list(tmp_path.glob("*.jsonl"))) == 1
+
+
+def test_concurrent_stores_roll_over_to_one_shared_part(tmp_path, monkeypatch) -> None:
+    import dst_route_planner.exploration as exploration
+
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 1)
+    _capture(ExplorationStore(tmp_path), 1)
+    stores = [ExplorationStore(tmp_path) for _ in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda store: _capture(store, 2), stores))
+
+    assert len({result["id"] for result in results}) == 1
+    assert all(result["segment"] == 2 and result["frame_count"] == 1 for result in results)
+    assert len(list(tmp_path.glob("*.jsonl"))) == 2
+    part2 = tmp_path / f"{results[0]['id']}.jsonl"
+    assert [json.loads(line)["snapshot"]["sequence"] for line in part2.read_bytes().splitlines()[1:]] == [2]
+
+
+def test_segment_index_refreshes_from_headers_without_reparsing_cached_bodies(
+    tmp_path, monkeypatch
+) -> None:
+    store = ExplorationStore(tmp_path)
+    _capture(store, 1, world_id="indexed-world", session_id="indexed-session")
+    store.summary_for_snapshot(
+        _snapshot(2, world_id="indexed-world", session_id="indexed-session")
+    )
+    parse_count = 0
+    original_reader = store._read_journal_bytes
+
+    def count_parse(*args, **kwargs):
+        nonlocal parse_count
+        parse_count += 1
+        return original_reader(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_read_journal_bytes", count_parse)
+    assert _capture(store, 2, world_id="indexed-world", session_id="indexed-session")["frame_count"] == 2
+    assert store.summary_for_snapshot(
+        _snapshot(3, world_id="indexed-world", session_id="indexed-session")
+    )["frame_count"] == 2
+    assert parse_count == 0
+
+    sparse = _import_replay(
+        10,
+        world_id="indexed-world",
+        session_id="indexed-session",
+        segment=5,
+    )
+    ExplorationStore(tmp_path).import_bytes(sparse)
+    resumed = _capture(store, 11, world_id="indexed-world", session_id="indexed-session")
+    assert resumed["segment"] == 5
+    assert resumed["frame_count"] == 2
+    assert parse_count == 1
+
+    store.summary_for_snapshot(
+        _snapshot(12, world_id="indexed-world", session_id="indexed-session")
+    )
+    _capture(store, 12, world_id="indexed-world", session_id="indexed-session")
+    assert parse_count == 1

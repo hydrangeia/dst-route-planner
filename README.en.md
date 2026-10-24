@@ -54,7 +54,9 @@ On the trail map, choose “路线终点” (route endpoint) or click an observe
 
 During live following, a paused collector, an error, a manual stop, or a last valid snapshot older than five seconds pauses navigation. The map shows “导航已暂停” (navigation paused) and hides the purple live route and next-step guidance while keeping observed terrain, the last trail position, the route endpoint, and its target source. A live request that takes five seconds to complete times out; after the timeout, the page waits one second before retrying. Navigation resumes automatically when a fresh snapshot arrives; you do not need to toggle live following. Saved replay routes remain visible.
 
-While the tool runs, it saves new snapshots to local JSONL files, including coordinates, nearby clues, the current target, and the direction suggestion at that time. Download a recording from “探索回放” (exploration replays); saved files remain available after restarting. Closing the page, viewing history, or turning off live following does not interrupt recording. Recording ends when you exit the Python tool (press Ctrl+C in the terminal). Each world and collector session has its own recording.
+While the tool runs, it saves new snapshots to local JSONL files, including coordinates, nearby clues, the current target, and the direction suggestion at that time. When adding a snapshot would take the current replay part past 10,000 frames or 32 MiB, the tool starts the next part automatically. Earlier parts stay available, and each part can be downloaded, imported, and reviewed on its own. After a restart, new snapshots continue in the latest part for that world and collector session. Closing the page, viewing history, or turning off live following does not interrupt recording. Recording ends when you exit the Python tool (press Ctrl+C in the terminal).
+
+The replay list initially shows the 10 most recent items. Select “显示更多回放” (Show more replays) to reveal older ones. Each part is labeled “第 N 段” (Part N). The live trail stays continuous across parts; history shows only the selected part through its final recorded frame.
 
 “探索轨迹” (exploration trail) updates with live positions and marks the start and latest position. Select “查看轨迹” beside a saved replay to review it. Viewing a replay pauses live following; check it again to return to the current session. An existing or imported replay opens at its latest observed frame. Use “回放进度” (Replay progress), “上一帧” (Previous frame), “下一帧” (Next frame), or “跳到最新” (Go to latest) to step through recorded frames. Each frame shows only positions, terrain, connections, and targets observed by then. These history controls are hidden during live following while background recording continues.
 
@@ -100,11 +102,11 @@ Player moves or a new connection check arrives → update the route
   ↓
 Collection pause / error / manual stop / stale snapshot → pause; request timeout → wait one second → retry; fresh snapshot → resume (no retries after stop or in history)
   ↓
-New snapshots → local replay → page shows the trail and route (full map or follow position) with observed tiles, latest position, and observed targets
+New snapshots → local replay (automatically start another part before reaching a per-part limit) → page shows a continuous trail and route with observed tiles, latest position, and observed targets
   ↓
-Saved replay → view its trail and route → progress slider / previous or next frame → review observations through that frame
+Choose “第 N 段” (Part N) → view that part’s trail and route → progress slider / previous or next frame → review observations through its final frame
   ↓
-Download JSONL → import replay → view its trail and route
+Download a part’s JSONL → import that part → view its trail and route
   ↓
 Keep moving → collect, calculate, and update again
   ↓

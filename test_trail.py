@@ -14,12 +14,13 @@ def _journal(
     world_id: str = "world-trail",
     world_kind: str = "forest",
     session_id: str = "session-trail",
+    segment: int = 1,
     landmarks_by_frame: list[list[dict]] | None = None,
     terrain_by_frame: list[list[dict]] | None = None,
     player_anchors_by_frame: list[dict | None] | None = None,
     camera_headings_by_frame: list[int | float | None] | None = None,
 ) -> bytes:
-    journal_id = exploration_id(world_id, world_kind, session_id)
+    journal_id = exploration_id(world_id, world_kind, session_id, segment=segment)
     header = {
         "replay_version": 1,
         "id": journal_id,
@@ -27,6 +28,8 @@ def _journal(
         "world_kind": world_kind,
         "session_id": session_id,
     }
+    if segment > 1:
+        header["segment"] = segment
     lines = [json.dumps(header, separators=(",", ":"))]
     for frame_index, (sequence, captured_at, x, z) in enumerate(points):
         frame = {
@@ -563,3 +566,20 @@ def test_project_trail_rejects_invalid_cutoffs(invalid) -> None:
 
     with pytest.raises(ValueError, match="positive integer"):
         project_trail(content, through_sequence=invalid)
+
+
+def test_project_trail_preserves_part_identity_and_cutoff() -> None:
+    legacy = project_trail(_journal([(1, 10, 0, 0)]))
+    content = _journal([(11, 20, 4, 0), (14, 30, 8, 0)], segment=2)
+    second = project_trail(content)
+    prefix = project_trail(content, through_sequence=12)
+
+    assert "segment" not in legacy
+    assert second["segment"] == prefix["segment"] == 2
+    assert second["id"] != legacy["id"]
+    assert second["world_id"] == legacy["world_id"]
+    assert second["session_id"] == legacy["session_id"]
+    assert [point["sequence"] for point in second["points"]] == [11, 14]
+    assert [point["sequence"] for point in prefix["points"]] == [11]
+    assert prefix["id"] == second["id"]
+    assert prefix["playback"] == {"through_sequence": 12, "total_frame_count": 2}

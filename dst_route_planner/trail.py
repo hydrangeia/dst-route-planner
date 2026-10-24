@@ -170,6 +170,8 @@ def project_trail(
                 "truncated": terrain_truncated,
             },
         }
+        if "segment" in header:
+            result["segment"] = header["segment"]
         if through_sequence is not None:
             result["playback"] = {
                 "through_sequence": through_sequence,

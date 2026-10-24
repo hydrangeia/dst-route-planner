@@ -20,6 +20,8 @@ from dst_route_planner.live import validate_snapshot
 REPLAY_VERSION = 1
 MAX_EXPLORATION_BYTES = 32 * 1024 * 1024
 MAX_EXPLORATION_FRAMES = 10_000
+MAX_EXPLORATION_SEGMENT = 2**53 - 1
+MAX_HEADER_LINE_BYTES = 64 * 1024
 JOURNAL_LOCK_TIMEOUT_SECONDS = 1.0
 _ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STORE_LOCKS_GUARD = threading.Lock()
@@ -60,16 +62,24 @@ class _JournalMetadata:
     frame_count: int
     started_at: str | None
     last_captured_at: str | None
+    first_sequence: int
     last_sequence: int
     complete_size: int
     file_size: int
     mtime_ns: int
 
 
-def exploration_id(world_id: str, world_kind: str, session_id: str) -> str:
-    identity = json.dumps(
-        [world_id, world_kind, session_id], ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
+def exploration_id(
+    world_id: str, world_kind: str, session_id: str, *, segment: int = 1
+) -> str:
+    if type(segment) is not int or not 1 <= segment <= MAX_EXPLORATION_SEGMENT:
+        raise ValueError(f"segment must be an integer from 1 to {MAX_EXPLORATION_SEGMENT}.")
+    identity_values = [world_id, world_kind, session_id]
+    if segment >= 2:
+        identity_values.append(segment)
+    identity = json.dumps(identity_values, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
     return hashlib.sha256(identity).hexdigest()
 
 
@@ -128,7 +138,7 @@ def _summary(
             if frame_count >= MAX_EXPLORATION_FRAMES or byte_count >= MAX_EXPLORATION_BYTES
             else "recording"
         )
-    return {
+    summary = {
         "id": header["id"],
         "world_id": header["world_id"],
         "world_kind": header["world_kind"],
@@ -138,6 +148,9 @@ def _summary(
         "last_captured_at": last_captured_at,
         "status": status,
     }
+    if "segment" in header:
+        summary["segment"] = header["segment"]
+    return summary
 
 
 def _metadata_summary(
@@ -182,6 +195,8 @@ class ExplorationStore:
         with _STORE_LOCKS_GUARD:
             self._lock = _STORE_LOCKS.setdefault(lock_key, threading.RLock())
         self._metadata_cache: dict[str, _JournalMetadata] = {}
+        self._session_segments: dict[tuple[str, str, str], int] = {}
+        self._segment_index_mtime_ns: int | None = None
 
     def capture(
         self,
@@ -197,14 +212,8 @@ class ExplorationStore:
         world_id = validated["world_id"]
         world_kind = validated["world_kind"]
         session_id = validated["session_id"]
-        journal_id = exploration_id(world_id, world_kind, session_id)
-        header = {
-            "replay_version": REPLAY_VERSION,
-            "id": journal_id,
-            "world_id": world_id,
-            "world_kind": world_kind,
-            "session_id": session_id,
-        }
+        base_identity = (world_id, world_kind, session_id)
+        base_id = exploration_id(*base_identity)
         frame: dict[str, Any] = {
             "replay_version": REPLAY_VERSION,
             "received_at": _timestamp(),
@@ -215,65 +224,88 @@ class ExplorationStore:
         if plan is not None:
             frame["plan"] = plan
         frame_bytes = _json_line(frame)
-        header_bytes = _json_line(header)
-        path = self._journal_path(journal_id)
-
-        with self._lock, self._journal_file_lock(journal_id):
+        with self._lock, self._session_file_lock(base_id):
             self.directory.mkdir(parents=True, exist_ok=True)
-            if path.is_symlink():
-                raise CorruptExplorationError("journal path is not a regular file.")
-            exists = path.exists()
-            if exists:
-                metadata = self._read_metadata(path, journal_id)
-            else:
-                self._metadata_cache.pop(journal_id, None)
-                metadata = _JournalMetadata(header, 0, None, None, 0, 0, 0, 0)
+            self._refresh_segment_index()
+            segment = self._active_segment(base_identity)
 
-            summary = _metadata_summary(metadata)
-            # A full journal is immutable, including any bytes left after its
-            # final complete line.
-            if summary["status"] == "limit_reached":
-                return summary
-            if metadata.frame_count and validated["sequence"] <= metadata.last_sequence:
-                return summary
+            while True:
+                journal_id = exploration_id(*base_identity, segment=segment)
+                header = self._make_header(*base_identity, segment=segment)
+                header_bytes = _json_line(header)
+                path = self._journal_path(journal_id)
+                with self._journal_file_lock(journal_id):
+                    if path.is_symlink():
+                        raise CorruptExplorationError("journal path is not a regular file.")
+                    exists = path.exists()
+                    if exists:
+                        metadata = self._read_metadata(path, journal_id)
+                    else:
+                        self._metadata_cache.pop(journal_id, None)
+                        metadata = _JournalMetadata(
+                            header=header,
+                            frame_count=0,
+                            started_at=None,
+                            last_captured_at=None,
+                            first_sequence=0,
+                            last_sequence=0,
+                            complete_size=0,
+                            file_size=0,
+                            mtime_ns=0,
+                        )
 
-            append_bytes = frame_bytes if exists else header_bytes + frame_bytes
-            projected_size = metadata.complete_size + len(append_bytes)
-            if metadata.frame_count + 1 > MAX_EXPLORATION_FRAMES or projected_size > MAX_EXPLORATION_BYTES:
-                if metadata.frame_count == 0:
-                    return _summary(
-                        metadata.header,
-                        frame_count=0,
-                        started_at=frame["received_at"],
-                        last_captured_at=_captured_at_timestamp(validated["captured_at"]),
-                        byte_count=metadata.complete_size,
-                        status="limit_reached",
+                    summary = _metadata_summary(metadata)
+                    # Check sequence before considering capacity so duplicate or
+                    # stale collector snapshots never create a new part.
+                    if metadata.frame_count and validated["sequence"] <= metadata.last_sequence:
+                        return summary
+
+                    append_bytes = frame_bytes if exists else header_bytes + frame_bytes
+                    projected_size = metadata.complete_size + len(append_bytes)
+                    fits = (
+                        metadata.frame_count + 1 <= MAX_EXPLORATION_FRAMES
+                        and projected_size <= MAX_EXPLORATION_BYTES
                     )
-                return _metadata_summary(metadata, status="limit_reached")
+                    if fits:
+                        if exists and metadata.file_size > metadata.complete_size:
+                            with path.open("r+b") as journal:
+                                journal.truncate(metadata.complete_size)
+                                journal.flush()
+                        with path.open("ab") as journal:
+                            journal.write(append_bytes)
+                            journal.flush()
 
-            # An incomplete final line can only have come from an interrupted
-            # append. Remove it after validating all complete lines, then append.
-            if exists and metadata.file_size > metadata.complete_size:
-                with path.open("r+b") as journal:
-                    journal.truncate(metadata.complete_size)
-                    journal.flush()
-            with path.open("ab") as journal:
-                journal.write(append_bytes)
-                journal.flush()
+                        stat = path.stat()
+                        updated = _JournalMetadata(
+                            header=metadata.header,
+                            frame_count=metadata.frame_count + 1,
+                            started_at=metadata.started_at or frame["received_at"],
+                            last_captured_at=_captured_at_timestamp(validated["captured_at"]),
+                            first_sequence=metadata.first_sequence or validated["sequence"],
+                            last_sequence=validated["sequence"],
+                            complete_size=projected_size,
+                            file_size=stat.st_size,
+                            mtime_ns=stat.st_mtime_ns,
+                        )
+                        self._metadata_cache[journal_id] = updated
+                        if segment > self._session_segments.get(base_identity, 0):
+                            self._session_segments[base_identity] = segment
+                        if not exists:
+                            # The directory changed. Force a bounded header-only
+                            # refresh on the next discovery operation.
+                            self._segment_index_mtime_ns = None
+                        return _metadata_summary(updated)
 
-            stat = path.stat()
-            updated = _JournalMetadata(
-                header=metadata.header,
-                frame_count=metadata.frame_count + 1,
-                started_at=metadata.started_at or frame["received_at"],
-                last_captured_at=_captured_at_timestamp(validated["captured_at"]),
-                last_sequence=validated["sequence"],
-                complete_size=projected_size,
-                file_size=stat.st_size,
-                mtime_ns=stat.st_mtime_ns,
-            )
-            self._metadata_cache[journal_id] = updated
-            return _metadata_summary(updated)
+                    # Later part headers are longer, so check the next part
+                    # before advancing or returning a summary for a missing file.
+                    if MAX_EXPLORATION_FRAMES < 1 or segment == MAX_EXPLORATION_SEGMENT:
+                        return _metadata_summary(metadata, status="limit_reached")
+                    next_header = _json_line(
+                        self._make_header(*base_identity, segment=segment + 1)
+                    )
+                    if len(next_header) + len(frame_bytes) > MAX_EXPLORATION_BYTES:
+                        return _metadata_summary(metadata, status="limit_reached")
+                segment += 1
 
     def import_bytes(self, raw: bytes) -> tuple[dict[str, Any], bool]:
         """Validate and atomically import one complete JSONL replay."""
@@ -303,13 +335,26 @@ class ExplorationStore:
             raise CorruptExplorationError("journal contains an incomplete line.")
 
         journal_id = header["id"]
+        base_identity = (header["world_id"], header["world_kind"], header["session_id"])
+        base_id = exploration_id(*base_identity)
         path = self._journal_path(journal_id)
-        with self._lock, self._journal_file_lock(journal_id):
+        with self._lock, self._session_file_lock(base_id), self._journal_file_lock(journal_id):
             self.directory.mkdir(parents=True, exist_ok=True)
+            self._refresh_segment_index()
             if path.is_symlink():
                 raise ExplorationConflictError("an exploration already exists at this identity.")
             if path.exists():
-                return self._import_existing(path, journal_id, header, frames), False
+                summary = self._import_existing(path, journal_id, header, frames)
+                self._session_segments[base_identity] = max(
+                    self._session_segments.get(base_identity, 0), header.get("segment", 1)
+                )
+                return summary, False
+            self._validate_import_segment_order(
+                base_identity,
+                header.get("segment", 1),
+                journal_id,
+                frames,
+            )
 
             temporary_path: Path | None = None
             try:
@@ -339,7 +384,12 @@ class ExplorationStore:
                         raise ExplorationConflictError(
                             "an exploration already exists at this identity."
                         )
-                    return self._import_existing(path, journal_id, header, frames), False
+                    summary = self._import_existing(path, journal_id, header, frames)
+                    self._session_segments[base_identity] = max(
+                        self._session_segments.get(base_identity, 0),
+                        header.get("segment", 1),
+                    )
+                    return summary, False
                 finally:
                     if temporary_path is not None:
                         try:
@@ -355,12 +405,17 @@ class ExplorationStore:
                     last_captured_at=_captured_at_timestamp(
                         frames[-1]["snapshot"]["captured_at"]
                     ),
+                    first_sequence=frames[0]["snapshot"]["sequence"],
                     last_sequence=frames[-1]["snapshot"]["sequence"],
                     complete_size=len(normalized),
                     file_size=stat.st_size,
                     mtime_ns=stat.st_mtime_ns,
                 )
                 self._metadata_cache[journal_id] = metadata
+                self._session_segments[base_identity] = max(
+                    self._session_segments.get(base_identity, 0), header.get("segment", 1)
+                )
+                self._segment_index_mtime_ns = None
                 return _metadata_summary(metadata), True
             finally:
                 if temporary_path is not None:
@@ -399,16 +454,72 @@ class ExplorationStore:
             )
         return _metadata_summary(metadata)
 
+    def _validate_import_segment_order(
+        self,
+        identity: tuple[str, str, str],
+        imported_segment: int,
+        imported_id: str,
+        imported_frames: list[dict[str, Any]],
+    ) -> None:
+        """Keep imported sibling journals in cumulative sequence order."""
+        imported_first = imported_frames[0]["snapshot"]["sequence"]
+        imported_last = imported_frames[-1]["snapshot"]["sequence"]
+        for path in self.directory.iterdir():
+            if path.suffix != ".jsonl" or path.is_symlink():
+                continue
+            sibling_id = path.stem
+            if sibling_id == imported_id or not _ID_PATTERN.fullmatch(sibling_id):
+                continue
+            with self._journal_file_lock(sibling_id):
+                if path.is_symlink():
+                    continue
+                try:
+                    sibling_header, sibling_segment = self._read_header_line(path, sibling_id)
+                except (OSError, CorruptExplorationError):
+                    # Unrelated malformed journals do not prevent importing a
+                    # valid replay, matching list_explorations behavior.
+                    continue
+                sibling_identity = (
+                    sibling_header["world_id"],
+                    sibling_header["world_kind"],
+                    sibling_header["session_id"],
+                )
+                if sibling_identity != identity or sibling_segment == imported_segment:
+                    continue
+                try:
+                    metadata = self._read_metadata(path, sibling_id)
+                except (OSError, CorruptExplorationError) as exc:
+                    raise ExplorationConflictError(
+                        "a sibling exploration cannot be validated."
+                    ) from exc
+                if metadata.frame_count == 0:
+                    continue
+                if sibling_segment < imported_segment:
+                    ordered = metadata.last_sequence < imported_first
+                else:
+                    ordered = metadata.first_sequence > imported_last
+                if not ordered:
+                    raise ExplorationConflictError(
+                        "sibling exploration sequence ranges overlap or are out of order."
+                    )
+
     def summary_for_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
         """Return a matching journal summary without changing its file."""
         validated = validate_snapshot(snapshot)
-        journal_id = exploration_id(
-            validated["world_id"], validated["world_kind"], validated["session_id"]
+        base_identity = (
+            validated["world_id"],
+            validated["world_kind"],
+            validated["session_id"],
         )
-        path = self._journal_path(journal_id)
-        with self._lock, self._journal_file_lock(journal_id):
+        base_id = exploration_id(*base_identity)
+        with self._lock, self._session_file_lock(base_id):
+            self._refresh_segment_index()
+            segment = self._active_segment(base_identity)
+            journal_id = exploration_id(*base_identity, segment=segment)
+            path = self._journal_path(journal_id)
             try:
-                metadata = self._read_metadata(path, journal_id)
+                with self._journal_file_lock(journal_id):
+                    metadata = self._read_metadata(path, journal_id)
             except FileNotFoundError:
                 return None
             if metadata.frame_count == 0:
@@ -473,8 +584,20 @@ class ExplorationStore:
 
     @contextmanager
     def _journal_file_lock(self, journal_id: str):
+        with self._named_file_lock(f".{journal_id}.lock"):
+            yield
+
+    @contextmanager
+    def _session_file_lock(self, base_id: str):
+        # This lock has a distinct name from the base journal's lock, including
+        # for segment 1, so acquiring both cannot self-deadlock.
+        with self._named_file_lock(f".session-{base_id}.lock"):
+            yield
+
+    @contextmanager
+    def _named_file_lock(self, lock_name: str):
         self.directory.mkdir(parents=True, exist_ok=True)
-        lock_path = self.directory / f".{journal_id}.lock"
+        lock_path = self.directory / lock_name
         with lock_path.open("a+b") as lock_file:
             lock_file.seek(0, os.SEEK_END)
             if lock_file.tell() == 0:
@@ -511,6 +634,147 @@ class ExplorationStore:
 
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
+    @staticmethod
+    def _make_header(
+        world_id: str, world_kind: str, session_id: str, *, segment: int = 1
+    ) -> dict[str, Any]:
+        header: dict[str, Any] = {
+            "replay_version": REPLAY_VERSION,
+            "id": exploration_id(world_id, world_kind, session_id, segment=segment),
+            "world_id": world_id,
+            "world_kind": world_kind,
+            "session_id": session_id,
+        }
+        if segment >= 2:
+            header["segment"] = segment
+        return header
+
+    def _validate_header(self, header: Any, expected_id: str) -> tuple[dict[str, Any], int]:
+        base_fields = {"replay_version", "id", "world_id", "world_kind", "session_id"}
+        if not isinstance(header, dict):
+            raise CorruptExplorationError("journal header fields are invalid.")
+        if set(header) not in (base_fields, base_fields | {"segment"}):
+            raise CorruptExplorationError("journal header fields are invalid.")
+        if type(header["replay_version"]) is not int or header["replay_version"] != REPLAY_VERSION:
+            raise CorruptExplorationError("journal replay version is unsupported.")
+        for key in ("world_id", "world_kind", "session_id"):
+            if not isinstance(header[key], str) or not header[key].strip():
+                raise CorruptExplorationError("journal identity fields are invalid.")
+        segment = 1
+        if "segment" in header:
+            segment = header["segment"]
+            if (
+                type(segment) is not int
+                or segment < 2
+                or segment > MAX_EXPLORATION_SEGMENT
+            ):
+                raise CorruptExplorationError("journal segment is invalid.")
+        try:
+            stored_id = self.normalize_id(header["id"])
+            identity_id = exploration_id(
+                header["world_id"],
+                header["world_kind"],
+                header["session_id"],
+                segment=segment,
+            )
+        except (InvalidExplorationIdError, TypeError, ValueError) as exc:
+            raise CorruptExplorationError("journal identity is invalid.") from exc
+        if stored_id != expected_id or identity_id != stored_id:
+            raise CorruptExplorationError("journal identity does not match its filename.")
+        return header, segment
+
+    def _read_header_line(self, path: Path, expected_id: str) -> tuple[dict[str, Any], int]:
+        try:
+            with path.open("rb") as journal:
+                raw_line = journal.readline(MAX_HEADER_LINE_BYTES + 1)
+        except OSError:
+            raise
+        if len(raw_line) > MAX_HEADER_LINE_BYTES or not raw_line.endswith(b"\n"):
+            raise CorruptExplorationError("journal header line is incomplete or too large.")
+        try:
+            header = json.loads(
+                raw_line.decode("utf-8"),
+                object_pairs_hook=_object_no_duplicates,
+                parse_constant=self._reject_constant,
+                parse_float=self._parse_finite_float,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+            raise CorruptExplorationError("journal header is invalid.") from exc
+        return self._validate_header(header, expected_id)
+
+    def _refresh_segment_index(self) -> None:
+        """Refresh session-to-segment hints by reading bounded header lines only."""
+        try:
+            current_mtime = self.directory.stat().st_mtime_ns
+        except FileNotFoundError:
+            self._session_segments = {}
+            self._segment_index_mtime_ns = None
+            return
+        if self._segment_index_mtime_ns == current_mtime:
+            return
+
+        latest_segments: dict[tuple[str, str, str], int] = {}
+        observed_mtime = current_mtime
+        for _ in range(4):
+            try:
+                before_mtime = self.directory.stat().st_mtime_ns
+            except FileNotFoundError:
+                self._session_segments = {}
+                self._segment_index_mtime_ns = None
+                return
+            latest_segments = {}
+            try:
+                paths = tuple(self.directory.iterdir())
+            except FileNotFoundError:
+                paths = ()
+            for path in paths:
+                if path.suffix != ".jsonl" or path.is_symlink():
+                    continue
+                journal_id = path.stem
+                if not _ID_PATTERN.fullmatch(journal_id):
+                    continue
+                try:
+                    header, segment = self._read_header_line(path, journal_id)
+                except (OSError, CorruptExplorationError):
+                    continue
+                identity = (header["world_id"], header["world_kind"], header["session_id"])
+                latest_segments[identity] = max(latest_segments.get(identity, 0), segment)
+            try:
+                after_mtime = self.directory.stat().st_mtime_ns
+            except FileNotFoundError:
+                self._session_segments = {}
+                self._segment_index_mtime_ns = None
+                return
+            observed_mtime = before_mtime
+            if before_mtime == after_mtime:
+                observed_mtime = after_mtime
+                break
+        self._session_segments = latest_segments
+        # If files changed during all attempts, keep the pre-scan timestamp so
+        # the next lookup retries the cheap header-only discovery pass.
+        self._segment_index_mtime_ns = observed_mtime
+
+    def _active_segment(self, identity: tuple[str, str, str]) -> int:
+        segment = self._session_segments.get(identity, 1)
+        while segment < MAX_EXPLORATION_SEGMENT:
+            next_segment = segment + 1
+            next_id = exploration_id(*identity, segment=next_segment)
+            next_path = self._journal_path(next_id)
+            if not next_path.exists() and not next_path.is_symlink():
+                break
+            with self._journal_file_lock(next_id):
+                # A corrupt expected sibling must be reported, never replaced.
+                metadata = self._read_metadata(next_path, next_id)
+            if (
+                metadata.header["world_id"],
+                metadata.header["world_kind"],
+                metadata.header["session_id"],
+            ) != identity:
+                raise CorruptExplorationError("journal identity does not match its session.")
+            segment = next_segment
+        self._session_segments[identity] = segment
+        return segment
+
     def _read_metadata(self, path: Path, journal_id: str) -> _JournalMetadata:
         if path.is_symlink():
             raise CorruptExplorationError("journal path is not a regular file.")
@@ -537,6 +801,7 @@ class ExplorationStore:
                 if frames
                 else None
             ),
+            first_sequence=frames[0]["snapshot"]["sequence"] if frames else 0,
             last_sequence=frames[-1]["snapshot"]["sequence"] if frames else 0,
             complete_size=complete_size,
             file_size=after.st_size,
@@ -574,22 +839,7 @@ class ExplorationStore:
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
             raise CorruptExplorationError("journal contains an invalid complete JSON line.") from exc
 
-        header = values[0]
-        expected_header_fields = {"replay_version", "id", "world_id", "world_kind", "session_id"}
-        if not isinstance(header, dict) or set(header) != expected_header_fields:
-            raise CorruptExplorationError("journal header fields are invalid.")
-        if type(header["replay_version"]) is not int or header["replay_version"] != REPLAY_VERSION:
-            raise CorruptExplorationError("journal replay version is unsupported.")
-        try:
-            stored_id = self.normalize_id(header["id"])
-            identity_id = exploration_id(header["world_id"], header["world_kind"], header["session_id"])
-        except (InvalidExplorationIdError, TypeError, ValueError) as exc:
-            raise CorruptExplorationError("journal identity is invalid.") from exc
-        if stored_id != expected_id or identity_id != stored_id:
-            raise CorruptExplorationError("journal identity does not match its filename.")
-        for key in ("world_id", "world_kind", "session_id"):
-            if not isinstance(header[key], str) or not header[key].strip():
-                raise CorruptExplorationError("journal identity fields are invalid.")
+        header, _segment = self._validate_header(values[0], expected_id)
 
         frames: list[dict[str, Any]] = []
         previous_sequence = 0

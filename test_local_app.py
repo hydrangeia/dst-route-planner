@@ -1858,3 +1858,84 @@ def test_empty_trail_query_skips_strict_parser_for_python_310(monkeypatch) -> No
     assert app._parse_trail_query("") is None
     with pytest.raises(app.InputValidationError, match="invalid trail query string"):
         app._parse_trail_query("through_sequence")
+
+
+def test_background_recording_rolls_over_and_serves_each_part(
+    local_server, tmp_path, monkeypatch
+) -> None:
+    from dst_route_planner import exploration
+
+    monkeypatch.setattr(exploration, "MAX_EXPLORATION_FRAMES", 2)
+    import_base, _ = local_server
+    _, _, demo = _get(import_base, "/api/demo")
+    log = tmp_path / "segmented-client.log"
+    snapshots = [
+        _live_snapshot(demo["directions"], sequence=sequence)
+        for sequence in range(1, 6)
+    ]
+    _write_live_snapshots(log, snapshots)
+    server = app.create_server(record_dir=tmp_path / "records", live_log=log)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    base_url = f"http://{host}:{port}"
+    downloads = {}
+    try:
+        deadline = time.monotonic() + 8
+        summaries = []
+        while time.monotonic() < deadline:
+            summaries = server.exploration_store.list_explorations()
+            if sum(item["frame_count"] for item in summaries) == 5:
+                break
+            time.sleep(0.01)
+        assert sum(item["frame_count"] for item in summaries) == 5
+        by_part = {item.get("segment", 1): item for item in summaries}
+        assert sorted(by_part) == [1, 2, 3]
+        assert [by_part[part]["frame_count"] for part in (1, 2, 3)] == [2, 2, 1]
+
+        live_status, _, live = _get(base_url, "/api/live?target=panflute&seed=0")
+        assert live_status == 200
+        assert live["recording"]["id"] == by_part[3]["id"]
+        assert live["recording"]["segment"] == 3
+        for part, expected_sequences in [(1, [1, 2]), (2, [3, 4]), (3, [5])]:
+            journal_id = by_part[part]["id"]
+            status, _, body = _get(base_url, f"/api/explorations/{journal_id}")
+            assert status == 200
+            downloads[part] = body.encode("utf-8")
+            lines = [json.loads(line) for line in body.splitlines()]
+            assert lines[0].get("segment", 1) == part
+            assert lines[0]["session_id"] == "session-1"
+            assert [line["snapshot"]["sequence"] for line in lines[1:]] == expected_sequences
+            trail_status, _, trail = _get(base_url, f"/api/explorations/{journal_id}/trail")
+            assert trail_status == 200
+            assert trail.get("segment", 1) == part
+            assert [point["sequence"] for point in trail["points"]] == expected_sequences
+
+        second_id = by_part[2]["id"]
+        cutoff_status, _, cutoff = _get(
+            base_url, f"/api/explorations/{second_id}/trail?through_sequence=3"
+        )
+        assert cutoff_status == 200
+        assert cutoff["segment"] == 2
+        assert [point["sequence"] for point in cutoff["points"]] == [3]
+        assert cutoff["playback"]["total_frame_count"] == 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    # Sibling parts imported out of order retain independent download identities.
+    for part in (2, 1, 3):
+        if part == 1:
+            reversed_part = [json.loads(line) for line in downloads[1].splitlines()]
+            for index, frame in enumerate(reversed_part[1:], start=10):
+                frame["snapshot"]["sequence"] = index
+            conflict_body = ("\n".join(json.dumps(line) for line in reversed_part) + "\n").encode("utf-8")
+            conflict_status, _, _ = _post_import(import_base, conflict_body)
+            assert conflict_status == 409
+        status, _, imported = _post_import(import_base, downloads[part])
+        assert status == 201
+        assert imported["exploration"].get("segment", 1) == part
+    status, _, listed = _get(import_base, "/api/explorations")
+    assert status == 200
+    assert {item.get("segment", 1) for item in listed["explorations"]} == {1, 2, 3}
