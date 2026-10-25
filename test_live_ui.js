@@ -621,6 +621,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   await settle();
   assert.equal(element("liveReplayLink").href, "/api/explorations/" + firstId);
   assert.equal(element("liveReplayLink").hidden, false);
+  assert.equal(element("liveReplayViewButton").hidden, false, "a valid live recording exposes the current-trail action");
   assert.ok(element("liveReplayLink").textContent.includes("第 1 段"));
   assert.ok(element("liveRecordingStatus").textContent.includes("已自动记录"));
   assert.ok(element("liveRecordingStatus").textContent.includes("第 1 段"));
@@ -706,6 +707,7 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.ok(element("liveRecordingStatus").textContent.includes("disk unavailable"));
   assert.equal(element("liveReplayLink").hidden, true, "a session change must hide the prior session download");
   assert.equal(element("liveReplayLink").href, "");
+  assert.equal(element("liveReplayViewButton").hidden, true, "a session without a valid replay ID hides the current-trail action");
   assert.ok(element("explorationList").innerHTML.includes("/api/explorations/" + worldId));
 
   context.reply = frame("five", 1, null, "world-c");
@@ -2779,6 +2781,22 @@ function landmarkMapSyntheticEvent(type, attributes, key = "", preventDefault = 
   assert.equal(run("state.liveRecording.status"), "limit_reached", "equal-count status changes remain accepted");
   assert.ok(element("liveRecordingStatus").textContent.includes("本段已满"));
   assert.ok(element("liveRecordingStatus").textContent.includes("下一帧将自动开始新段"));
+
+  const currentReplayOpenRequests = [];
+  context.fetch = async url => {
+    currentReplayOpenRequests.push(url);
+    assert.equal(url, "/api/explorations/" + rolloverPartTwo.id + "/trail");
+    return apiResponse(partTwoStored);
+  };
+  assert.equal(element("liveReplayViewButton").hidden, false);
+  run("trailState.requests.delete(" + JSON.stringify(rolloverPartTwo.id) + ")");
+  element("liveReplayViewButton").listeners.click();
+  await settle();
+  assert.deepEqual(currentReplayOpenRequests, ["/api/explorations/" + rolloverPartTwo.id + "/trail"],
+    "the current-trail action opens the exact active replay segment");
+  assert.equal(run("trailState.mode"), "history", "opening the current replay uses the existing history view");
+  assert.equal(run("trailState.id"), rolloverPartTwo.id);
+  assert.equal(run("live.following"), false, "opening the current replay pauses live following");
 
   const historyTrailRequests = [];
   context.fetch = async url => {

@@ -120,6 +120,8 @@ python -m pytest -q
 
 在“探索回放”中可查看已记录的快照数量并下载 JSONL。每段标为“第 N 段”，都可单独下载、导入和查看。列表初次显示最近 10 项；点“显示更多回放”可显示较早的回放段。下载文件的首行是 `replay_version: 1` 的会话信息，包含 `id`、`world_id`、`world_kind` 和 `session_id`；第二段及之后还包含可选的 `segment`。后续每行包含 `replay_version`、`received_at`、`target`、`seed`、完整的 `snapshot`，以及有方向建议时的 `plan`。快照内的 `captured_at` 和 `sequence` 保留采集时刻与顺序，方便之后复盘移动过程。
 
+实时录制摘要旁可以直接打开当前回放段，也可以下载该段 JSONL。查看时使用既有历史回放流程，实时跟随会暂停；后台采集与录制继续运行。
+
 第一段沿用现有的确定性 ID，且其文件头、摘要和轨迹响应都省略 `segment`，因此已有回放的身份和结构不变。第二段及之后使用会话三元组与段号生成各自确定的 ID；文件头中的 `segment` 必须是 JSON 整数，范围为 2 到 `2**53 - 1`。相应摘要和轨迹响应会带上该段的 `segment`。这些可选字段不改变 `replay_version: 1` 或 `trail_version: 1`，旧的无 `segment` 回放按第一段读取。
 
 - `GET /api/explorations` 返回 `explorations` 摘要列表，最近的记录排在前面。
