@@ -22,6 +22,8 @@ For English setup, run the command above from the planner checkout and pass the 
 
 更新现有安装时，可重新运行安装命令或手动复制采集器文件夹，然后在游戏中重新进入世界。0.5.0 版新增玩家当前位置到所在格中心的接入检查。 / To update an existing installation, rerun the install command or copy the collector folder manually, then re-enter the world. Version 0.5.0 adds an entry check from the player's current position to the center of the tile they occupy.
 
+版本 0.5.1 会在采集器重载时创建新的会话 ID，避免同一秒内序号重置后与旧帧混淆。 / Version 0.5.1 assigns a new session ID when the collector reloads, so a sequence reset within the same second is kept separate from earlier frames.
+
 ## 采集内容
 
 采样半径是 16 个游戏坐标单位，当前位置附近使用 4 单位范围。更远的地皮和地标分到八个方向。北为 `+Z`，东为 `+X`，方位固定在世界坐标系中；镜头角度作为额外信息输出。
@@ -58,6 +60,7 @@ For English setup, run the command above from the planner checkout and pass the 
 - `worldgen_main.lua:473`、`mainfunctions.lua:1120`：世界会话及世界类型。
 - `modutil.lua:340`、`gamelogic.lua:967`：世界载入后的初始化回调。
 - `mods.lua:312`、`modindex.lua:678`：客户端 mod 环境与配置。
+- `mods.lua:2588-2688`、`mods.lua:2866-3065`：`modimport` 执行导入文件；多个模块加载共享 `GLOBAL`，可用加载计数区分同一 Lua 进程中的重载。
 - `json.lua:163`、`json.lua:495`：外部 JSON 转义与空表编码；输出使用 `encode_compliant`，空观测保留对象字段。
 
 Lua 桩测试执行本仓库的采集器，并模拟玩家移动、实体可见性和世界切换。测试无需安装游戏或读取上述外部源码。

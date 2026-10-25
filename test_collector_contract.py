@@ -51,6 +51,7 @@ def _make_stub(
     pathfinder_mode: str = "true",
     player_x: float = 0,
     player_z: float = 0,
+    clock_time: float = 0.25,
 ):
     lines: list[str] = []
     sim_callbacks = []
@@ -200,7 +201,10 @@ def _make_stub(
     )
 
     g = lua.table()
-    g["os"] = lua.table_from({"time": lua.eval("function() return 1700000000 end")})
+    g["os"] = lua.table_from({
+        "time": lua.eval("function() return 1700000000 end"),
+        "clock": lua.eval(f"function() return {clock_time!r} end"),
+    })
     g["json"] = lua.table_from({"encode_compliant": lua.globals().encode_snapshot})
     g["WORLD_TILES"] = lua.table_from({"INVALID": 65535})
     g["GROUND"] = lua.table_from({"GRASS": 1, "MARSH": 2, "SECRET": 3})
@@ -266,7 +270,7 @@ def test_mod_is_client_only_and_uses_one_marked_line_per_snapshot() -> None:
     collector = (MOD_ROOT / "collector.lua").read_text(encoding="utf-8")
 
     assert "client_only_mod = true" in modinfo
-    assert 'version = "0.5.0"' in modinfo
+    assert 'version = "0.5.1"' in modinfo
     assert 'modimport("collector.lua")' in modmain
     assert MARKER.strip() in collector
     assert "print(\"DST_ROUTE_PLANNER_LIVE_V1 \" .. G.json.encode_compliant(snapshot))" in collector
@@ -749,6 +753,55 @@ def test_stub_waits_for_player_and_resets_session_for_player_and_world_changes()
     assert replaced_world["world_kind"] == "cave"
     assert replaced_world["sequence"] == 1
     assert replaced_world["session_id"] != replaced_player["session_id"]
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_reloading_collector_in_the_same_second_starts_a_distinct_session() -> None:
+    runtime = _make_stub(clock_time=0.25)
+    lua = runtime["lua"]
+    source = (MOD_ROOT / "collector.lua").read_text(encoding="utf-8")
+
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    first = _snapshot(runtime["lines"])
+
+    lua.execute(source)
+    runtime["sim_callbacks"][1](runtime["world"])
+    runtime["world"]["callback"]()
+    second = _snapshot(runtime["lines"])
+
+    assert first["sequence"] == second["sequence"] == 1
+    assert first["session_id"] != second["session_id"]
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_collector_loads_without_process_clock_support() -> None:
+    runtime = _make_stub()
+    runtime["sim_callbacks"][0](runtime["world"])
+    runtime["world"]["callback"]()
+    first = _snapshot(runtime["lines"])
+
+    runtime["g"]["os"]["clock"] = None
+    runtime["lua"].execute((MOD_ROOT / "collector.lua").read_text(encoding="utf-8"))
+    runtime["sim_callbacks"][1](runtime["world"])
+    runtime["world"]["callback"]()
+    second = _snapshot(runtime["lines"])
+    assert second["sequence"] == 1
+    assert second["session_id"] != first["session_id"]
+
+
+@pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")
+def test_new_process_clock_distinguishes_sessions_with_the_same_wall_clock_second() -> None:
+    first_runtime = _make_stub(clock_time=0.25)
+    second_runtime = _make_stub(clock_time=0.75)
+    for runtime in (first_runtime, second_runtime):
+        runtime["sim_callbacks"][0](runtime["world"])
+        runtime["world"]["callback"]()
+
+    first = _snapshot(first_runtime["lines"])
+    second = _snapshot(second_runtime["lines"])
+    assert first["sequence"] == second["sequence"] == 1
+    assert first["session_id"] != second["session_id"]
 
 
 @pytest.mark.skipif(LuaRuntime is None, reason="install the development-only Lupa dependency")

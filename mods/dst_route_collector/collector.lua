@@ -8,7 +8,15 @@ local SAMPLE_STEP = 4
 local SAMPLE_RADIUS_SQ = SAMPLE_RADIUS * SAMPLE_RADIUS
 local CURRENT_RADIUS_SQ = CURRENT_RADIUS * CURRENT_RADIUS
 local CARDINAL_SLOPE = 0.41421356237309503
-local COLLECTOR_EPOCH = tostring(G.os.time())
+local COLLECTOR_LOAD_SEQUENCE_KEY = "DST_ROUTE_PLANNER_COLLECTOR_LOAD_SEQUENCE"
+local collector_load_sequence = G[COLLECTOR_LOAD_SEQUENCE_KEY]
+if type(collector_load_sequence) ~= "number" or collector_load_sequence < 0 then
+    collector_load_sequence = 0
+end
+collector_load_sequence = collector_load_sequence + 1
+G[COLLECTOR_LOAD_SEQUENCE_KEY] = collector_load_sequence
+local collector_clock = type(G.os.clock) == "function" and tostring(G.os.clock()) or "0"
+local COLLECTOR_EPOCH = tostring(G.os.time()) .. "-" .. collector_clock .. "-" .. tostring(collector_load_sequence)
 local session_generation = 0
 
 local DIRECTION_NAMES = {

@@ -56,6 +56,8 @@ During live following, a paused collector, an error, a manual stop, or a last va
 
 While the tool runs, it saves new snapshots to local JSONL files, including coordinates, nearby clues, the current target, and the direction suggestion at that time. When adding a snapshot would take the current replay part past 10,000 frames or 32 MiB, the tool starts the next part automatically. Earlier parts stay available, and each part can be downloaded, imported, and reviewed on its own. After a restart, new snapshots continue in the latest part for that world and collector session. Closing the page, viewing history, or turning off live following does not interrupt recording. Recording ends when you exit the Python tool (press Ctrl+C in the terminal).
 
+Reloading the collector starts a new session at sequence 1, while earlier frames remain in their original session replay. Collector 0.5.1 also distinguishes reloads within the same second.
+
 The replay list initially shows the 10 most recent items. Select “显示更多回放” (Show more replays) to reveal older ones. Each part is labeled “第 N 段” (Part N). The live trail stays continuous across parts; history shows only the selected part through its final recorded frame.
 
 While viewing a replay, use “上一段” (Previous part) and “下一段” (Next part) to move through recordings from the same world and collector session. Missing segment numbers are skipped. Frame-by-frame playback stays within the selected part.
