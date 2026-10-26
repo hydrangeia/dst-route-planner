@@ -21,6 +21,7 @@
 - [x] 网页实时展示位置与方向建议，识别采集暂停和世界切换。 / Show live positions and direction suggestions, and detect paused collection and world changes.
 - [x] 实时地图在采集暂停、错误、手动停止或最后有效快照超过五秒时暂停导航；隐藏紫色路线和下一步提示，保留地皮、最后位置、终点与来源目标，收到新有效快照后恢复，历史回放路线照常显示。 / Pause live navigation when collection pauses, errors, stops manually, or the last valid snapshot is over five seconds old; hide the purple route and next-step guidance while keeping terrain, last position, endpoint, and target source, then resume on a valid snapshot. Saved replay routes remain visible.
 - [x] 实时导航请求五秒未完成时暂停；超时后等待一秒再重试；新鲜快照到达后自动恢复。停止或历史回放时不再重试，迟到响应不覆盖当前数据。 / Pause navigation when a live request exceeds five seconds and wait one second after timeout, then retry; resume on a fresh snapshot. Stop retries after manual stop or when viewing history, and ignore late responses so they cannot replace current data.
+- [x] 提供双终端合成快照示例，无需启动游戏即可体验 Python 日志消费与网页；停止超过五秒后暂停，恢复写入后自动恢复。该示例不验证 Lua 或 DST 游戏行为。 / Add a two-terminal synthetic-snapshot example to try Python log consumption and the page without starting the game; pause after the source stops for more than five seconds and resume automatically when writing restarts. This example does not verify Lua or DST behavior.
 
 采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
 
@@ -28,7 +29,7 @@
 - [x] 网页与 `--check-live` 显示坐标和地标、地皮、通行、连接与玩家接入检查摘要。 / Show coordinates and an observation summary of landmarks, tiles, passability, connections, and player-entry checks in the page and `--check-live`.
 - [x] 提供客户端采集器安装命令，按明确给出的现有 `mods/` 路径安装，仅更新三个运行时 Lua 文件，并备份发生变化的旧文件。 / Add a client collector installer that takes an explicit existing `mods/` path, updates only its three runtime Lua files, and backs up replaced files.
 - [x] 提供 `--watch-live` 每秒持续检查连接，在新快照和状态变化时显示坐标、镜头朝向与采集摘要，便于核对移动和暂停恢复。 / Add `--watch-live` to check the connection every second and report coordinates, camera heading, and observation summaries on new snapshots or status changes, so movement and pause/resume can be checked.
-- [ ] 在游戏中验证日志输出、坐标方向、地标采集、地形通行、玩家接入段与邻格直连状态，记录一次完整探索过程。 / Verify log output, coordinate directions, landmarks, ground passability, player entry segments, and neighbor connections in game, and record a complete exploration run.
+- [ ] 在真实 DST 游戏中验证日志输出、坐标方向、地标采集、地形通行、玩家接入段与邻格直连状态，并记录一次完整探索过程；合成快照示例不计作此项验证。 / Verify log output, coordinate directions, landmarks, ground passability, player entry segments, and neighbor connections in an actual DST game, and record a complete exploration run; the synthetic-snapshot demo does not count as this verification.
 - [x] 记录连续坐标、观测和可用的方向建议，按世界与会话保存本机 JSONL 回放，并支持重启后下载。 / Record successive coordinates, observations, and available direction suggestions in local JSONL replays by world and session, and make them available after restarting.
 - [x] Python 工具运行期间在后台读取新鲜快照并继续录制；关闭或最小化网页、查看历史或取消实时跟随都不影响录制，退出工具后停止。 / While the Python tool runs, read fresh snapshots and continue recording in the background; closing or minimizing the page, viewing history, or turning off live following does not interrupt recording, which stops when the tool exits.
 - [x] 当前回放段将超过 10,000 帧或 32 MiB 时自动开始下一段；保留旧段，并支持分别下载、导入和回看。 / Start a new replay part automatically when the current part would exceed 10,000 frames or 32 MiB; retain earlier parts and support separate download, import, and review.

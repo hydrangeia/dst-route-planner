@@ -48,6 +48,32 @@ It checks once per second and prints coordinates, camera heading, and an observa
 
 If your log lives elsewhere, use `--live-log "actual/path/client_log.txt"`. Explicit `--live-log auto` uses the same automatic discovery as the default. Leave live following unchecked for manual entry.
 
+### Try the live page without starting the game
+
+You can use synthetic snapshots to try the log reader and page. Open two terminals in the repository folder:
+
+Terminal 1 writes one synthetic snapshot per second:
+
+```powershell
+python examples/mock_live_source.py --output "$env:TEMP\dst-route-planner-mock-client_log.txt"
+```
+
+Terminal 2 starts the page with that same log:
+
+```powershell
+python route_planner.py --ui --live-log "$env:TEMP\dst-route-planner-mock-client_log.txt"
+```
+
+Check “实时跟随” (live following) in the page. Press `Ctrl+C` in Terminal 1 and wait more than five seconds; live navigation pauses. Run Terminal 1's command again and the page resumes automatically when fresh snapshots arrive, without toggling live following. This example demonstrates only Python log consumption and the page; it does not run the Lua collector or verify behavior in DST. Synthetic snapshots are saved to the tool's usual ignored local folder as a `mock-world` replay.
+
+```text
+Terminal 1: write synthetic snapshots ─┐
+                                       ├→ Terminal 2: read log → page follows live
+Stop for more than five seconds → pause ─┘
+Restart Terminal 1 → fresh snapshots arrive → page resumes automatically
+Demonstrates Python log consumption and the page only; no Lua / DST behavior is verified
+```
+
 Directions use fixed world coordinates: north is `+Z` and east is `+X`. The map opens fitted to all observed areas. Select “全图” (Full map) to restore that view, or “跟随位置” (Follow position) to keep the latest position in a local view; “放大” (Zoom in) and “缩小” (Zoom out) change its range.
 
 On the trail map, choose “路线终点” (route endpoint) or click an observed passable tile. The planner finds the route with the fewest grid steps over checked clear neighbor links. Collector 0.5.0 also checks the segment from your current position to your tile center. When that check passes, the route starts at your actual position and shows its total length and the next direction and coordinates. Next-step guidance also gives a ground direction relative to that frame’s camera heading (for example, “screen right”); it updates with new snapshots as you turn the camera, and replays use the selected frame’s heading. A blocked entry segment is reported; older data can still show tile-center routes. Routes recalculate as the player moves or new checks arrive, including in saved replays. The endpoint is the selected tile center, and each grid step is 4 world units. If no path connects the tiles, the page shows “未连通” (not connected). Switching worlds or collector sessions clears the endpoint.
