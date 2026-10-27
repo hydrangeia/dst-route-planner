@@ -13,21 +13,26 @@ from dst_route_planner import cli
 from dst_route_planner.cli import main
 
 
-def test_ui_forwards_port_browser_preference_and_live_log(monkeypatch) -> None:
-    calls: list[tuple[int, bool, Path | None]] = []
+def test_ui_forwards_port_browser_preference_and_live_paths(monkeypatch) -> None:
+    calls: list[tuple[int, bool, Path | None, Path | None]] = []
     monkeypatch.setattr(
         app,
         "run_app",
-        lambda *, port, open_browser, live_log: calls.append((port, open_browser, live_log)),
+        lambda *, port, open_browser, live_log, exploration_dir: calls.append(
+            (port, open_browser, live_log, exploration_dir)
+        ),
     )
     monkeypatch.setattr(
         sys,
         "argv",
-        ["route_planner.py", "--ui", "--port", "8042", "--no-browser", "--live-log", "client.log"],
+        [
+            "route_planner.py", "--ui", "--port", "8042", "--no-browser",
+            "--live-log", "client.log", "--exploration-dir", "mock-replays",
+        ],
     )
 
     assert main() == 0
-    assert calls == [(8042, False, Path("client.log"))]
+    assert calls == [(8042, False, Path("client.log"), Path("mock-replays"))]
 
 
 def test_ui_uses_automatic_log_discovery_by_default(monkeypatch) -> None:
@@ -43,7 +48,7 @@ def test_ui_uses_automatic_log_discovery_by_default(monkeypatch) -> None:
     monkeypatch.setattr(
         app,
         "run_app",
-        lambda *, port, open_browser, live_log: calls.append(live_log),
+        lambda *, port, open_browser, live_log, exploration_dir: calls.append(live_log),
     )
     monkeypatch.setattr(sys, "argv", ["route_planner.py", "--ui", "--no-browser"])
 
@@ -315,7 +320,10 @@ def test_invalid_observation_input_returns_clean_error(monkeypatch, capsys) -> N
 
 
 def test_ui_startup_oserror_returns_clean_error(monkeypatch, capsys) -> None:
-    def fail_to_start(*, port: int, open_browser: bool, live_log: Path | None) -> None:
+    def fail_to_start(
+        *, port: int, open_browser: bool, live_log: Path | None,
+        exploration_dir: Path | None,
+    ) -> None:
         raise OSError("address already in use")
 
     monkeypatch.setattr(app, "run_app", fail_to_start)

@@ -61,10 +61,10 @@ python examples/mock_live_source.py --output "$env:TEMP\dst-route-planner-mock-c
 Terminal 2 starts the page with that same log:
 
 ```powershell
-python route_planner.py --ui --live-log "$env:TEMP\dst-route-planner-mock-client_log.txt"
+python route_planner.py --ui --live-log "$env:TEMP\dst-route-planner-mock-client_log.txt" --exploration-dir "$env:TEMP\dst-route-planner-mock-replays"
 ```
 
-Check “实时跟随” (live following) in the page. Press `Ctrl+C` in Terminal 1 and wait more than five seconds; live navigation pauses. Run Terminal 1's command again and the page resumes automatically when fresh snapshots arrive, without toggling live following. This example demonstrates only Python log consumption and the page; it does not run the Lua collector or verify behavior in DST. Synthetic snapshots are saved to the tool's usual ignored local folder as a `mock-world` replay.
+Check “实时跟随” (live following) in the page. Press `Ctrl+C` in Terminal 1 and wait more than five seconds; live navigation pauses. Run Terminal 1's command again and the page resumes automatically when fresh snapshots arrive, without toggling live following. This example demonstrates only Python log consumption and the page; it does not run the Lua collector or verify behavior in DST. Replays go to a separate temporary folder, apart from your regular exploration history.
 
 ```text
 Terminal 1: write synthetic snapshots ─┐

@@ -61,10 +61,10 @@ python examples/mock_live_source.py --output "$env:TEMP\dst-route-planner-mock-c
 终端 2：让页面读取同一个日志。
 
 ```powershell
-python route_planner.py --ui --live-log "$env:TEMP\dst-route-planner-mock-client_log.txt"
+python route_planner.py --ui --live-log "$env:TEMP\dst-route-planner-mock-client_log.txt" --exploration-dir "$env:TEMP\dst-route-planner-mock-replays"
 ```
 
-打开页面后勾选“实时跟随”。在终端 1 按 `Ctrl+C` 停止写入，等待超过五秒，页面会暂停实时导航；再次运行终端 1 的命令后，新快照会让页面自动恢复，不必重新勾选。这个示例只演示 Python 消费日志和网页响应；它不运行 Lua 采集器，也不验证 DST 游戏内行为。运行期间，工具会在本机忽略目录中生成一段 `mock-world` 回放。
+打开页面后勾选“实时跟随”。在终端 1 按 `Ctrl+C` 停止写入，等待超过五秒，页面会暂停实时导航；再次运行终端 1 的命令后，新快照会让页面自动恢复，不必重新勾选。这个示例只演示 Python 消费日志和网页响应；它不运行 Lua 采集器，也不验证 DST 游戏内行为。回放会写入单独的临时目录，不会混进平时的探索记录。
 
 ```text
 终端 1：写入合成快照 ─┐

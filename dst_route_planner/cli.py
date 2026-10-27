@@ -277,6 +277,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("auto"),
         help="Client log path, or auto (default: auto).",
     )
+    parser.add_argument(
+        "--exploration-dir",
+        type=Path,
+        help="Directory for live replay files (default: the local planner data folder).",
+    )
     return parser
 
 
@@ -416,6 +421,7 @@ def main() -> int:
                 port=args.port,
                 open_browser=not args.no_browser,
                 live_log=live_log,
+                exploration_dir=args.exploration_dir,
             )
         except LiveLogDiscoveryError as error:
             print(f"Unable to resolve the client log: {error}", file=sys.stderr)

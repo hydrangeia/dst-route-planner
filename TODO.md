@@ -21,7 +21,7 @@
 - [x] 网页实时展示位置与方向建议，识别采集暂停和世界切换。 / Show live positions and direction suggestions, and detect paused collection and world changes.
 - [x] 实时地图在采集暂停、错误、手动停止或最后有效快照超过五秒时暂停导航；隐藏紫色路线和下一步提示，保留地皮、最后位置、终点与来源目标，收到新有效快照后恢复，历史回放路线照常显示。 / Pause live navigation when collection pauses, errors, stops manually, or the last valid snapshot is over five seconds old; hide the purple route and next-step guidance while keeping terrain, last position, endpoint, and target source, then resume on a valid snapshot. Saved replay routes remain visible.
 - [x] 实时导航请求五秒未完成时暂停；超时后等待一秒再重试；新鲜快照到达后自动恢复。停止或历史回放时不再重试，迟到响应不覆盖当前数据。 / Pause navigation when a live request exceeds five seconds and wait one second after timeout, then retry; resume on a fresh snapshot. Stop retries after manual stop or when viewing history, and ignore late responses so they cannot replace current data.
-- [x] 提供双终端合成快照示例，无需启动游戏即可体验 Python 日志消费与网页；停止超过五秒后暂停，恢复写入后自动恢复。该示例不验证 Lua 或 DST 游戏行为。 / Add a two-terminal synthetic-snapshot example to try Python log consumption and the page without starting the game; pause after the source stops for more than five seconds and resume automatically when writing restarts. This example does not verify Lua or DST behavior.
+- [x] 提供双终端合成快照示例，无需启动游戏即可体验 Python 日志消费与网页；停止超过五秒后暂停，恢复写入后自动恢复。该示例将回放存入独立临时目录，不混入探索记录，也不验证 Lua 或 DST 游戏行为。 / Add a two-terminal synthetic-snapshot example to try Python log consumption and the page without starting the game; pause after the source stops for more than five seconds and resume automatically when writing restarts. Store its replay separately from exploration history; this example does not verify Lua or DST behavior.
 
 采集器与网页已通过 Lua 桩、日志回放和浏览器验证。 / The collector and page have passed Lua-stub, log-replay, and browser checks.
 
