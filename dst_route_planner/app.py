@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 10432)
-Total output lines: 1015
-
 from __future__ import annotations
 
 import json
@@ -525,7 +522,43 @@ class _PlannerHandler(BaseHTTPRequestHandler):
                 normalized_id = self.server.exploration_store.normalize_id(exploration_id)
                 content = self.server.exploration_store.get_bytes(normalized_id)
             except InvalidExplorationIdError as exc:
-                self._send_json(400, {"error": str(ex…432 tokens truncated…)
+                self._send_json(400, {"error": str(exc)})
+                return
+            except ExplorationNotFoundError:
+                self._send_json(404, {"error": "Exploration not found."})
+                return
+            except CorruptExplorationError:
+                self._send_json(500, {"error": "The exploration could not be read."})
+                return
+            except OSError:
+                _LOG.exception("Unable to read live exploration replay")
+                self._send_json(500, {"error": "The exploration could not be read."})
+                return
+            self._send_exploration_download(normalized_id, content)
+            return
+        if path == "/api/records":
+            try:
+                records = self.server.record_store.list_records(
+                    observation_validator=lambda observation: _validated_observation_request(
+                        observation, self.server.kb
+                    )
+                )
+            except OSError:
+                _LOG.exception("Unable to list saved exploration records")
+                self._send_json(500, {"error": "Saved records could not be listed."})
+                return
+            self._send_json(200, {"records": records})
+            return
+        if path.startswith("/api/records/"):
+            record_id = path.removeprefix("/api/records/")
+            if not record_id or "/" in record_id:
+                self._send_json(404, {"error": "Route not found."})
+                return
+            try:
+                record = self.server.record_store.get(record_id)
+                _validated_observation_request(record["observation"], self.server.kb)
+            except InvalidRecordIdError as exc:
+                self._send_json(400, {"error": str(exc)})
                 return
             except RecordNotFoundError:
                 self._send_json(404, {"error": "Saved record not found."})
