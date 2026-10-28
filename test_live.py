@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from dst_route_planner.live import (
+    IncrementalSnapshotReader,
     LIVE_MARKER,
     LiveSnapshotError,
     freshness_status,
@@ -160,6 +161,136 @@ def test_batch_reader_keeps_non_missing_os_errors_visible(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "open", fail_open)
     with pytest.raises(PermissionError, match="not readable"):
         read_snapshot_batch(tmp_path / "client.log")
+
+
+def test_incremental_reader_catches_up_over_multiple_bounded_reads(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    path.touch()
+    max_bytes = 256
+    reader = IncrementalSnapshotReader(path, max_bytes=max_bytes)
+    snapshots = [_snapshot(sequence=sequence) for sequence in range(1, 9)]
+    log_bytes = "".join(_line(snapshot) for snapshot in snapshots).encode("utf-8")
+    assert len(log_bytes) > max_bytes * 3
+
+    with path.open("ab") as output:
+        output.write(log_bytes)
+
+    observed: list[dict] = []
+    read_rounds = math.ceil(len(log_bytes) / max_bytes) + 1
+    first_batch = reader.read_batch()
+    observed.extend(first_batch)
+    for _ in first_batch:
+        reader.acknowledge()
+    assert 0 < reader.committed_offset <= max_bytes
+    assert reader.committed_offset < len(log_bytes)
+
+    for _ in range(read_rounds - 1):
+        batch = reader.read_batch()
+        observed.extend(batch)
+        for _ in batch:
+            reader.acknowledge()
+
+    assert observed == snapshots
+    assert reader.committed_offset == len(log_bytes)
+    assert reader.read_batch() == []
+
+
+def test_incremental_reader_completes_a_partial_line_after_more_bytes_arrive(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    path.touch()
+    snapshot = _snapshot(sequence=3)
+    line = _line(snapshot).encode("utf-8")
+    split_at = len(line) // 2
+    reader = IncrementalSnapshotReader(path, max_bytes=split_at)
+
+    with path.open("ab") as output:
+        output.write(line[:split_at])
+    assert reader.read_batch() == []
+
+    with path.open("ab") as output:
+        output.write(line[split_at:])
+    assert reader.read_batch() == [snapshot]
+    reader.acknowledge()
+    assert reader.read_batch() == []
+
+
+def test_incremental_reader_bounds_overlong_partial_lines_and_recovers(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    path.touch()
+    snapshot = _snapshot(sequence=4)
+    line = _line(snapshot).encode("utf-8")
+    max_line_bytes = len(line) + 8
+    reader = IncrementalSnapshotReader(
+        path, max_bytes=256, max_line_bytes=max_line_bytes
+    )
+
+    with path.open("ab") as output:
+        output.write(b"x" * (max_line_bytes + 257))
+    assert reader.read_batch() == []
+    assert len(reader._line_buffer) <= max_line_bytes
+
+    with path.open("ab") as output:
+        output.write(b"\n" + line)
+
+    observed: list[dict] = []
+    for _ in range(8):
+        batch = reader.read_batch()
+        observed.extend(batch)
+        for _ in batch:
+            reader.acknowledge()
+
+    assert observed == [snapshot]
+
+def test_incremental_reader_discards_partial_line_when_log_is_truncated(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    path.touch()
+    older = _snapshot(sequence=1)
+    older["current"]["note"] = "x" * 4096
+    old_prefix = _line(older).encode("utf-8")[:2048]
+    replacement = _snapshot(session_id="after-truncate", sequence=1)
+    replacement_line = _line(replacement).encode("utf-8")
+    assert len(replacement_line) < len(old_prefix)
+    reader = IncrementalSnapshotReader(path, max_bytes=4096)
+
+    with path.open("ab") as output:
+        output.write(old_prefix)
+    assert reader.read_batch() == []
+    old_generation = reader.generation
+
+    path.write_bytes(replacement_line)
+    assert reader.read_batch() == [replacement]
+    assert reader.generation == old_generation + 1
+    reader.acknowledge()
+
+
+def test_incremental_reader_does_not_join_partial_line_across_file_replacement(tmp_path) -> None:
+    path = tmp_path / "client.log"
+    path.touch()
+    older = _snapshot(sequence=1)
+    old_prefix = _line(older).encode("utf-8")[:80]
+    replacements = [
+        _snapshot(session_id="replacement", sequence=sequence)
+        for sequence in (1, 2)
+    ]
+    replacement_bytes = "".join(_line(snapshot) for snapshot in replacements).encode(
+        "utf-8"
+    )
+    assert len(replacement_bytes) > len(old_prefix)
+    reader = IncrementalSnapshotReader(path, max_bytes=4096)
+
+    with path.open("ab") as output:
+        output.write(old_prefix)
+    assert reader.read_batch() == []
+    old_generation = reader.generation
+
+    replacement_path = tmp_path / "client.log.next"
+    replacement_path.write_bytes(replacement_bytes)
+    replacement_path.replace(path)
+
+    assert reader.read_batch() == replacements
+    assert reader.generation == old_generation + 1
+    reader.acknowledge()
+    reader.acknowledge()
 
 
 def test_reader_ignores_partial_tail_but_rejects_latest_malformed_complete_line(tmp_path) -> None:

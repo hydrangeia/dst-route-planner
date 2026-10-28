@@ -18,12 +18,12 @@ from dst_route_planner.io import InputValidationError, direction_observations_fr
 from dst_route_planner.knowledge import build_forest_default_kb
 from dst_route_planner.connection import inspect_live_log
 from dst_route_planner.live import (
+    IncrementalSnapshotReader,
     FRESHNESS_SECONDS,
     LiveSnapshotError,
     freshness_status,
     nearest_visible_target,
     read_latest_snapshot,
-    read_snapshot_batch,
 )
 from dst_route_planner.exploration import (
     MAX_EXPLORATION_BYTES,
@@ -803,23 +803,31 @@ def _save_record_request(payload: Any, store: RecordStore, kb=KB) -> tuple[dict[
 
 
 def _background_recording_loop(server) -> None:
+    reader: IncrementalSnapshotReader | None = None
     while not server._background_recording_stop.is_set():
         try:
+            if reader is None:
+                reader = IncrementalSnapshotReader(server.live_log)
             target, seed = server.get_background_query()
-            snapshots = read_snapshot_batch(server.live_log)
+            snapshots = reader.read_batch()
+            generation = reader.generation
+            server.set_background_recording_generation(generation)
             for snapshot in snapshots:
                 if server._background_recording_stop.is_set():
                     return
-                if server.background_sequence_recorded(snapshot):
+                if server.background_sequence_recorded(snapshot, generation):
+                    reader.acknowledge()
                     continue
                 try:
                     _, age = freshness_status(snapshot, now=time.time())
                 except LiveSnapshotError:
+                    reader.acknowledge()
                     continue
                 if (
                     age > FRESHNESS_SECONDS
                     or snapshot["world_kind"] not in {"forest", "cave"}
                 ):
+                    reader.acknowledge()
                     continue
                 result = _live_snapshot_request(
                     snapshot,
@@ -835,7 +843,9 @@ def _background_recording_loop(server) -> None:
                     recording = result.get("recording")
                     if recording and recording.get("status") == "error":
                         server.set_background_recording_error(
-                            snapshot, recording.get("error", "recording failed")
+                            snapshot,
+                            recording.get("error", "recording failed"),
+                            generation,
                         )
                     _LOG.debug(
                         "Background recording skipped a live snapshot: %s",
@@ -843,20 +853,26 @@ def _background_recording_loop(server) -> None:
                     )
                     # Leave this sequence eligible for retry and preserve log
                     # order so a later frame cannot make the failed frame stale.
+                    reader.retain()
                     break
                 recording = result.get("recording")
                 if recording is None:
                     if server._background_recording_stop.is_set():
                         return
+                    reader.retain()
                     break
                 if recording.get("status") == "error":
                     server.set_background_recording_error(
-                        snapshot, recording.get("error", "recording failed")
+                        snapshot,
+                        recording.get("error", "recording failed"),
+                        generation,
                     )
                     # Retry the failed sequence before appending later frames.
+                    reader.retain()
                     break
                 else:
-                    server.mark_background_sequence_recorded(snapshot)
+                    server.mark_background_sequence_recorded(snapshot, generation)
+                    reader.acknowledge()
         except Exception:
             _LOG.exception("Background live recording cycle failed")
         if server._background_recording_stop.wait(
@@ -908,6 +924,7 @@ def create_server(
             self._background_recording_state_lock = threading.Lock()
             self._background_recorded_sequences: OrderedDict = OrderedDict()
             self._background_recording_errors: OrderedDict = OrderedDict()
+            self._background_recording_generation = 0
 
         def get_background_query(self) -> tuple[str, int]:
             with self._background_query_lock:
@@ -917,18 +934,30 @@ def create_server(
             with self._background_query_lock:
                 self._background_query = (target, seed)
 
-        def background_sequence_recorded(self, snapshot: Mapping[str, Any]) -> bool:
-            identity = _snapshot_identity(snapshot)
+        def set_background_recording_generation(self, generation: int) -> None:
             with self._background_recording_state_lock:
+                self._background_recording_generation = generation
+
+        def background_sequence_recorded(
+            self, snapshot: Mapping[str, Any], generation: int | None = None
+        ) -> bool:
+            with self._background_recording_state_lock:
+                if generation is None:
+                    generation = self._background_recording_generation
+                identity = (generation, *_snapshot_identity(snapshot))
                 if identity not in self._background_recorded_sequences:
                     return False
                 self._background_recorded_sequences.move_to_end(identity)
                 return True
 
-        def mark_background_sequence_recorded(self, snapshot: Mapping[str, Any]) -> None:
-            identity = _snapshot_identity(snapshot)
-            recording_identity = _recording_identity(snapshot)
+        def mark_background_sequence_recorded(
+            self, snapshot: Mapping[str, Any], generation: int | None = None
+        ) -> None:
             with self._background_recording_state_lock:
+                if generation is None:
+                    generation = self._background_recording_generation
+                identity = (generation, *_snapshot_identity(snapshot))
+                recording_identity = (generation, *_recording_identity(snapshot))
                 self._background_recorded_sequences[identity] = None
                 self._background_recorded_sequences.move_to_end(identity)
                 self._background_recording_errors.pop(recording_identity, None)
@@ -938,18 +967,27 @@ def create_server(
                     self._background_recording_errors.popitem(last=False)
 
         def set_background_recording_error(
-            self, snapshot: Mapping[str, Any], error: str
+            self,
+            snapshot: Mapping[str, Any],
+            error: str,
+            generation: int | None = None,
         ) -> None:
-            identity = _recording_identity(snapshot)
             with self._background_recording_state_lock:
+                if generation is None:
+                    generation = self._background_recording_generation
+                identity = (generation, *_recording_identity(snapshot))
                 self._background_recording_errors[identity] = error
                 self._background_recording_errors.move_to_end(identity)
                 while len(self._background_recording_errors) > BACKGROUND_RECORDED_SEQUENCE_CACHE_SIZE:
                     self._background_recording_errors.popitem(last=False)
 
-        def background_recording_error(self, snapshot: Mapping[str, Any]) -> str | None:
-            identity = _recording_identity(snapshot)
+        def background_recording_error(
+            self, snapshot: Mapping[str, Any], generation: int | None = None
+        ) -> str | None:
             with self._background_recording_state_lock:
+                if generation is None:
+                    generation = self._background_recording_generation
+                identity = (generation, *_recording_identity(snapshot))
                 return self._background_recording_errors.get(identity)
 
         def start_background_recording(self) -> None:

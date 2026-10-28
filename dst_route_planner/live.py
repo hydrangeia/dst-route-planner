@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from dst_route_planner.io import (
 
 LIVE_MARKER = "DST_ROUTE_PLANNER_LIVE_V1 "
 DEFAULT_TAIL_BYTES = 1024 * 1024
+MAX_LIVE_LINE_BYTES = 1024 * 1024
 MAX_IDENTIFIER_LENGTH = 128
 MAX_LANDMARKS = 4096
 MAX_TERRAIN_TILES = 256
@@ -362,6 +364,187 @@ def read_latest_snapshot(
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
             raise LiveSnapshotError(f"latest marked snapshot is invalid: {exc}") from exc
     return None
+
+
+class IncrementalSnapshotReader:
+    """Read appended client-log snapshots in bounded, acknowledgeable batches.
+
+    A reader starts at the beginning of an existing log when it is at most one
+    byte budget long, or at the beginning of the trailing byte budget for a
+    larger log. If that starting point falls within a line, that line is
+    skipped. Later reads begin at the committed offset and never read more
+    than ``max_bytes`` in one call.
+
+    Snapshot frames are returned in log order. Call :meth:`acknowledge` once
+    for each successfully handled frame. A frame remains at the head of the
+    pending batch until acknowledged; :meth:`retain` makes that retry choice
+    explicit. The next byte batch is not read until every pending frame has
+    been acknowledged.
+    """
+
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        max_bytes: int = DEFAULT_TAIL_BYTES,
+        max_line_bytes: int = MAX_LIVE_LINE_BYTES,
+    ) -> None:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise ValueError("max_bytes must be a positive integer.")
+        if type(max_line_bytes) is not int or max_line_bytes < 1:
+            raise ValueError("max_line_bytes must be a positive integer.")
+        self.path = Path(path)
+        self.max_bytes = max_bytes
+        self.max_line_bytes = max_line_bytes
+        self.generation = 0
+        self._source_identity: tuple[int, int] | None = None
+        self._observed_size = 0
+        self._committed_offset = 0
+        self._line_buffer = b""
+        self._discard_until_newline = False
+        self._pending_frames: list[dict[str, Any]] = []
+        self._pending_index = 0
+        self._pending_end_offset: int | None = None
+
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return
+        self._source_identity = self._identity(stat)
+        self._observed_size = stat.st_size
+        self._committed_offset = max(0, stat.st_size - self.max_bytes)
+        self._discard_until_newline = self._committed_offset > 0
+
+    @property
+    def committed_offset(self) -> int:
+        """The last byte offset whose complete snapshot frames were handled."""
+        return self._committed_offset
+
+    @staticmethod
+    def _identity(stat: os.stat_result) -> tuple[int, int]:
+        return (stat.st_dev, stat.st_ino)
+
+    def _reset_generation(
+        self,
+        *,
+        identity: tuple[int, int] | None,
+        offset: int = 0,
+        observed_size: int = 0,
+    ) -> None:
+        self.generation += 1
+        self._source_identity = identity
+        self._observed_size = observed_size
+        self._committed_offset = offset
+        self._line_buffer = b""
+        self._discard_until_newline = False
+        self._pending_frames = []
+        self._pending_index = 0
+        self._pending_end_offset = None
+
+    def _parse_chunk(self, chunk: bytes) -> list[dict[str, Any]]:
+        data = self._line_buffer + chunk
+        self._line_buffer = b""
+        snapshots: list[dict[str, Any]] = []
+        line_start = 0
+        marker = LIVE_MARKER.encode("ascii")
+
+        while True:
+            newline_at = data.find(b"\n", line_start)
+            if newline_at < 0:
+                break
+            line_size = newline_at - line_start
+            if self._discard_until_newline:
+                self._discard_until_newline = False
+            elif line_size <= self.max_line_bytes:
+                line = data[line_start:newline_at]
+                if marker in line:
+                    try:
+                        snapshot = _snapshot_from_marked_line(line)
+                    except (
+                        LiveSnapshotError,
+                        UnicodeDecodeError,
+                        json.JSONDecodeError,
+                        RecursionError,
+                        ValueError,
+                    ):
+                        snapshot = None
+                    if snapshot is not None:
+                        snapshots.append(snapshot)
+            line_start = newline_at + 1
+
+        trailing_size = len(data) - line_start
+        if self._discard_until_newline:
+            # An overlong line is discarded incrementally until its newline.
+            return snapshots
+        if trailing_size > self.max_line_bytes:
+            self._discard_until_newline = True
+        elif trailing_size:
+            self._line_buffer = data[line_start:]
+        return snapshots
+
+    def read_batch(self) -> list[dict[str, Any]]:
+        """Return pending frames, or read and return one bounded byte batch."""
+        if self._pending_index < len(self._pending_frames):
+            return self._pending_frames[self._pending_index :]
+
+        try:
+            path_stat = self.path.stat()
+        except FileNotFoundError:
+            return []
+
+        identity = self._identity(path_stat)
+        if self._source_identity is None:
+            self._source_identity = identity
+        elif identity != self._source_identity:
+            self._reset_generation(identity=identity, observed_size=path_stat.st_size)
+        elif (
+            path_stat.st_size < self._observed_size
+            or path_stat.st_size < self._committed_offset
+        ):
+            self._reset_generation(identity=identity, observed_size=path_stat.st_size)
+        else:
+            self._observed_size = path_stat.st_size
+
+        try:
+            with self.path.open("rb") as log_file:
+                opened_stat = os.fstat(log_file.fileno())
+                if self._identity(opened_stat) != self._source_identity:
+                    # The path changed between stat and open; retry next poll.
+                    return []
+                log_file.seek(self._committed_offset)
+                chunk = log_file.read(self.max_bytes)
+        except FileNotFoundError:
+            return []
+
+        if not chunk:
+            return []
+        self._pending_end_offset = self._committed_offset + len(chunk)
+        self._pending_frames = self._parse_chunk(chunk)
+        self._pending_index = 0
+        if not self._pending_frames:
+            self._commit_pending_batch()
+            return []
+        return self._pending_frames[:]
+
+    def acknowledge(self) -> None:
+        """Confirm the current first frame and advance to the next one."""
+        if self._pending_index >= len(self._pending_frames):
+            raise RuntimeError("there is no pending snapshot to acknowledge.")
+        self._pending_index += 1
+        if self._pending_index == len(self._pending_frames):
+            self._commit_pending_batch()
+
+    def retain(self) -> None:
+        """Keep the current first frame pending so it can be retried later."""
+        if self._pending_index >= len(self._pending_frames):
+            raise RuntimeError("there is no pending snapshot to retain.")
+
+    def _commit_pending_batch(self) -> None:
+        if self._pending_end_offset is not None:
+            self._committed_offset = self._pending_end_offset
+        self._pending_frames = []
+        self._pending_index = 0
+        self._pending_end_offset = None
 
 
 def age_seconds(snapshot: Mapping[str, Any], *, now: float) -> float:

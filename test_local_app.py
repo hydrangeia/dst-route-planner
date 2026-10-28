@@ -401,6 +401,16 @@ def _write_live_snapshots(path: Path, snapshots: list[dict]) -> None:
     )
 
 
+def _append_live_snapshots(path: Path, snapshots: list[dict]) -> None:
+    with path.open("ab") as output:
+        output.write(
+            "".join(
+                f"{LIVE_MARKER}{json.dumps(snapshot, separators=(',', ':'))}\n"
+                for snapshot in snapshots
+            ).encode("utf-8")
+        )
+
+
 def test_live_endpoint_disabled_waiting_and_query_validation(local_server) -> None:
     base_url, server = local_server
     disabled_status, _, disabled = _get(base_url, "/api/live?target=panflute&seed=0")
@@ -1225,11 +1235,11 @@ def _track_capture_calls(monkeypatch):
 def _track_live_batch_reads(monkeypatch):
     condition = threading.Condition()
     read_results: list[list[dict]] = []
-    original_read = app.read_snapshot_batch
+    original_read = app.IncrementalSnapshotReader.read_batch
 
-    def tracked_read(path, **kwargs):
+    def tracked_read(reader):
         try:
-            snapshots = original_read(path, **kwargs)
+            snapshots = original_read(reader)
         except Exception:
             with condition:
                 read_results.append([])
@@ -1240,7 +1250,7 @@ def _track_live_batch_reads(monkeypatch):
             condition.notify_all()
         return snapshots
 
-    monkeypatch.setattr(app, "read_snapshot_batch", tracked_read)
+    monkeypatch.setattr(app.IncrementalSnapshotReader, "read_batch", tracked_read)
 
     def wait_for_result(predicate, *, after_index: int = 0, timeout: float = 2.0) -> int:
         with condition:
@@ -1352,6 +1362,58 @@ def test_background_recorder_processes_batch_in_order_and_isolates_sessions(
         _close_background_server(server)
 
 
+def test_background_recorder_drains_backlog_over_multiple_bounded_reads(
+    tmp_path, monkeypatch
+) -> None:
+    captured_keys, wait_for_capture = _track_capture_calls(monkeypatch)
+    directions = app._demo()["directions"]
+    live_log = tmp_path / "client.log"
+    live_log.touch()
+
+    reader_ready = threading.Event()
+    original_reader = app.IncrementalSnapshotReader
+
+    def small_budget_reader(path, **kwargs):
+        kwargs["max_bytes"] = 256
+        reader = original_reader(path, **kwargs)
+        reader_ready.set()
+        return reader
+
+    monkeypatch.setattr(app, "IncrementalSnapshotReader", small_budget_reader)
+    server, _, _ = _start_background_server(tmp_path, monkeypatch, live_log)
+
+    try:
+        assert reader_ready.wait(timeout=2)
+        snapshots = [
+            _live_snapshot(directions, sequence=sequence)
+            for sequence in range(1, 9)
+        ]
+        log_bytes = "".join(
+            f"{LIVE_MARKER}{json.dumps(snapshot, separators=(',', ':'))}\n"
+            for snapshot in snapshots
+        ).encode("utf-8")
+        assert len(log_bytes) > 256 * 3
+        live_log.write_bytes(log_bytes)
+
+        for snapshot in snapshots:
+            wait_for_capture(snapshot)
+
+        summary = server.exploration_store.summary_for_snapshot(snapshots[-1])
+        frames = [
+            json.loads(line)
+            for line in server.exploration_store.get_bytes(summary["id"]).splitlines()[1:]
+        ]
+        assert [frame["snapshot"]["sequence"] for frame in frames] == list(
+            range(1, 9)
+        )
+        assert all(
+            captured_keys.count(("world-abc", "forest", "session-1", sequence)) == 1
+            for sequence in range(1, 9)
+        )
+    finally:
+        _close_background_server(server)
+
+
 def test_background_recorder_skips_waiting_errors_and_stale_then_recovers(
     tmp_path, monkeypatch
 ) -> None:
@@ -1373,7 +1435,7 @@ def test_background_recorder_skips_waiting_errors_and_stale_then_recovers(
         stale = _live_snapshot(
             directions, sequence=1, captured_at=time.time() - 10
         )
-        _write_live_snapshot(live_log, stale)
+        _append_live_snapshots(live_log, [stale])
         read_index = wait_for_result(
             lambda snapshots: any(
                 snapshot.get("captured_at") == stale["captured_at"]
@@ -1385,12 +1447,12 @@ def test_background_recorder_skips_waiting_errors_and_stale_then_recovers(
         assert server.exploration_store.list_explorations() == []
 
         fresh = _live_snapshot(directions, sequence=1)
-        _write_live_snapshot(live_log, fresh)
+        _append_live_snapshots(live_log, [fresh])
         wait_for_capture(fresh)
         assert _recorded_frame_count(server, fresh) == 1
 
         recovered = _live_snapshot(directions, sequence=2)
-        _write_live_snapshot(live_log, recovered)
+        _append_live_snapshots(live_log, [recovered])
         wait_for_capture(recovered)
         assert _recorded_frame_count(server, recovered) == 2
     finally:
@@ -1419,7 +1481,7 @@ def test_background_recorder_skips_stale_future_and_unsupported_then_recovers(
             directions, world_kind="ocean", sequence=3
         )
         fresh = _live_snapshot(directions, sequence=4)
-        _write_live_snapshots(live_log, [stale, future, unsupported, fresh])
+        _append_live_snapshots(live_log, [future, unsupported, fresh])
         wait_for_capture(fresh)
 
         summary = server.exploration_store.summary_for_snapshot(fresh)
@@ -1512,7 +1574,7 @@ def test_live_get_updates_background_query_only_after_valid_parameters(
         }
 
         updated = _live_snapshot(directions, sequence=2)
-        _write_live_snapshot(live_log, updated)
+        _append_live_snapshots(live_log, [updated])
         wait_for_capture(updated)
         summary = server.exploration_store.summary_for_snapshot(updated)
         frames = [
@@ -1539,17 +1601,19 @@ def test_live_get_before_background_batch_cannot_skip_intermediate_frames(
     batch_read_entered = threading.Event()
     release_batch_read = threading.Event()
     read_count = 0
-    original_batch_read = app.read_snapshot_batch
+    original_batch_read = app.IncrementalSnapshotReader.read_batch
 
-    def delayed_batch_read(path, **kwargs):
+    def delayed_batch_read(reader):
         nonlocal read_count
         read_count += 1
         if read_count == 1:
             batch_read_entered.set()
             assert release_batch_read.wait(timeout=3)
-        return original_batch_read(path, **kwargs)
+        return original_batch_read(reader)
 
-    monkeypatch.setattr(app, "read_snapshot_batch", delayed_batch_read)
+    monkeypatch.setattr(
+        app.IncrementalSnapshotReader, "read_batch", delayed_batch_read
+    )
     original_plan = app._plan_request
     plan_count = 0
 
@@ -1643,7 +1707,7 @@ def test_background_write_failure_stays_visible_and_retries_without_replanning(
     try:
         wait_for_capture(first)
         assert retry_entered.wait(timeout=2)
-        _write_live_snapshots(live_log, [first, failed, later])
+        _append_live_snapshots(live_log, [later])
         status, _, result = _get(base_url, "/api/live?target=panflute&seed=0")
         assert status == 200
         assert result["snapshot"] == later
@@ -1661,6 +1725,10 @@ def test_background_write_failure_stays_visible_and_retries_without_replanning(
             for line in server.exploration_store.get_bytes(summary["id"]).splitlines()[1:]
         ]
         assert [frame["snapshot"]["sequence"] for frame in frames] == [1, 2, 3]
+        assert all(
+            captured_keys.count(("world-abc", "forest", "session-1", sequence)) == 1
+            for sequence in (1, 2, 3)
+        )
         assert plan_count == 3
     finally:
         release_retry.set()
